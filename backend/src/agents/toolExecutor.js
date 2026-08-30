@@ -70,7 +70,15 @@ export async function executeTools(tools, tiles, parameters, trace) {
     const payload = buildPayload(tool, tiles, parameters);
     trace.push(makeTraceEntry('tool_execution_start', `Calling tool "${tool.name}" at ${tool.endpoint}`));
 
-    const mlResult = await mlServiceClient.callMlService(tool.endpoint, payload);
+    let mlResult;
+    try {
+      mlResult = await mlServiceClient.callMlService(tool.endpoint, payload);
+    } catch (err) {
+      const reason = `ML service call threw an error for tool "${tool.name}": ${err.message}`;
+      trace.push(makeTraceEntry('tool_execution_failed', reason));
+      results.push({ tool: tool.name, status: 'failed', result: {}, error: reason, confidence: 0 });
+      continue;
+    }
 
     if (!mlResult || mlResult.status === 'error') {
       const reason = mlResult?.error || `ML service returned an error for tool "${tool.name}"`;

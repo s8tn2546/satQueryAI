@@ -379,13 +379,13 @@ Use this as a running task list. Work top to bottom within each section; section
 
 ### 15.3 Mandatory Capability Wiring — CRITICAL (Days 2–5, alongside ML service readiness)
 
-- [ ] Wire `vqa` tool call end-to-end (single image + question → answer)
-- [ ] Wire chosen single-image extra task end-to-end — **decide and check one:**
-  - [ ] `caption` (recommended default)
+- [x] Wire `vqa` tool call end-to-end (single image + question → answer)
+- [x] Wire chosen single-image extra task end-to-end — **decide and check one:**
+  - [x] `caption` (recommended default)
   - [ ] `ground` (only if ML team has bandwidth)
-- [ ] Wire `change` tool end-to-end (bi-temporal pair → change description or change VQA)
-- [ ] Wire `optical_sar` tool end-to-end (validated pair → fused result)
-- [ ] Confirm every one of the above returns evidence + confidence + trace, not just a bare answer
+- [x] Wire `change` tool end-to-end (bi-temporal pair → change description or change VQA)
+- [x] Wire `optical_sar` tool end-to-end (validated pair → fused result)
+- [x] Confirm every one of the above returns evidence + confidence + trace, not just a bare answer
 
 ### 15.4 Trust Layer Surfacing — CRITICAL
 
