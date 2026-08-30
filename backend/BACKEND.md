@@ -340,14 +340,14 @@ Use this as a running task list. Work top to bottom within each section; section
 
 ### 15.1 Foundation (Day 1)
 
-- [ ] Initialize `backend/` with Express, folder structure per Section 3
-- [ ] Set up `.env.example` and local `.env` per Section 4
-- [ ] Connect to MongoDB, confirm connection on startup
-- [ ] Create Mongoose schemas: `users`, `queries`, `tiles`, `results_cache`, `tool_registry` (Section 5)
-- [ ] Seed `tool_registry` collection with the 9 tools listed in Section 8
-- [ ] Implement `POST /api/images/upload` — accept file, store metadata as a `tiles` document, return `tileId` (validation logic can be a stub initially)
-- [ ] Set up `services/mlServiceClient.js` — a thin HTTP client wrapper for calling the Python service, with timeout and error handling
-- [ ] Stub `POST /api/query` — accept request, return a hardcoded response matching the Section 6 shape (to unblock frontend integration early)
+- [x] Initialize `backend/` with Express, folder structure per Section 3
+- [x] Set up `.env.example` and local `.env` per Section 4
+- [x] Connect to MongoDB, confirm connection on startup
+- [x] Create Mongoose schemas: `users`, `queries`, `tiles`, `results_cache`, `tool_registry` (Section 5)
+- [x] Seed `tool_registry` collection with the 9 tools listed in Section 8
+- [x] Implement `POST /api/images/upload` — accept file, store metadata as a `tiles` document, return `tileId` (validation logic can be a stub initially)
+- [x] Set up `services/mlServiceClient.js` — a thin HTTP client wrapper for calling the Python service, with timeout and error handling
+- [x] Stub `POST /api/query` — accept request, return a hardcoded response matching the Section 6 shape (to unblock frontend integration early)
 
 ### 15.2 Core Agent Pipeline — CRITICAL (Days 2–3)
 
