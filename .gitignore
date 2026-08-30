@@ -2,6 +2,7 @@
 node_modules/
 .pnpm-store/
 package-lock.json (optional, keep if using npm)
+.remember
 
 # Environment variables
 .env

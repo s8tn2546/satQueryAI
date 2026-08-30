@@ -1,5 +1,6 @@
 import express from 'express';
 import Query from '../models/Query.js';
+import { runAgentPipeline } from '../agents/pipeline.js';
 
 const router = express.Router();
 
@@ -24,48 +25,10 @@ router.post('/', async (req, res) => {
       });
     }
 
-    const stubResponse = {
-      answerText: `Stub answer for query: "${queryText}". The satellite image indicates mixed land cover with urban infrastructure and vegetation features.`,
-      taskType: 'VQA',
-      result: {
-        answer: `Analysis complete for: ${queryText}`,
-        confidence: 0.95
-      },
-      evidence: {
-        images: imageRefs,
-        region: parameters.region || {},
-        notes: 'Initial stub response unblocking frontend integration.'
-      },
-      confidence: 0.95,
-      executionTrace: [
-        { step: 'intent_classification', detail: 'Classified task as VQA', timestamp: new Date().toISOString() },
-        { step: 'input_validation', detail: 'Inputs validated successfully', timestamp: new Date().toISOString() },
-        { step: 'tool_execution', detail: 'Executed stub tool', timestamp: new Date().toISOString() }
-      ],
-      status: 'success'
-    };
-
-    // Save stub query doc to DB
-    const queryDoc = await Query.create({
-      queryText,
-      inputRefs: imageRefs,
-      taskType: stubResponse.taskType,
-      toolsInvoked: ['vqa'],
-      parameters,
-      result: stubResponse.result,
-      evidence: stubResponse.evidence,
-      confidence: stubResponse.confidence,
-      executionTrace: stubResponse.executionTrace,
-      answerText: stubResponse.answerText,
-      status: stubResponse.status
-    });
-
-    return res.status(200).json({
-      _id: queryDoc._id,
-      ...stubResponse
-    });
+    const response = await runAgentPipeline(queryText.trim(), imageRefs, parameters);
+    return res.status(200).json(response);
   } catch (error) {
-    console.error('[Query Stub] Error processing query:', error);
+    console.error('[Query] Pipeline error:', error);
     return res.status(500).json({
       answerText: 'An internal server error occurred while processing the query.',
       taskType: 'VQA',
@@ -85,6 +48,33 @@ router.get('/history', async (req, res) => {
   try {
     const queries = await Query.find().sort({ createdAt: -1 }).limit(50);
     return res.status(200).json(queries);
+  } catch (error) {
+    return res.status(500).json({ status: 'failed', error: error.message });
+  }
+});
+
+/**
+ * GET /api/query/:id/report
+ */
+router.get('/:id/report', async (req, res) => {
+  try {
+    const queryDoc = await Query.findById(req.params.id);
+    if (!queryDoc) {
+      return res.status(404).json({ status: 'failed', error: 'Query not found' });
+    }
+    const report = {
+      queryId: queryDoc._id,
+      queryText: queryDoc.queryText,
+      answerText: queryDoc.answerText,
+      taskType: queryDoc.taskType,
+      status: queryDoc.status,
+      confidence: queryDoc.confidence,
+      evidence: queryDoc.evidence,
+      result: queryDoc.result,
+      executionTrace: queryDoc.executionTrace,
+      generatedAt: new Date().toISOString()
+    };
+    return res.status(200).json(report);
   } catch (error) {
     return res.status(500).json({ status: 'failed', error: error.message });
   }

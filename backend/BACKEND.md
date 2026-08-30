@@ -277,7 +277,13 @@ Tools to register at minimum (per the mandatory PS scope):
 - Missing/partial data (e.g. cloud gaps in a trend series) → −
 - Fallback or partial tool failure → −
 
-Document the exact weighting your team lands on in this file once decided — don't leave it implicit in code only.
+Confidence weighting (implemented in `src/agents/confidenceEstimator.js`):
+- Base score: 0.5
+- +0.15 if validation passed cleanly (no warnings); +0.05 if passed with warnings
+- +0.2 if tool reported confidence ≥ 0.85; +0.1 if ≥ 0.6
+- +0.1 if cross-modal pair co-registration confirmed by ML service metadata
+- −0.1 if cloud gaps or missing dates reported by ML service
+- −0.2 per failed tool
 
 ---
 
@@ -351,25 +357,25 @@ Use this as a running task list. Work top to bottom within each section; section
 
 ### 15.2 Core Agent Pipeline — CRITICAL (Days 2–3)
 
-- [ ] Implement intent classification via LLM function-calling, using the `tool_registry` entries as the function/tool definitions
+- [x] Implement intent classification via LLM function-calling, using the `tool_registry` entries as the function/tool definitions
 - [ ] Test intent classification against all five PS representative queries:
   - [ ] "Describe the land-cover and major objects visible in this image." → `CAPTION`
   - [ ] "Highlight the water body referred to in the query." → `GROUNDING`
   - [ ] "What changed between these two dates, and where did the change occur?" → `CHANGE_ANALYSIS`
   - [ ] "Use the optical and SAR images together to identify built-up and water-covered regions." → `OPTICAL_SAR`
   - [ ] "Has the built-up area increased, decreased, or remained unchanged?" → `CHANGE_ANALYSIS` (VQA-style)
-- [ ] Implement input inspection/validation logic (Section 11) — structural checks only
-- [ ] Implement task planning + tool selection against the registry (no hardcoded if/else)
-- [ ] Implement parameter extraction from the classified query
-- [ ] Implement tool execution — single tool call working end-to-end against the ML service
-- [ ] Implement multi-tool sequencing (needed for tasks like optical+SAR: validate → fuse)
-- [ ] Implement result validation (catch ML service errors/empty results before trusting them)
-- [ ] Implement evidence aggregation (Section 9 format)
-- [ ] Implement confidence estimation logic (Section 9 signal list) — document the weighting used
-- [ ] Implement answer generation LLM call — verify it never introduces numbers not present in the tool result (spot-check manually)
-- [ ] Implement execution trace assembly and attach to every `queries` document
-- [ ] Wire the full pipeline into `POST /api/query`, replacing the Day 1 stub
-- [ ] Implement the honest fallback path for out-of-scope queries
+- [x] Implement input inspection/validation logic (Section 11) — structural checks only
+- [x] Implement task planning + tool selection against the registry (no hardcoded if/else)
+- [x] Implement parameter extraction from the classified query
+- [x] Implement tool execution — single tool call working end-to-end against the ML service
+- [x] Implement multi-tool sequencing (needed for tasks like optical+SAR: validate → fuse)
+- [x] Implement result validation (catch ML service errors/empty results before trusting them)
+- [x] Implement evidence aggregation (Section 9 format)
+- [x] Implement confidence estimation logic (Section 9 signal list) — document the weighting used
+- [x] Implement answer generation LLM call — verify it never introduces numbers not present in the tool result (spot-check manually)
+- [x] Implement execution trace assembly and attach to every `queries` document
+- [x] Wire the full pipeline into `POST /api/query`, replacing the Day 1 stub
+- [x] Implement the honest fallback path for out-of-scope queries
 
 ### 15.3 Mandatory Capability Wiring — CRITICAL (Days 2–5, alongside ML service readiness)
 
