@@ -33,7 +33,7 @@ export async function runAgentPipeline(queryText, imageRefIds, parameters = {}) 
     trace.push(makeTraceEntry('out_of_scope', reason));
     const response = makeRejectedResponse(reason, trace);
 
-    await Query.create({
+    const queryDoc = await Query.create({
       queryText,
       inputRefs: imageRefIds,
       taskType: 'VQA',
@@ -47,7 +47,7 @@ export async function runAgentPipeline(queryText, imageRefIds, parameters = {}) 
       status: 'rejected'
     });
 
-    return response;
+    return { _id: queryDoc._id, ...response };
   }
 
   const resolvedTaskType = TASK_TYPE_ENUM.has(taskType) ? taskType : 'VQA';
@@ -56,7 +56,7 @@ export async function runAgentPipeline(queryText, imageRefIds, parameters = {}) 
   if (!validationResult.valid) {
     const response = makeRejectedResponse(validationResult.reason, trace);
 
-    await Query.create({
+    const queryDoc = await Query.create({
       queryText,
       inputRefs: imageRefIds,
       taskType: resolvedTaskType,
@@ -70,7 +70,7 @@ export async function runAgentPipeline(queryText, imageRefIds, parameters = {}) 
       status: 'rejected'
     });
 
-    return response;
+    return { _id: queryDoc._id, ...response };
   }
 
   const tools = await planTools(resolvedTaskType, toolNames, trace);
@@ -86,7 +86,7 @@ export async function runAgentPipeline(queryText, imageRefIds, parameters = {}) 
     const reasons = toolResults.map(r => r.error || 'unknown error').join('; ');
     const response = makeFailedResponse(reasons, resolvedTaskType, trace);
 
-    await Query.create({
+    const queryDoc = await Query.create({
       queryText,
       inputRefs: imageRefIds,
       taskType: resolvedTaskType,
@@ -100,7 +100,7 @@ export async function runAgentPipeline(queryText, imageRefIds, parameters = {}) 
       status: 'failed'
     });
 
-    return response;
+    return { _id: queryDoc._id, ...response };
   }
 
   const { score: confidence } = estimateConfidence(validationResult, toolResults);

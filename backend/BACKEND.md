@@ -389,9 +389,9 @@ Use this as a running task list. Work top to bottom within each section; section
 
 ### 15.4 Trust Layer Surfacing — CRITICAL
 
-- [ ] Confirm `GET /api/query/:id` returns full stored result including trace
-- [ ] Implement `GET /api/query/:id/report` — bundle answer + evidence + confidence + trace into a downloadable format
-- [ ] Confirm every response, including failure/rejected paths, matches the Section 6 response shape exactly
+- [x] Confirm `GET /api/query/:id` returns full stored result including trace
+- [x] Implement `GET /api/query/:id/report` — bundle answer + evidence + confidence + trace into a downloadable format
+- [x] Confirm every response, including failure/rejected paths, matches the Section 6 response shape exactly
 
 ### 15.5 Supporting Geospatial Tools — HIGH then MEDIUM (Day 6)
 
