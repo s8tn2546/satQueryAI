@@ -1,8 +1,80 @@
 import dotenv from 'dotenv';
+import fs from 'fs/promises';
+import path from 'path';
+
 dotenv.config();
 
 const ML_SERVICE_BASE_URL = process.env.ML_SERVICE_BASE_URL || 'http://localhost:8000';
 const DEFAULT_TIMEOUT = 5000;
+
+/**
+ * Multipart (file-stream) transport definition for Geo/RS endpoints that accept
+ * uploaded files (FastAPI UploadFile/File). Maps each backend payload path key to
+ * the ML service's expected multipart field name(s).
+ *
+ * The backend never sends raw host file paths as JSON to the ML service — files
+ * live on the backend's own disk and are streamed here as multipart uploads.
+ */
+const FILE_ENDPOINTS = {
+  '/validate': { sourceKeys: ['image_path'], fileFields: ['file'] },
+  '/ndvi': { sourceKeys: ['image_path'], fileFields: ['file'] },
+  '/ndwi': { sourceKeys: ['image_path'], fileFields: ['file'] },
+  '/area': { sourceKeys: ['image_path'], fileFields: ['file'] },
+  '/change': { sourceKeys: ['image_t1_path', 'image_t2_path'], fileFields: ['image1', 'image2'] },
+  '/optical-sar': { sourceKeys: ['optical_path', 'sar_path'], fileFields: ['optical_image', 'sar_image'] },
+};
+
+// Payload keys that are metadata (IDs) rather than request parameters and should
+// not be forwarded as form fields. File path keys are handled separately.
+const NON_FORM_KEYS = new Set([
+  'image_path', 'image_t1_path', 'image_t2_path', 'optical_path', 'sar_path',
+  'tile_id', 'tile_id_t1', 'tile_id_t2', 'optical_tile_id', 'sar_tile_id',
+  'imageRefs'
+]);
+
+function isFileEndpoint(endpoint) {
+  const clean = endpoint.startsWith('/') ? endpoint : `/${endpoint}`;
+  return Object.prototype.hasOwnProperty.call(FILE_ENDPOINTS, clean);
+}
+
+/**
+ * Stream a backend-local file as a multipart upload to the ML service.
+ */
+async function sendMultipart(url, endpoint, payload, options, signal) {
+  const cfg = FILE_ENDPOINTS[endpoint.startsWith('/') ? endpoint : `/${endpoint}`];
+  const form = new FormData();
+
+  // Attach each file under the ML service's expected field name.
+  for (let i = 0; i < cfg.sourceKeys.length; i++) {
+    const filePath = payload[cfg.sourceKeys[i]];
+    if (filePath && typeof filePath === 'string') {
+      try {
+        const buf = await fs.readFile(filePath);
+        const name = path.basename(filePath);
+        form.append(cfg.fileFields[i], new Blob([buf]), name);
+      } catch (err) {
+        console.warn(`[MLServiceClient] Could not read local file "${filePath}" for multipart upload to ${endpoint}: ${err.message}`);
+      }
+    }
+  }
+
+  // Forward remaining scalar/JSON request parameters (band indices, thresholds,
+  // feature_type, modality_hint, question, etc.) but drop path/ID metadata keys.
+  for (const [key, value] of Object.entries(payload)) {
+    if (NON_FORM_KEYS.has(key) || value === undefined || value === null || value === '') continue;
+    if (typeof value === 'object') {
+      form.append(key, JSON.stringify(value));
+    } else {
+      form.append(key, String(value));
+    }
+  }
+
+  return fetch(url, {
+    method: 'POST',
+    body: form,
+    signal
+  });
+}
 
 /**
  * Returns mock result for a given endpoint when ML service is offline/mocked.
@@ -11,6 +83,67 @@ function getMockResult(endpoint, payload) {
   const cleanEndpoint = endpoint.startsWith('/') ? endpoint : `/${endpoint}`;
 
   switch (cleanEndpoint) {
+    case '/validate':
+      return {
+        tool: 'validate',
+        status: 'success',
+        result: {
+          valid: true,
+          validation_status: 'valid',
+          format: payload.format || 'TIFF',
+          errors: [],
+          warnings: []
+        },
+        evidence: { filename: payload.filename || 'uploaded-file' },
+        confidence: 1.0,
+        metadata: { mock: true }
+      };
+
+    case '/fetch-imagery':
+      return {
+        tool: 'fetch-imagery',
+        status: 'success',
+        result: {
+          images: [
+            {
+              modality: 'optical',
+              source: 'sentinel-2',
+              satellite: 'Sentinel-2',
+              filePath: null,
+              downloaded: false,
+              captureDate: '2026-01-01T00:00:00Z',
+              boundingBox: payload.bounding_box || null,
+              crs: 'EPSG:4326',
+              resolution: 10,
+              bands: ['B2', 'B3', 'B4', 'B8'],
+              validated: false,
+              validation_status: 'not-downloaded'
+            },
+            {
+              modality: 'sar',
+              source: 'sentinel-1',
+              satellite: 'Sentinel-1',
+              filePath: null,
+              downloaded: false,
+              captureDate: '2026-01-04T00:00:00Z',
+              boundingBox: payload.bounding_box || null,
+              crs: 'EPSG:4326',
+              resolution: 10,
+              bands: ['VV', 'VH'],
+              validated: false,
+              validation_status: 'not-downloaded'
+            }
+          ],
+          date_gap_days: 3,
+          date_range: { start: payload.start_date || null, end: payload.end_date || null },
+          source: 'mock',
+          warnings: ['Mock/fixture data — NOT real GEE satellite observations.']
+        },
+        evidence: { region: payload.bounding_box || {}, data_source: 'mock' },
+        confidence: 0.7,
+        metadata: { data_source: 'mock', source_warning: 'Mock/fixture data. Not real GEE satellite imagery.' }
+      };
+
     case '/vqa':
       return {
         tool: 'vqa',
@@ -170,15 +303,22 @@ export async function callMlService(endpoint, payload, options = {}) {
   const timer = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(options.headers || {})
-      },
-      body: JSON.stringify(payload),
-      signal: controller.signal
-    });
+    const isFile = isFileEndpoint(endpoint);
+    let response;
+    if (isFile) {
+      // Geo/RS file endpoints require multipart/form-data with actual file bytes.
+      response = await sendMultipart(url, endpoint, payload, options, controller.signal);
+    } else {
+      response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(options.headers || {})
+        },
+        body: JSON.stringify(payload),
+        signal: controller.signal
+      });
+    }
 
     clearTimeout(timer);
 

@@ -81,6 +81,24 @@ export const INITIAL_TOOLS = [
     parameters: { region: 'geojson', metric: 'string', startDate: 'date', endDate: 'date' },
     endpoint: '/trend',
     outputSchema: { series: 'array', trendSlope: 'float' }
+  },
+  {
+    name: 'validate',
+    description: 'Validate an uploaded image/raster and extract structured metadata (used during upload)',
+    requiredInputs: ['image'],
+    acceptedModalities: ['optical', 'sar'],
+    parameters: { modality_hint: 'string' },
+    endpoint: '/validate',
+    outputSchema: { valid: 'boolean', validation_status: 'string', errors: 'array', warnings: 'array' }
+  },
+  {
+    name: 'fetch-imagery',
+    description: 'Acquire a co-registered optical + SAR pair for a region via Google Earth Engine (stretch)',
+    requiredInputs: ['bounding_box'],
+    acceptedModalities: ['optical', 'sar'],
+    parameters: { bounding_box: 'geojson', start_date: 'date', end_date: 'date' },
+    endpoint: '/fetch-imagery',
+    outputSchema: { images: 'array', date_gap_days: 'integer' }
   }
 ];
 
@@ -93,7 +111,7 @@ export const seedTools = async () => {
         { upsert: true, new: true }
       );
     }
-    console.log('[Seed] Tool registry seeded successfully (9 tools).');
+    console.log(`[Seed] Tool registry seeded successfully (${INITIAL_TOOLS.length} tools).`);
   } catch (error) {
     console.error('[Seed] Error seeding tool registry:', error.message);
   }
