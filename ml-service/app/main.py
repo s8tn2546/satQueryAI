@@ -15,6 +15,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.area import router as area_router
+from app.api.change import router as change_router
 from app.api.ndvi import router as ndvi_router
 from app.api.ndwi import router as ndwi_router
 from app.api.validate import router as validate_router
@@ -52,6 +53,7 @@ app.include_router(validate_router, tags=["validation"])
 app.include_router(ndvi_router, tags=["spectral-index"])
 app.include_router(ndwi_router, tags=["spectral-index"])
 app.include_router(area_router, tags=["geospatial"])
+app.include_router(change_router, tags=["change-detection"])
 
 
 @app.get("/health")

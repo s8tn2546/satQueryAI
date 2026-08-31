@@ -269,3 +269,154 @@ def ndvi_ndwi_raster(tmp_path: Path) -> Path:
         dst.set_band_description(2, "green")
         dst.set_band_description(3, "nir")
     return path
+
+
+def _write_geo_tif(
+    path: Path,
+    data: np.ndarray,
+    crs_epsg: int = 32643,
+    origin: tuple[float, float] = (500000, 4600000),
+    res: float = 10.0,
+    nodata=None,
+    dtype=None,
+) -> Path:
+    """Write a georeferenced single-band GeoTIFF; return its path."""
+    arr = np.asarray(data)
+    if dtype is None:
+        dtype = str(arr.dtype)
+    with rasterio.open(
+        path,
+        "w",
+        driver="GTiff",
+        width=arr.shape[1],
+        height=arr.shape[0],
+        count=1,
+        dtype=dtype,
+        nodata=nodata,
+        crs=CRS.from_epsg(crs_epsg),
+        transform=from_origin(origin[0], origin[1], res, res),
+    ) as dst:
+        dst.write(arr, 1)
+    return path
+
+
+def _write_non_geo_tif(path: Path, data: np.ndarray, dtype=None) -> Path:
+    """Write a single-band, non-georeferenced GeoTIFF."""
+    arr = np.asarray(data)
+    if dtype is None:
+        dtype = str(arr.dtype)
+    with rasterio.open(
+        path,
+        "w",
+        driver="GTiff",
+        width=arr.shape[1],
+        height=arr.shape[0],
+        count=1,
+        dtype=dtype,
+    ) as dst:
+        dst.write(arr, 1)
+    return path
+
+
+@pytest.fixture
+def change_identical_pair(tmp_path: Path) -> tuple[Path, Path]:
+    """Two identical georeferenced single-band rasters -> 0% change."""
+    base = np.zeros((10, 10), dtype=np.uint8) + 50
+    p1 = _write_geo_tif(tmp_path / "a1.tif", base)
+    p2 = _write_geo_tif(tmp_path / "a2.tif", base)
+    return p1, p2
+
+
+@pytest.fixture
+def change_known_pair(tmp_path: Path) -> tuple[Path, Path]:
+    """Two rasters with a known 3x3 changed block.
+
+    image1 = 10 everywhere; image2 = 10 everywhere except a 3x3 block = 210
+    (difference 200 in that block). With an explicit threshold of 50 this yields
+    exactly 9 changed pixels.
+    """
+    a = np.full((10, 10), 10, dtype=np.uint16)
+    b = np.full((10, 10), 10, dtype=np.uint16)
+    b[2:5, 2:5] = 210
+    p1 = _write_geo_tif(tmp_path / "b1.tif", a, dtype="uint16")
+    p2 = _write_geo_tif(tmp_path / "b2.tif", b, dtype="uint16")
+    return p1, p2
+
+
+@pytest.fixture
+def change_nodata_pair(tmp_path: Path) -> tuple[Path, Path]:
+    """A pair where some pixels are nodata and must be excluded.
+
+    10x10 ranges: image1 = 100 everywhere, image2 = 100 everywhere except a
+    4x4 nodata block (must not count as change) and a 2x2 changed block = 300.
+    """
+    nodata = -9999
+    a = np.full((10, 10), 100, dtype=np.int16)
+    b = np.full((10, 10), 100, dtype=np.int16)
+    b[3:7, 3:7] = nodata           # nodata region (16 px)
+    b[1:3, 1:3] = 300              # changed region (4 px)
+    p1 = _write_geo_tif(tmp_path / "n1.tif", a, nodata=None, dtype="int16")
+    p2 = _write_geo_tif(tmp_path / "n2.tif", b, nodata=nodata, dtype="int16")
+    return p1, p2
+
+
+@pytest.fixture
+def change_nan_pair(tmp_path: Path) -> tuple[Path, Path]:
+    """A float pair containing NaN and Inf that must be excluded."""
+    a = np.full((10, 10), 1.0, dtype=np.float32)
+    b = np.full((10, 10), 1.0, dtype=np.float32)
+    b[2:4, 2:4] = np.nan
+    b[5, 5] = np.inf
+    b[0, 0] = 50.0
+    p1 = _write_geo_tif(tmp_path / "nan1.tif", a, dtype="float32", nodata=None)
+    p2 = _write_geo_tif(tmp_path / "nan2.tif", b, dtype="float32", nodata=None)
+    return p1, p2
+
+
+@pytest.fixture
+def change_nonoverlap_pair(tmp_path: Path) -> tuple[Path, Path]:
+    """Two georeferenced rasters with no spatial overlap."""
+    a = np.zeros((10, 10), dtype=np.uint8)
+    p1 = _write_geo_tif(tmp_path / "no1.tif", a, origin=(500000, 4600000))
+    p2 = _write_geo_tif(tmp_path / "no2.tif", a, origin=(700000, 4600000))
+    return p1, p2
+
+
+@pytest.fixture
+def change_diff_crs_pair(tmp_path: Path) -> tuple[Path, Path]:
+    """Two overlapping rasters in different UTM zones -> reprojection path.
+
+    p2's origin is placed (in ESPG:32644) so that its footprint overlaps p1
+    (in EPSG:32643) after transformation, guaranteeing the reprojection path.
+    """
+    a = np.zeros((10, 10), dtype=np.uint8)
+    b = np.zeros((10, 10), dtype=np.uint8)
+    p1 = _write_geo_tif(tmp_path / "c1.tif", a, crs_epsg=32643, origin=(500000, 4600000))
+    p2 = _write_geo_tif(tmp_path / "c2.tif", b, crs_epsg=32644, origin=(-500, 4617400))
+    return p1, p2
+
+
+@pytest.fixture
+def change_diff_transform_pair(tmp_path: Path) -> tuple[Path, Path]:
+    """Same CRS, same pixels, but a shifted transform origin -> reprojection."""
+    a = np.zeros((10, 10), dtype=np.uint8)
+    b = np.full((10, 10), 0, dtype=np.uint8)
+    p1 = _write_geo_tif(tmp_path / "t1.tif", a, origin=(500000, 4600000))
+    p2 = _write_geo_tif(tmp_path / "t2.tif", b, origin=(500010, 4600000))
+    return p1, p2
+
+
+@pytest.fixture
+def change_diff_dims_pair(tmp_path: Path) -> tuple[Path, Path]:
+    """Two non-georeferenced rasters with different dimensions -> fail."""
+    p1 = _write_non_geo_tif(tmp_path / "d1.tif", np.zeros((8, 8), dtype=np.uint8))
+    p2 = _write_non_geo_tif(tmp_path / "d2.tif", np.zeros((10, 10), dtype=np.uint8))
+    return p1, p2
+
+
+@pytest.fixture
+def change_mixed_georef_pair(tmp_path: Path) -> tuple[Path, Path]:
+    """One georeferenced image and one not -> cannot compare."""
+    p1 = _write_geo_tif(tmp_path / "m1.tif", np.zeros((10, 10), dtype=np.uint8))
+    p2 = _write_non_geo_tif(tmp_path / "m2.tif", np.zeros((10, 10), dtype=np.uint8))
+    return p1, p2

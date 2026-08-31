@@ -14,7 +14,8 @@ does the actual work when the backend calls them.
 
 ## Milestone 1 + 2 scope — what this currently does
 
-This implements **Milestone 1 (foundation)** and **Milestone 2 (geospatial tools)**:
+This implements **Milestone 1 (foundation)**, **Milestone 2 (geospatial tools)**, and
+**Milestone 3 (bi-temporal change detection)**:
 
 | Capability | Status |
 |---|---|
@@ -23,6 +24,7 @@ This implements **Milestone 1 (foundation)** and **Milestone 2 (geospatial tools
 | `/ndvi` endpoint (Normalized Difference Vegetation Index) | ✅ Done |
 | `/ndwi` endpoint (Normalized Difference Water Index) | ✅ Done |
 | `/area` endpoint (surface area from valid pixels) | ✅ Done |
+| `/change` endpoint (bi-temporal change detection) | ✅ Done |
 | Raster I/O (GeoTIFF/TIFF via rasterio) | ✅ Done |
 | PNG/JPEG support (via rasterio/Pillow) | ✅ Done |
 | Metadata extraction (CRS, bounds, resolution, bands, nodata) | ✅ Done |
@@ -30,12 +32,14 @@ This implements **Milestone 1 (foundation)** and **Milestone 2 (geospatial tools
 | Band detection (from explicit metadata only) | ✅ Done |
 | Basic preprocessing utilities (normalization) | ✅ Done |
 | Image validation pipeline | ✅ Done |
+| Pair validation + safe co-registration (rasterio reprojection) | ✅ Done |
+| Change statistics + confidence | ✅ Done |
 | Unit tests using synthetic rasters | ✅ Done |
 | Dockerfile | ✅ (not built in this environment) |
 
-**Not yet implemented** (later milestones): change detection, optical+SAR fusion,
-trend analysis, Google Earth Engine, VQA/captioning/grounding, model training, LoRA
-adaptation, image acquisition (`/fetch-imagery`).
+**Not yet implemented** (later milestones): optical+SAR fusion, trend analysis,
+Google Earth Engine, VQA/captioning/grounding, model training, LoRA adaptation,
+image acquisition (`/fetch-imagery`).
 
 ---
 
@@ -58,11 +62,15 @@ POST /ndvi  ──▶  app/api/ndvi.py  ──▶  app/tools/ndvi.py
 POST /ndwi  ──▶  app/api/ndwi.py  ──▶  app/tools/ndwi.py
 POST /area  ──▶  app/api/area.py  ──▶  app/tools/area.py
                     └──── app/tools/{band_utils,index_utils}.py
+
+POST /change ──▶ app/api/change.py ──▶  app/tools/change.py
+                    └── pair validation + deterministic alignment
+                        (rasterio reproject onto image1 grid)
 ```
 
 - **`app/geospatial/`** — raster I/O, CRS handling, and the validation pipeline.
 - **`app/preprocessing/`** — image loading, band detection, normalization.
-- **`app/tools/`** — the actual computation (NDVI, NDWI, area) plus shared
+- **`app/tools/`** — the actual computation (NDVI, NDWI, area, change) plus shared
   band-resolution and index utilities.
 - **`app/api/`** — FastAPI route definitions.
 - **`app/schemas/`** — Pydantic request/response models.
@@ -343,6 +351,97 @@ not invent a wrong number.
 
 ---
 
+## Change Detection endpoint
+
+```
+POST /change
+```
+
+**Change detection** compares two images of the same area from different dates and
+reports where meaningful change occurred. The baseline method is an **absolute pixel
+difference**: `diff = |image2 − image1|`, with pixels where `diff > threshold`
+classified as changed.
+
+Conceptual pipeline: validate each image → check compatibility (CRS / dimensions /
+bounds / resolution / overlap) → align if safely possible → pick a comparison band
+→ absolute difference → change mask → statistics → evidence.
+
+Form fields:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `image1` | file | yes | First image (earlier / time 1) |
+| `image2` | file | yes | Second image (later / time 2) |
+| `threshold` | float | no | Change threshold in data units; ≥ 0. See defaults below. |
+| `band` | int | no | Explicit 1-based band index to compare in **both** images |
+| `band_t1` | int | no | Explicit 1-based band index in image1 (must be given with `band_t2`) |
+| `band_t2` | int | no | Explicit 1-based band index in image2 |
+
+```bash
+curl -X POST http://localhost:8000/change \
+  -F "image1=@time1.tif" \
+  -F "image2=@time2.tif" \
+  -F "threshold=50"
+```
+
+`result` includes: `method`, `comparison_band`, `threshold` / `threshold_source`,
+`total_pixels`, `valid_pixels`, `invalid_pixels`, `changed_pixels`,
+`unchanged_pixels`, `change_percentage`, `mean_difference`, `max_difference`,
+`changed_area_km2`, `aligned`, `alignment` (`direct` or `reprojected`), and
+`warnings`.
+
+### Threshold
+
+- If `threshold` is supplied, it is used directly (must be ≥ 0).
+- If omitted, a **documented deterministic default** is used: **two standard
+  deviations (`2σ`) of the valid pixel differences** — a standard statistical
+  change-detection baseline (reported as `threshold_source: "auto_2sigma"`). It
+  is never random.
+
+### Band selection (never guesses positions)
+
+Priority order: explicit `band` → explicit `band_t1`/`band_t2` → both images are
+single-band (compare band 1, a data comparison) → a band name explicitly present
+in **both** images' descriptions → otherwise an honest **failure** explaining that
+no comparison band could be chosen. The service never assumes band 1 = red, etc.
+
+### Safe alignment / co-registration
+
+- Same CRS + same dimensions + compatible transform + overlapping bounds → compared
+  **directly** (`alignment: "direct"`, confidence 1.0).
+- If the grids or CRSs differ but the images overlap, image2 is deterministically
+  reprojected onto image1's grid using `rasterio.warp.reproject` with
+  `Resampling.nearest` (never invents values) and `dst_nodata=nan` so pixels outside
+  the overlap are excluded, never counted as change.
+- If reliable alignment/overlap **cannot** be established, the endpoint returns a
+  structured failure (`status: "failure"`, `confidence: 0.0`) rather than a fake
+  result.
+
+### Incompatibility & failures
+
+Incompatible pairs fail safely (never fabricate a change result): missing/invalid
+file, non-overlapping bounds, mixed georeferencing (one georeferenced, one not),
+mismatched non-georeferenced dimensions, all-nodata input, undeterminable band, or
+invalid threshold. Failures return `status: "failure"` with `confidence: 0.0` and a
+clear `result.error` explanation.
+
+### Nodata / NaN / Inf
+
+Raster nodata, NaN, and infinite pixels are excluded from statistics and can never
+be classified as change. Only valid (finite, non-nodata, overlapping) pixels are
+counted; counts of `total` / `valid` / `invalid` / `changed` / `unchanged` are
+reported.
+
+### Confidence (deterministic)
+
+- `1.0` — direct comparison, both images valid, compatible, no warnings.
+- `0.8` — reprojection/alignment required, or other warnings present, but valid
+  pixels exist.
+- `0.0` — validation/alignment failure or no valid pixels.
+  Derived from result reliability only — never random.
+
+---
+
 ## Supported input types
 
 | Type | Notes |
@@ -383,6 +482,8 @@ This runs:
 - `test_ndvi.py` / `test_ndwi.py` — index computation incl. band detection and honest failure
 - `test_area.py` — area math, nodata masking, and geographic-CRS failure
 - `test_tools_api.py` — the `/ndvi`, `/ndwi`, and `/area` HTTP endpoints
+- `test_change.py` — change math, thresholds, nodata/NaN exclusion, alignment/reprojection, deterministic confidence
+- `test_change_api.py` — the `/change` HTTP endpoint (success/failure schema, missing inputs, invalid files)
 
 The tests are deterministic — they should pass every time.
 
@@ -406,21 +507,28 @@ integration milestone, when the Node backend and ML service are orchestrated tog
 
 ---
 
-## Limitations (Milestone 2)
+## Limitations (Milestone 3)
 
 - Band detection only reads **explicit** band metadata/descriptions present in the
   file. It does **not** guess band meaning from band position (e.g. it won't assume
   "band 1 = red") — this is intentional and avoids hardcoding source-specific
   assumptions (Sentinel-2 vs Cartosat-2S vs RISAT slicing).
-- NDVI/NDWI require bands that are explicitly labelled RED/NIR/GREEN in the metadata.
-  Many raw single-band or unlabelled rasters will therefore fail with a structured
-  error until the user supplies an explicit `*_band` override or a labelled image.
-- Area measurement requires a **projected** CRS. Geographic (degree) rasters return
-  a failure requesting reprojection; there is no automatic reprojection yet.
-- Area uses band 1 to derive the valid-pixel mask. For single-band masks this is
-  exact; a multi-band image measures the area covered by valid values in band 1.
-- Modality is inferred only from band metadata or an explicit `modality_hint`.
-- No change detection / fusion / trend / GEE / VQA / training / `/fetch-imagery` yet.
+- Change detection requires a resolvable comparison band. A multi-band pair with no
+  explicit band, no common labelled band, and more than one band per image fails
+  honestly rather than guessing.
+- Change detection needs both images georeferenced **or** both non-georeferenced
+  with identical dimensions. A mixed pair (one georeferenced, one not) fails.
+- The default `2σ` threshold is a statistical heuristic; it adapts to data scale but
+  you should supply an explicit `threshold` when you know the data units.
+- Reprojection uses `Resampling.nearest` onto image1's grid and is limited to safe,
+  overlapping pairs. Complex multi-sensor registration (feature matching) is not
+  attempted — out of scope and would risk invented alignment.
+- `changed_area_km2` is only reported for a defined, projected (non-geographic) CRS;
+  it is `null` otherwise (never `deg × deg`).
+- No change mask GeoTIFF/GeoJSON is emitted yet — the response returns summary
+  statistics only (lightweight, no huge pixel arrays).
+- No change detection / fusion / trend / GEE / VQA / training / `/fetch-imagery` for
+  fusion onward; those come in later milestones.
 - The endpoints do **not** store the uploaded file permanently; each writes to a
   temp file, computes, then deletes it.
 
