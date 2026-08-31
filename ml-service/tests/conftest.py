@@ -420,3 +420,126 @@ def change_mixed_georef_pair(tmp_path: Path) -> tuple[Path, Path]:
     p1 = _write_geo_tif(tmp_path / "m1.tif", np.zeros((10, 10), dtype=np.uint8))
     p2 = _write_non_geo_tif(tmp_path / "m2.tif", np.zeros((10, 10), dtype=np.uint8))
     return p1, p2
+
+
+def _write_fusion_multiband(
+    tmp_path: Path, name: str, red, green, nir, nodata=None
+) -> Path:
+    """Write a labelled RED/GREEN/NIR optical-like multiband GeoTIFF."""
+    path = tmp_path / name
+    data = np.stack([np.full((10, 10), red), np.full((10, 10), green),
+                     np.full((10, 10), nir)]).astype(np.float32)
+    if nodata is not None:
+        mask = data == nodata
+    with rasterio.open(
+        path,
+        "w",
+        driver="GTiff",
+        width=10,
+        height=10,
+        count=3,
+        dtype="float32",
+        nodata=nodata,
+        crs=CRS.from_epsg(32643),
+        transform=from_origin(500000, 4600000, 10, 10),
+    ) as dst:
+        dst.write(data)
+        dst.set_band_description(1, "red")
+        dst.set_band_description(2, "green")
+        dst.set_band_description(3, "nir")
+    return path
+
+
+def _write_fusion_optical_single(path: Path, value) -> Path:
+    """Write an unlabelled single-band optical-like raster (unknown modality)."""
+    return _write_geo_tif(path, np.full((10, 10), value, dtype=np.uint8))
+
+
+@pytest.fixture
+def fusion_paired_rasters(tmp_path: Path) -> tuple[Path, Path]:
+    """Optical (multiband NDVI) + SAR (VV) aligned to the same grid (direct)."""
+    optical = _write_fusion_multiband(tmp_path, "opt.tif", red=100, green=200, nir=400)
+    sar = tmp_path / "sar.tif"
+    data = np.full((10, 10), 0.1, dtype=np.float32)
+    with rasterio.open(
+        sar, "w", driver="GTiff", width=10, height=10, count=2, dtype="float32",
+        crs=CRS.from_epsg(32643), transform=from_origin(500000, 4600000, 10, 10),
+    ) as dst:
+        dst.write(np.stack([data, data + 0.1]))
+        dst.set_band_description(1, "VV")
+        dst.set_band_description(2, "VH")
+    return optical, sar
+
+
+@pytest.fixture
+def fusion_nonoverlap_pair(tmp_path: Path) -> tuple[Path, Path]:
+    """Same CRS/grid but footprints do not overlap -> failure."""
+    optical = _write_fusion_multiband(tmp_path, "opt.tif", red=100, green=200, nir=400)
+    sar = _write_geo_tif(tmp_path / "far_sar.tif", np.full((10, 10), 0.1), origin=(700000, 4600000))
+    return optical, sar
+
+
+@pytest.fixture
+def fusion_diff_crs_pair(tmp_path: Path) -> tuple[Path, Path]:
+    """Overlapping optical (EPSG:32643) and SAR (EPSG:32644) -> reproject."""
+    optical = _write_fusion_multiband(tmp_path, "opt.tif", red=100, green=200, nir=400)
+    sar = _write_geo_tif(tmp_path / "sar.tif", np.full((10, 10), 0.1),
+                         crs_epsg=32644, origin=(-500, 4617400))
+    return optical, sar
+
+
+@pytest.fixture
+def fusion_missing_crs_pair(tmp_path: Path) -> tuple[Path, Path]:
+    """Optical is georeferenced but SAR is not -> cannot align."""
+    optical = _write_fusion_multiband(tmp_path, "opt.tif", red=100, green=200, nir=400)
+    sar = _write_non_geo_tif(tmp_path / "sar.tif", np.full((10, 10), 0.1))
+    return optical, sar
+
+
+@pytest.fixture
+def fusion_unknown_modality_pair(tmp_path: Path) -> tuple[Path, Path]:
+    """Optical is a single unlabelled band (unknown modality) -> warning."""
+    optical = _write_fusion_optical_single(tmp_path / "opt.tif", 50)
+    sar = tmp_path / "sar.tif"
+    data = np.full((10, 10), 0.1, dtype=np.float32)
+    with rasterio.open(
+        sar, "w", driver="GTiff", width=10, height=10, count=2, dtype="float32",
+        crs=CRS.from_epsg(32643), transform=from_origin(500000, 4600000, 10, 10),
+    ) as dst:
+        dst.write(np.stack([data, data + 0.1]))
+        dst.set_band_description(1, "VV")
+        dst.set_band_description(2, "VH")
+    return optical, sar
+
+
+@pytest.fixture
+def fusion_nodata_pair(tmp_path: Path) -> tuple[Path, Path]:
+    """Optical has a nodata border; SAR overlaps the same full footprint."""
+    optical = _write_fusion_multiband(
+        tmp_path, "opt.tif",
+        red=100, green=200, nir=400,
+        nodata=-9999.0,
+    )
+    # Overwrite the optical file with a nodata border around a 6x6 core.
+    with rasterio.open(
+        optical, "w", driver="GTiff", width=10, height=10, count=3, dtype="float32",
+        nodata=-9999.0, crs=CRS.from_epsg(32643), transform=from_origin(500000, 4600000, 10, 10),
+    ) as dst:
+        data = np.full((3, 10, 10), -9999.0, dtype=np.float32)
+        data[0, 2:8, 2:8] = 100
+        data[1, 2:8, 2:8] = 200
+        data[2, 2:8, 2:8] = 400
+        dst.write(data)
+        dst.set_band_description(1, "red")
+        dst.set_band_description(2, "green")
+        dst.set_band_description(3, "nir")
+    sar = tmp_path / "sar.tif"
+    data_sar = np.full((2, 10, 10), 0.1, dtype=np.float32)
+    with rasterio.open(
+        sar, "w", driver="GTiff", width=10, height=10, count=2, dtype="float32",
+        crs=CRS.from_epsg(32643), transform=from_origin(500000, 4600000, 10, 10),
+    ) as dst:
+        dst.write(data_sar)
+        dst.set_band_description(1, "VV")
+        dst.set_band_description(2, "VH")
+    return optical, sar

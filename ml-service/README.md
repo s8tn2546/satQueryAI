@@ -12,10 +12,11 @@ does the actual work when the backend calls them.
 
 ---
 
-## Milestone 1 + 2 scope — what this currently does
+## Milestone 1 + 2 + 3 + 4 scope — what this currently does
 
-This implements **Milestone 1 (foundation)**, **Milestone 2 (geospatial tools)**, and
-**Milestone 3 (bi-temporal change detection)**:
+This implements **Milestone 1 (foundation)**, **Milestone 2 (geospatial tools)**,
+**Milestone 3 (bi-temporal change detection)**, and **Milestone 4 (optical+SAR
+fusion / cross-modal analysis)**:
 
 | Capability | Status |
 |---|---|
@@ -25,21 +26,24 @@ This implements **Milestone 1 (foundation)**, **Milestone 2 (geospatial tools)**
 | `/ndwi` endpoint (Normalized Difference Water Index) | ✅ Done |
 | `/area` endpoint (surface area from valid pixels) | ✅ Done |
 | `/change` endpoint (bi-temporal change detection) | ✅ Done |
+| `/optical-sar` endpoint (optical + SAR cross-modal analysis) | ✅ Done |
 | Raster I/O (GeoTIFF/TIFF via rasterio) | ✅ Done |
 | PNG/JPEG support (via rasterio/Pillow) | ✅ Done |
 | Metadata extraction (CRS, bounds, resolution, bands, nodata) | ✅ Done |
 | CRS handling + WGS84 conversion (pyproj) | ✅ Done |
-| Band detection (from explicit metadata only) | ✅ Done |
-| Basic preprocessing utilities (normalization) | ✅ Done |
+| Band detection + modality detection (from explicit metadata only) | ✅ Done |
+| Basic preprocessing utilities (normalization, speckle filter) | ✅ Done |
 | Image validation pipeline | ✅ Done |
 | Pair validation + safe co-registration (rasterio reprojection) | ✅ Done |
 | Change statistics + confidence | ✅ Done |
+| Optical+SAR alignment, speckle filtering, fusion stats + confidence | ✅ Done |
 | Unit tests using synthetic rasters | ✅ Done |
 | Dockerfile | ✅ (not built in this environment) |
 
-**Not yet implemented** (later milestones): optical+SAR fusion, trend analysis,
-Google Earth Engine, VQA/captioning/grounding, model training, LoRA adaptation,
-image acquisition (`/fetch-imagery`).
+**Not yet implemented** (later milestones): trend analysis, Google Earth Engine,
+VQA/captioning/grounding, model training, LoRA adaptation, image acquisition
+(`/fetch-imagery`). Semantic interpretation of cross-modal evidence is the
+Agent / VLM / ML layer's job (Member 5), **not** this service.
 
 ---
 
@@ -66,12 +70,18 @@ POST /area  ──▶  app/api/area.py  ──▶  app/tools/area.py
 POST /change ──▶ app/api/change.py ──▶  app/tools/change.py
                     └── pair validation + deterministic alignment
                         (rasterio reproject onto image1 grid)
+
+POST /optical-sar ──▶ app/api/optical_sar.py ──▶ app/tools/fusion.py
+                    └── modality + CRS + overlap validation
+                        └── SAR reprojected onto optical grid
+                            └── optical NDVI/band feature + SAR speckle filter
+                                └── joint overlap statistics + fusion
 ```
 
 - **`app/geospatial/`** — raster I/O, CRS handling, and the validation pipeline.
-- **`app/preprocessing/`** — image loading, band detection, normalization.
-- **`app/tools/`** — the actual computation (NDVI, NDWI, area, change) plus shared
-  band-resolution and index utilities.
+- **`app/preprocessing/`** — image loading, band detection, normalization, speckle filtering.
+- **`app/tools/`** — the actual computation (NDVI, NDWI, area, change, fusion) plus
+  shared band-resolution, index, and alignment utilities.
 - **`app/api/`** — FastAPI route definitions.
 - **`app/schemas/`** — Pydantic request/response models.
 
@@ -442,6 +452,102 @@ reported.
 
 ---
 
+## Optical + SAR Fusion endpoint
+
+```
+POST /optical-sar
+```
+
+**Cross-modal analysis** combines an optical image with a SAR image of the same area
+and returns **quantitative, complementary evidence** — it does **not** make semantic
+claims ("flood occurred", "deforestation", etc.). Interpretation is handled later by
+the Agent / VLM / ML layer.
+
+Form fields:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `optical_image` | file | yes | Optical (multispectral / RGB) raster |
+| `sar_image` | file | yes | SAR raster (e.g. single-band backscatter, VV/VH) |
+| `optical_band` | int | no | Explicit 1-based optical band to use as the feature |
+| `sar_band` | int | no | Explicit 1-based SAR band to analyze |
+| `speckle_size` | int | no | Speckle-filter window (odd ≥ 1); default 3 |
+
+```bash
+curl -X POST http://localhost:8000/optical-sar \
+  -F "optical_image=@optical.tif" \
+  -F "sar_image=@sar.tif"
+```
+
+`result` structure:
+
+- **`optical`** — feature basis (`ndvi ...` or `band n`) and statistics (mean, median,
+  min, max, std, count) plus a normalized `[0,1]` mean.
+- **`sar`** — analyzed band, its statistics, the deterministic speckle filter applied
+  (`median`, window size), and a normalized mean.
+- **`fusion`** — a documented **equal-weight feature-level fusion** (`0.5 × optical
+  normalized + 0.5 × SAR normalized`): combined mean/std and per-pixel Pearson
+  correlation (when computable).
+- **`overlap`** — `total_pixels`, `valid_pixels`, `invalid_pixels`,
+  `validation_ratio`, `valid_area_km2` (projected CRS only), `partial`,
+  `overlap_ratio`.
+- **`alignment`** — `direct` or `reprojected` (+ resampling).
+- **`crs`** — optical/SAR labels and whether they match.
+- **`warnings`** — honest caveats (unknown modality, reprojection, partial overlap, etc.).
+
+### How a feature is chosen (never guesses positions)
+
+Optical feature precedence: explicit `optical_band` → **NDVI** from labelled RED+NIR
+(→ GREEN+NIR) → first explicit labelled band → single band → honest failure.
+
+SAR band precedence: explicit `sar_band` → single band → first labelled band (e.g. VV/VH)
+→ honest failure.
+
+### Modality validation
+
+Modality is inferred **only from explicit band metadata** (`detect_modality_from_bands`).
+A direct contradiction (e.g. the "optical" file clearly being SAR) fails; an unconfirmed
+modality warns but proceeds on the provided label. SAR is **never** assumed merely because
+an image is single-band.
+
+### Safe alignment & CRS
+
+- Both images must be **georeferenced** (defined CRS + transform), otherwise it fails
+  (cannot align spatially).
+- Same CRS + same grid → compared **directly** (`alignment: "direct"`).
+- Different CRS or grid → the SAR raster is **deterministically reprojected** onto the
+  optical grid with `Resampling.nearest` and `dst_nodata=nan`, so pixels outside the SAR
+  footprint are excluded, never fabricated.
+- No spatial overlap → structured failure (`status: "failure"`, `confidence: 0.0`).
+- Partial overlap → only the overlapping region is analyzed, a warning is added, and
+  confidence is reduced to `0.8`.
+
+### Speckle filtering
+
+SAR speckle is reduced with a **deterministic median filter** (default 3×3) implemented
+in pure NumPy (`app/preprocessing/speckle_filter.py`) — no scipy / deep-learning
+denoiser. Invalid pixels are excluded from the window and remain invalid.
+
+### Nodata / NaN / Inf
+
+Only pixels valid in **both** aligned inputs contribute. Raster nodata, NaN, and Inf are
+excluded everywhere; `total_pixels` / `valid_pixels` / `invalid_pixels` are reported.
+
+### Confidence (deterministic)
+
+- `1.0` — direct alignment, full overlap, no warnings.
+- `0.8` — reprojection required, partial overlap, or other warnings, but valid pixels exist.
+- `0.0` — any validation/alignment failure or no valid overlap.
+  Derived from result reliability only — never random.
+
+### Scope boundary
+
+This endpoint returns only **numeric / statistical** evidence. It never outputs semantic
+conclusions or a semantic land-cover classification — that is the Agent / VLM / ML layer
+(Member 5), which is intentionally left unimplemented here.
+
+---
+
 ## Supported input types
 
 | Type | Notes |
@@ -484,6 +590,8 @@ This runs:
 - `test_tools_api.py` — the `/ndvi`, `/ndwi`, and `/area` HTTP endpoints
 - `test_change.py` — change math, thresholds, nodata/NaN exclusion, alignment/reprojection, deterministic confidence
 - `test_change_api.py` — the `/change` HTTP endpoint (success/failure schema, missing inputs, invalid files)
+- `test_fusion.py` — optical+SAR alignment (direct/reprojected), speckle filtering, nodata exclusion, modality warning, deterministic confidence, band override & out-of-range failures
+- `test_optical_sar_api.py` — the `/optical-sar` HTTP endpoint (success/failure schema, missing inputs, invalid files/params)
 
 The tests are deterministic — they should pass every time.
 
@@ -507,11 +615,11 @@ integration milestone, when the Node backend and ML service are orchestrated tog
 
 ---
 
-## Limitations (Milestone 3)
+## Limitations (Milestone 4)
 
-- Band detection only reads **explicit** band metadata/descriptions present in the
-  file. It does **not** guess band meaning from band position (e.g. it won't assume
-  "band 1 = red") — this is intentional and avoids hardcoding source-specific
+- Band and modality detection only read **explicit** band metadata/descriptions present
+  in the file. They do **not** guess band meaning from band position (e.g. they won't
+  assume "band 1 = red") — this is intentional and avoids hardcoding source-specific
   assumptions (Sentinel-2 vs Cartosat-2S vs RISAT slicing).
 - Change detection requires a resolvable comparison band. A multi-band pair with no
   explicit band, no common labelled band, and more than one band per image fails
@@ -520,15 +628,26 @@ integration milestone, when the Node backend and ML service are orchestrated tog
   with identical dimensions. A mixed pair (one georeferenced, one not) fails.
 - The default `2σ` threshold is a statistical heuristic; it adapts to data scale but
   you should supply an explicit `threshold` when you know the data units.
-- Reprojection uses `Resampling.nearest` onto image1's grid and is limited to safe,
+- Reprojection uses `Resampling.nearest` onto the reference grid and is limited to safe,
   overlapping pairs. Complex multi-sensor registration (feature matching) is not
   attempted — out of scope and would risk invented alignment.
-- `changed_area_km2` is only reported for a defined, projected (non-geographic) CRS;
-  it is `null` otherwise (never `deg × deg`).
-- No change mask GeoTIFF/GeoJSON is emitted yet — the response returns summary
+- Optical+SAR fusion requires **both** images georeferenced (for safe spatial alignment);
+  non-georeferenced inputs fail honestly.
+- SAR values are treated as relative data units. Conversion to physical **dB** backscatter
+  is **not** assumed — a documented assumption, since the files carry no radiometric
+  metadata. No log(0)/log-of-invalid is ever computed.
+- The speckle filter is a simple deterministic median filter (pure NumPy). The vectorized
+  sliding-window median is memory-bounded by window size but is a lightweight baseline,
+  not an advanced (Lee/refined) speckle filter.
+- Optical+SAR fusion is **quantitative only** — it does not classify semantics and it never
+  claims an event (flood/deforestation/etc.). Physical SAR units (dB) and radiometric
+  calibration are out of scope here.
+- `changed_area_km2` / `valid_area_km2` are only reported for a defined, projected
+  (non-geographic) CRS; they are `null` otherwise (never `deg × deg`).
+- No change mask / fusion GeoTIFF/GeoJSON is emitted yet — the response returns summary
   statistics only (lightweight, no huge pixel arrays).
-- No change detection / fusion / trend / GEE / VQA / training / `/fetch-imagery` for
-  fusion onward; those come in later milestones.
+- No trend / GEE / VQA / training / `/fetch-imagery` for fusion onward; those come in
+  later milestones. Semantic interpretation is the Agent / VLM / ML layer (Member 5).
 - The endpoints do **not** store the uploaded file permanently; each writes to a
   temp file, computes, then deletes it.
 
