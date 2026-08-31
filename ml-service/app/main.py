@@ -19,6 +19,7 @@ from app.api.change import router as change_router
 from app.api.ndvi import router as ndvi_router
 from app.api.ndwi import router as ndwi_router
 from app.api.optical_sar import router as optical_sar_router
+from app.api.trend import router as trend_router
 from app.api.validate import router as validate_router
 
 # Load environment variables from .env if present
@@ -56,6 +57,7 @@ app.include_router(ndwi_router, tags=["spectral-index"])
 app.include_router(area_router, tags=["geospatial"])
 app.include_router(change_router, tags=["change-detection"])
 app.include_router(optical_sar_router, tags=["fusion"])
+app.include_router(trend_router, tags=["trend-analysis"])
 
 
 @app.get("/health")

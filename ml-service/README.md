@@ -2,8 +2,8 @@
 
 The **ML and Geospatial service** for the SatQuery AI project. This FastAPI-based
 Python service is where all pixel-level work happens: reading rasters, validating
-images, and computing NDVI/NDWI/area. (Later milestones add change detection,
-optical+SAR fusion, etc.)
+images, computing NDVI/NDWI/area, change/fusion, and historical trend analysis
+(via Google Earth Engine).
 
 **Important architectural rule:** this service never talks to the frontend directly
 and never decides which tool to call — that is the Node.js backend's job (see
@@ -12,11 +12,12 @@ does the actual work when the backend calls them.
 
 ---
 
-## Milestone 1 + 2 + 3 + 4 scope — what this currently does
+## Milestone 1 + 2 + 3 + 4 + 5 scope — what this currently does
 
 This implements **Milestone 1 (foundation)**, **Milestone 2 (geospatial tools)**,
-**Milestone 3 (bi-temporal change detection)**, and **Milestone 4 (optical+SAR
-fusion / cross-modal analysis)**:
+**Milestone 3 (bi-temporal change detection)**, **Milestone 4 (optical+SAR
+fusion / cross-modal analysis)**, and **Milestone 5 (historical trend analysis
+via Google Earth Engine)**:
 
 | Capability | Status |
 |---|---|
@@ -27,6 +28,7 @@ fusion / cross-modal analysis)**:
 | `/area` endpoint (surface area from valid pixels) | ✅ Done |
 | `/change` endpoint (bi-temporal change detection) | ✅ Done |
 | `/optical-sar` endpoint (optical + SAR cross-modal analysis) | ✅ Done |
+| `/trend` endpoint (historical trend analysis via GEE) | ✅ Done |
 | Raster I/O (GeoTIFF/TIFF via rasterio) | ✅ Done |
 | PNG/JPEG support (via rasterio/Pillow) | ✅ Done |
 | Metadata extraction (CRS, bounds, resolution, bands, nodata) | ✅ Done |
@@ -37,12 +39,15 @@ fusion / cross-modal analysis)**:
 | Pair validation + safe co-registration (rasterio reprojection) | ✅ Done |
 | Change statistics + confidence | ✅ Done |
 | Optical+SAR alignment, speckle filtering, fusion stats + confidence | ✅ Done |
-| Unit tests using synthetic rasters | ✅ Done |
+| Trend region/date/metric validation + deterministic trend stats | ✅ Done |
+| GEE provider abstraction (real + explicit mock, clean failures) | ✅ Done |
+| Unit tests using synthetic rasters (no live GEE required) | ✅ Done |
 | Dockerfile | ✅ (not built in this environment) |
 
-**Not yet implemented** (later milestones): trend analysis, Google Earth Engine,
-VQA/captioning/grounding, model training, LoRA adaptation, image acquisition
-(`/fetch-imagery`). Semantic interpretation of cross-modal evidence is the
+**Not yet implemented** (later milestones): VQA/captioning/grounding, model training,
+LoRA adaptation, image acquisition (`/fetch-imagery`). Semantic interpretation of
+cross-modal / trend evidence is the Agent / VLM / ML layer's job (Member 5), **not**
+this service.
 Agent / VLM / ML layer's job (Member 5), **not** this service.
 
 ---
@@ -76,12 +81,19 @@ POST /optical-sar ──▶ app/api/optical_sar.py ──▶ app/tools/fusion.py
                         └── SAR reprojected onto optical grid
                             └── optical NDVI/band feature + SAR speckle filter
                                 └── joint overlap statistics + fusion
+
+POST /trend ──▶ app/api/trend.py ──▶ app/tools/trend.py ──▶ app/services/gee_client.py
+                    └── region/date/metric validation + statistics (pure)
+                        └── GeeProvider abstraction
+                            ├── RealGeeProvider (ee, credentials from env)
+                            └── MockGeeProvider (deterministic fixture, tagged "mock")
 ```
 
 - **`app/geospatial/`** — raster I/O, CRS handling, and the validation pipeline.
 - **`app/preprocessing/`** — image loading, band detection, normalization, speckle filtering.
-- **`app/tools/`** — the actual computation (NDVI, NDWI, area, change, fusion) plus
+- **`app/tools/`** — the actual computation (NDVI, NDWI, area, change, fusion, trend) plus
   shared band-resolution, index, and alignment utilities.
+- **`app/services/`** — external data-provider abstractions (Google Earth Engine client).
 - **`app/api/`** — FastAPI route definitions.
 - **`app/schemas/`** — Pydantic request/response models.
 
@@ -94,8 +106,10 @@ The module responsibilities are kept small and focused.
 - **Python 3.11+** (this was developed and tested on 3.14)
 - `git`
 
-The heavy ML libraries (PyTorch, Transformers, Earth Engine) are **not** needed for
-Milestone 1.
+The heavy ML libraries (PyTorch, Transformers) are **not** needed for Milestones 1–5.
+The Google Earth Engine Python API (`earthengine-api`) is included in
+`requirements.txt` but is imported lazily — the rest of the service runs without it,
+and `/trend` fails clearly (rather than fabricating data) when GEE is unavailable.
 
 ---
 
@@ -548,6 +562,130 @@ conclusions or a semantic land-cover classification — that is the Agent / VLM 
 
 ---
 
+## Historical Trend endpoint
+
+```
+POST /trend
+```
+
+**Historical trend analysis** retrieves a remote-sensing metric over a region and a
+date range and returns a **quantitative time series + trend summary** (e.g. "NDVI
+decreased over the requested period"). Answers queries like *"How has vegetation
+changed over the last 5 years?"*, *"Has water coverage increased or decreased?"*.
+
+This endpoint produces **quantitative temporal evidence only** — it never concludes
+"deforestation happened" / "flooding occurred". Semantic interpretation is the
+Agent / ML / VLM layer's job (Member 5).
+
+Unlike the file-upload endpoints, `/trend` takes a **JSON body**:
+
+```json
+{
+  "region": {
+    "type": "Polygon",
+    "coordinates": [[[78.0, 28.0], [78.5, 28.0], [78.5, 28.5], [78.0, 28.5], [78.0, 28.0]]]
+  },
+  "start_date": "2021-01-01",
+  "end_date": "2023-12-01",
+  "metric": "ndvi",
+  "interval": "monthly"
+}
+```
+
+Request fields:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `region` | GeoJSON | yes | `Polygon` or `MultiPolygon` geometry. |
+| `start_date` | string | yes | ISO `YYYY-MM-DD`, inclusive. |
+| `end_date` | string | yes | ISO `YYYY-MM-DD`, must be after `start_date` and not in the future. |
+| `metric` | string | no | `ndvi` (vegetation) or `ndwi` (water). Default `ndvi`. |
+| `interval` | string | no | `monthly` or `yearly`. Default `monthly`. |
+
+### What the pipeline does
+
+Validate region → validate dates → validate metric → query GEE provider → spatial +
+temporal filtering → cloud/quality masking → metric calculation (NDVI/NDWI) →
+regional reduction (`reduceRegion` mean) per time bucket → chronological time series →
+deterministic trend statistics → evidence → confidence → `ToolOutput`.
+
+### Supported metrics (no silent substitution)
+
+- **`ndvi`** = `(NIR - RED) / (NIR + RED)` — vegetation.
+- **`ndwi`** = `(GREEN - NIR) / (GREEN + NIR)` — open water (McFeeters).
+
+Unsupported metrics return a structured `failed` result — the service never silently
+substitutes one metric for another.
+
+### Dataset / collection
+
+Sentinel-2 Surface Reflectance (`COPERNICUS/S2_SR_HARMONIZED`) is used for both optical
+trend metrics — the archive named in `ML_SERVICE.md` as the practical optical dataset
+for on-demand analysis (ISRO's own imagery cannot be pulled on-demand for an arbitrary
+coordinate).
+
+Band mapping (documented, not position-guessed):
+
+| Metric | Bands |
+|---|---|
+| NDVI | `B8` (NIR), `B4` (RED) |
+| NDWI | `B3` (GREEN), `B8` (NIR) |
+
+### Cloud / quality masking
+
+Sentinel-2 `QA60` bitmask (bits 10 = opaque cloud, 11 = cirrus) is masked, and scenes
+with `CLOUDY_PIXEL_PERCENTAGE >= 20` are filtered out. If reliable masking cannot be
+performed, that limitation is reported rather than fabricating clean-looking data.
+
+### Temporal aggregation / missing observations
+
+A monthly (default) or yearly regional median composite is produced and reduced over
+the region, giving one value per bucket. Periods with no valid imagery (clouds, no
+scenes, insufficient pixels) are represented **honestly** as
+`{"value": null, "status": "missing"}` — never fabricated or interpolated. Duplicate
+timestamps keep the last value (documented, with a warning).
+
+### Trend statistics (deterministic)
+
+- `first_value`, `last_value`, `min`, `max`, `mean`
+- `slope` — simple linear regression `value = slope * day_index + intercept`, where
+  `day_index` = days since the first observation (unit: **per day**).
+- `percentage_change` = `((last - first) / abs(first)) * 100`; returns `null` (with a
+  note) when `first_value == 0` — never `inf`/`NaN`.
+- `direction` — `increasing` / `decreasing` / `stable` from the total index change,
+  with a documented tolerance (`0.02` on the `-1..+1` index scale).
+- `observation_count`, `missing_count`.
+
+Confidence is **reliability of the result**, never statistical significance. No
+significance test is claimed.
+
+### GEE authentication
+
+Credentials come **only** from the environment (never hard-coded): `GEE_PROJECT_ID`,
+`GEE_SERVICE_ACCOUNT`, `GEE_SERVICE_ACCOUNT_KEY_PATH` (see `.env.example`). Real GEE
+data is used only when these are configured. Otherwise `/trend` returns a clear
+structured `failed` result (confidence 0.0) — it does **not** fabricate observations.
+
+### Real GEE data vs. Mock/test data
+
+The provider is selected by `GEE_MODE`:
+- unset / `real` → `RealGeeProvider` (live GEE; fails clearly without credentials).
+- `mock` / `dev` → `MockGeeProvider` (deterministic synthetic fixture, **not** real
+  data).
+
+Every response is explicitly labelled via `metadata.data_source` (`gee` or `mock`),
+and mock/fixture responses carry a `source_warning` so real and test data can never be
+confused. Mock data yields confidence `0.8`; clean real data yields `1.0`.
+
+### Caching
+
+Caching of trend results is **owned by the Node backend** (`backend/src/models/ResultsCache.js`,
+`BACKEND.md` §10): the backend calls `/trend`, then writes the returned series into
+`results_cache` keyed by `{ region, metric, dateRange, interval }`. The ML service does
+not own or write to the cache.
+
+---
+
 ## Supported input types
 
 | Type | Notes |
@@ -592,6 +730,11 @@ This runs:
 - `test_change_api.py` — the `/change` HTTP endpoint (success/failure schema, missing inputs, invalid files)
 - `test_fusion.py` — optical+SAR alignment (direct/reprojected), speckle filtering, nodata exclusion, modality warning, deterministic confidence, band override & out-of-range failures
 - `test_optical_sar_api.py` — the `/optical-sar` HTTP endpoint (success/failure schema, missing inputs, invalid files/params)
+- `test_trend.py` — region/date/metric validation, chronological + missing/duplicate handling, deterministic trend stats (increase/decrease/stable, slope, percentage change, no NaN/Inf), provider selection, GEE-auth & query-failure behavior
+- `test_trend_api.py` — the `/trend` HTTP endpoint (success schema, data_source labelling, missing fields → 422, validation failure, GEE-unavailable structured failure, deterministic confidence)
+
+Trend tests require **no live GEE**: they use deterministic mock/fake providers (and
+override the FastAPI dependency) so they run offline and stay deterministic.
 
 The tests are deterministic — they should pass every time.
 
@@ -615,8 +758,30 @@ integration milestone, when the Node backend and ML service are orchestrated tog
 
 ---
 
-## Limitations (Milestone 4)
+## Limitations (Milestones 4–5)
 
+- Trend analysis is **quantitative only** — it never concludes a semantic event
+  (deforestation/flood/urbanization) from a slope; interpretation is Member 5's job.
+- Live GEE data could **not** be verified in this environment (no `GEE_*` credentials/
+  project were available). `/trend` uses `RealGeeProvider` only when credentials are
+  configured, and otherwise returns a clear failure — verified by tests and boot checks.
+  The `earthengine-api` dependency is installed but never imports on a normal code path
+  (lazy).
+- Trend supports `ndvi` and `ndwi` only (optical Sentinel-2). Unsupported metrics fail
+  rather than being silently substituted.
+- Region must be a GeoJSON `Polygon`/`MultiPolygon` in geographic (lon/lat) coordinates.
+  Point/LineString/bbox-only inputs are not accepted; the backend sends a polygon region.
+- Dates must be in the past and within a documented max span (30 years); future dates are
+  rejected.
+- Missing observation periods are represented as `value: null` + `status: "missing"` —
+  they are never interpolated. If a finer fill is later wanted, it must be added
+  explicitly (out of scope now).
+- Trend confidence is reliability-based (mock → 0.8, clean real data → 1.0). It is
+  **not** a statistical-significance measure; no significance test is implemented or
+  claimed.
+- The GEE query uses monthly/yearly median composites with `reduceRegion(mean)` —
+  a documented, efficient server-side reduction that avoids downloading full rasters.
+  Large regions / long ranges increase cloud-side cost and are bounded by the span cap.
 - Band and modality detection only read **explicit** band metadata/descriptions present
   in the file. They do **not** guess band meaning from band position (e.g. they won't
   assume "band 1 = red") — this is intentional and avoids hardcoding source-specific
@@ -646,8 +811,7 @@ integration milestone, when the Node backend and ML service are orchestrated tog
   (non-geographic) CRS; they are `null` otherwise (never `deg × deg`).
 - No change mask / fusion GeoTIFF/GeoJSON is emitted yet — the response returns summary
   statistics only (lightweight, no huge pixel arrays).
-- No trend / GEE / VQA / training / `/fetch-imagery` for fusion onward; those come in
-  later milestones. Semantic interpretation is the Agent / VLM / ML layer (Member 5).
+- No VQA / training / `/fetch-imagery` yet; those come in later milestones.
 - The endpoints do **not** store the uploaded file permanently; each writes to a
   temp file, computes, then deletes it.
 
