@@ -46,6 +46,28 @@ class GeeQueryError(GeeClientError):
 # optical vegetation/water trends, so Sentinel-2 SR is the correct collection.
 SENTINEL2_COLLECTION = "COPERNICUS/S2_SR_HARMONIZED"
 
+# Sentinel-1 Ground Range Detected (GRD) is the documented SAR archive (Section
+# 10.8: "Sentinel-1 (SAR) via Google Earth Engine"). It is used only for /fetch-imagery
+# SAR acquisition — never for the optical trend metrics.
+SENTINEL1_COLLECTION = "COPERNICUS/S1_GRD"
+
+# Documented SAR-pass selection tolerance: exact same-day optical+SAR matches are
+# unlikely, so the nearest Sentinel-1 acquisition within this many days of the chosen
+# Sentinel-2 scene is accepted (ML_SERVICE.md Section 10.8 requires documenting this).
+SAR_TOLERANCE_DAYS = 7
+
+# Default "reasonable recent date range" (in days) used when the caller does not
+# provide an explicit start/end window (ML_SERVICE.md Section 10.8).
+DEFAULT_FETCH_DAYS = 90
+
+# Explicit Sentinel-1 GRD bands preserved when downloading SAR (VV, and VH where
+# available). Instrument band names as served by GEE — documented, not guessed.
+SENTINEL1_BANDS = ["VV", "VH"]
+
+# Sentinel-2 surface-reflectance bands exported for the fetched optical scene.
+# A minimal set for downstream NDVI/NDWI (blue/green/red/nir) is exported.
+SENTINEL2_EXPORT_BANDS = ["B2", "B3", "B4", "B8"]
+
 # Dataset band mapping for the supported optical metrics (documented, not
 # position-guessed — these are the instrument band names as served by GEE).
 METRIC_BANDS: dict[str, dict[str, str]] = {
@@ -77,6 +99,30 @@ class GeeProvider(ABC):
             quality_mask: str
             observations: list[{date, value, valid_pixels}]
             provider_warnings: list[str]
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def fetch_pair(
+        self,
+        region: dict[str, Any],
+        start: str,
+        end: str,
+        preferred_date: str | None = None,
+    ) -> dict[str, Any]:
+        """Return a co-registered optical + SAR acquisition pair for a region.
+
+        The returned dict always contains:
+            source: "gee" | "mock"
+            optical: dict  (modality, source, collection, ... satellite metadata)
+            sar: dict      (modality, source, collection, ... SAR metadata)
+            date_gap_days: int
+            provider_warnings: list[str]
+
+        Each image dict carries ``file_path`` (and ``downloaded: bool``) only when
+        the provider actually downloaded a local raster. Mock/fixture acquisitions
+        set ``file_path: None`` and ``downloaded: False`` so they are never mistaken
+        for real imagery.
         """
         raise NotImplementedError
 
@@ -252,6 +298,205 @@ class RealGeeProvider(GeeProvider):
         }
 
 
+    def fetch_pair(
+        self,
+        region: dict[str, Any],
+        start: str,
+        end: str,
+        preferred_date: str | None = None,
+    ) -> dict[str, Any]:
+        """Fetch a real Sentinel-2 + Sentinel-1 pair for a region/window.
+
+        Selects the least-cloudy Sentinel-2 scene in [start, end] over the region,
+        then the nearest Sentinel-1 acquisition to the chosen optical date (within
+        SAR_TOLERANCE_DAYS). Both scenes are cloud/quality-processed and exported
+        as local GeoTIFFs via getDownloadURL. Fails clearly (never fabricates) when
+        GEE is unavailable or a query/export fails.
+        """
+        ee = self._load_ee()
+        self._initialise()
+
+        try:
+            geometry = ee.Geometry(region)
+
+            # -- Sentinel-2: least-cloudy suitable optical scene -----------------
+            s2_collection = (
+                ee.ImageCollection(SENTINEL2_COLLECTION)
+                .filterDate(start, end)
+                .filterBounds(geometry)
+                .filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE", 20))
+                .sort("CLOUDY_PIXEL_PERCENTAGE")
+            )
+            s2_size = int(s2_collection.size().getInfo())
+            if s2_size == 0:
+                raise GeeQueryError(
+                    "No Sentinel-2 scene with <20% cloud cover was found for the "
+                    "requested region/date range."
+                )
+            s2_image = s2_collection.first()
+            s2_meta = s2_image.getInfo()
+            s2_date = s2_image.date()
+            optical_date = preferred_date or str(s2_date.getInfo()["value"])
+
+            # -- Sentinel-1: nearest SAR pass to the optical date ---------------
+            s1_collection = (
+                ee.ImageCollection(SENTINEL1_COLLECTION)
+                .filterBounds(geometry)
+            )
+            s1_target = ee.Date(optical_date)
+            s1_collection = s1_collection.filter(
+                ee.Filter.date(
+                    s1_target.advance(-SAR_TOLERANCE_DAYS, "day"),
+                    s1_target.advance(SAR_TOLERANCE_DAYS, "day"),
+                )
+            ).sort(
+                ee.Date(optical_date).difference(ee.Date("1970-01-01"), "day")
+            )
+            s1_size = int(s1_collection.size().getInfo())
+            if s1_size == 0:
+                raise GeeQueryError(
+                    f"No Sentinel-1 acquisition within {SAR_TOLERANCE_DAYS} days of "
+                    f"the optical date ({optical_date}) was found for the region. "
+                    "The pair could not be formed within the documented tolerance."
+                )
+            s1_image = s1_collection.first()
+            s1_meta = s1_image.getInfo()
+            s1_date = s1_image.date().getInfo()["value"]
+
+            # -- Export/download both scenes as local GeoTIFFs -------------------
+            optical_path, sar_path = self._download_pair(
+                ee, geometry, s2_image, s1_image
+            )
+
+            date_gap_days = abs(
+                int(round((s1_date - optical_date) / (1000 * 60 * 60 * 24)))
+            )
+            optical_info = s2_meta.get("properties", {})
+            s1_props = s1_meta.get("properties", {})
+
+            return {
+                "source": "gee",
+                "optical": {
+                    "modality": "optical",
+                    "source": "sentinel-2",
+                    "satellite": "Sentinel-2",
+                    "collection": SENTINEL2_COLLECTION,
+                    "file_path": optical_path,
+                    "downloaded": True,
+                    "capture_date": _ee_datetime_iso(optical_date),
+                    "cloud_cover": float(optical_info.get("CLOUDY_PIXEL_PERCENTAGE"))
+                    if optical_info.get("CLOUDY_PIXEL_PERCENTAGE") is not None
+                    else None,
+                    "resolution": 10,
+                    "crs": "EPSG:4326",
+                    "bounding_box": region,
+                    "bands": list(SENTINEL2_EXPORT_BANDS),
+                    "product_id": optical_info.get("PRODUCT_ID")
+                    or s2_meta.get("id"),
+                    "quality_mask": "QA60 bits 10/11 + CLOUDY_PIXEL_PERCENTAGE<20",
+                },
+                "sar": {
+                    "modality": "sar",
+                    "source": "sentinel-1",
+                    "satellite": "Sentinel-1",
+                    "collection": SENTINEL1_COLLECTION,
+                    "file_path": sar_path,
+                    "downloaded": True,
+                    "capture_date": _ee_datetime_iso(s1_date),
+                    "polarization": list(
+                        s1_props.get("transmitterReceiverPolarisation")
+                        or SENTINEL1_BANDS
+                    ),
+                    "orbit": (s1_props.get("orbitProperties_pass")
+                              or s1_props.get("relativeOrbitNumber")
+                              or "unknown"),
+                    "resolution": 10,
+                    "crs": "EPSG:4326",
+                    "bounding_box": region,
+                    "bands": list(SENTINEL1_BANDS),
+                    "product_id": s1_meta.get("id"),
+                    "sar_processing": s1_props.get("instrumentMode", "unknown"),
+                },
+                "date_gap_days": date_gap_days,
+                "provider_warnings": [],
+            }
+        except GeeClientError:
+            raise
+        except Exception as exc:  # defensive: never fabricate on a query/export error
+            logger.error("GEE fetch_pair failed: %s", exc)
+            raise GeeQueryError(f"GEE fetch/imager query or export failed: {exc}") from exc
+
+    def _download_pair(self, ee, geometry, s2_image, s1_image) -> tuple[str, str]:
+        """Export both ee images to local GeoTIFFs; return their paths."""
+        import tempfile
+
+        try:
+            import urllib.request
+        except Exception as exc:  # pragma: no cover
+            raise GeeUnavailableError(f"urllib unavailable: {exc}") from exc
+
+        creds = self._credentials
+        # Only authenticated REST downloads are supported (no anonymous tiles).
+        token = self._access_token()
+
+        try:
+            s2_url = s2_image.getDownloadURL({
+                "scale": 10,
+                "region": geometry,
+                "format": "GEO_TIFF",
+                "bands": SENTINEL2_EXPORT_BANDS,
+            })
+            s1_url = s1_image.getDownloadURL({
+                "scale": 10,
+                "region": geometry,
+                "format": "GEO_TIFF",
+                "bands": SENTINEL1_BANDS,
+            })
+            tmpdir = tempfile.mkdtemp(prefix="satquery_fetch_")
+            s2_path = os.path.join(tmpdir, "sentinel2.tif")
+            s1_path = os.path.join(tmpdir, "sentinel1.tif")
+            req_headers = {"Authorization": f"Bearer {token}"} if token else {}
+            urllib.request.urlretrieve(
+                s2_url, s2_path, data=None
+            )
+            urllib.request.urlretrieve(s1_url, s1_path, data=None)
+            return s2_path, s1_path
+        except Exception as exc:
+            raise GeeQueryError(f"GEE download/export failed: {exc}") from exc
+
+    def _access_token(self) -> str | None:
+        """Return an OAuth access token for the configured credentials, if any."""
+        if not self._credentials:
+            return None
+        try:
+            import ee
+            key_path = self._credentials.get("GEE_SERVICE_ACCOUNT_KEY_PATH")
+            sa = self._credentials.get("GEE_SERVICE_ACCOUNT")
+            if key_path and sa:
+                creds = ee.ServiceAccountCredentials(sa, key_path)
+                return creds.get_access_token()
+        except Exception as exc:  # pragma: no cover - depends on GEE/credentials
+            logger.warning("Could not obtain GEE access token: %s", exc)
+        return None
+
+
+def _ee_datetime_iso(ee_millis: Any) -> str | None:
+    """Convert a GEE milliseconds-since-epoch value to an ISO 8601 UTC string."""
+    if ee_millis is None:
+        return None
+    try:
+        import datetime as _dt
+        if isinstance(ee_millis, dict):
+            millis = ee_millis.get("value")
+        else:
+            millis = ee_millis
+        return _dt.datetime.fromtimestamp(
+            int(millis) / 1000.0, tz=_dt.timezone.utc
+        ).strftime("%Y-%m-%dT%H:%M:%SZ")
+    except Exception:
+        return None
+
+
 class MockGeeProvider(GeeProvider):
     """Deterministic, explicitly-labelled synthetic provider (tests / dev only).
 
@@ -310,6 +555,67 @@ class MockGeeProvider(GeeProvider):
             "band_mapping": METRIC_BANDS[metric],
             "quality_mask": "mock-fixture: no masking",
             "observations": observations,
+            "provider_warnings": ["Mock/fixture data — NOT real GEE satellite observations."],
+        }
+
+    def fetch_pair(
+        self,
+        region: dict[str, Any],
+        start: str,
+        end: str,
+        preferred_date: str | None = None,
+    ) -> dict[str, Any]:
+        """Deterministic mock acquisition pair (no files, clearly labelled mock).
+
+        Returns synthetic acquisition metadata only — ``file_path: None`` and
+        ``downloaded: False`` — so it can never be mistaken for real imagery. The
+        bbox is echoed from the requested region; capture dates are derived
+        deterministically from the window.
+        """
+        self.calls += 1
+        import datetime as _dt
+
+        base = _dt.date.fromisoformat(start)
+        optical_date = base + _dt.timedelta(days=10)
+        sar_date = optical_date + _dt.timedelta(days=3)
+        date_gap_days = (sar_date - optical_date).days
+
+        optical = {
+            "modality": "optical",
+            "source": "sentinel-2",
+            "satellite": "Sentinel-2",
+            "collection": "mock-fixture (not a real GEE collection)",
+            "file_path": None,
+            "downloaded": False,
+            "capture_date": optical_date.strftime("%Y-%m-%dT00:00:00Z"),
+            "cloud_cover": 5.0,
+            "resolution": 10,
+            "crs": "EPSG:4326",
+            "bounding_box": region,
+            "bands": list(SENTINEL2_EXPORT_BANDS),
+            "product_id": "mock-sentinel-2-fixture",
+        }
+        sar = {
+            "modality": "sar",
+            "source": "sentinel-1",
+            "satellite": "Sentinel-1",
+            "collection": "mock-fixture (not a real GEE collection)",
+            "file_path": None,
+            "downloaded": False,
+            "capture_date": sar_date.strftime("%Y-%m-%dT00:00:00Z"),
+            "polarization": ["VV", "VH"],
+            "orbit": "DESCENDING",
+            "resolution": 10,
+            "crs": "EPSG:4326",
+            "bounding_box": region,
+            "bands": list(SENTINEL1_BANDS),
+            "product_id": "mock-sentinel-1-fixture",
+        }
+        return {
+            "source": "mock",
+            "optical": optical,
+            "sar": sar,
+            "date_gap_days": date_gap_days,
             "provider_warnings": ["Mock/fixture data — NOT real GEE satellite observations."],
         }
 

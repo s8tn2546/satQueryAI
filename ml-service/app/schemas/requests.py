@@ -37,3 +37,24 @@ class TrendRequest(BaseModel):
         default="monthly",
         description="Temporal aggregation: 'monthly' or 'yearly'.",
     )
+
+
+class FetchImageryRequest(BaseModel):
+    """Request body for POST /fetch-imagery (region-based imagery acquisition)."""
+
+    bounding_box: dict[str, Any] = Field(
+        ...,
+        description="GeoJSON Polygon or MultiPolygon bounding box for the region of interest.",
+    )
+    start_date: str | None = Field(
+        default=None,
+        description="Optional start date (ISO YYYY-MM-DD) of the search window.",
+    )
+    end_date: str | None = Field(
+        default=None,
+        description="Optional end date (ISO YYYY-MM-DD) of the search window; default ends today.",
+    )
+    preferred_date: str | None = Field(
+        default=None,
+        description="Optional preferred acquisition date (ISO YYYY-MM-DD) used as the SAR-pass anchor.",
+    )

@@ -16,6 +16,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.area import router as area_router
 from app.api.change import router as change_router
+from app.api.fetch_imagery import router as fetch_imagery_router
 from app.api.ndvi import router as ndvi_router
 from app.api.ndwi import router as ndwi_router
 from app.api.optical_sar import router as optical_sar_router
@@ -58,6 +59,7 @@ app.include_router(area_router, tags=["geospatial"])
 app.include_router(change_router, tags=["change-detection"])
 app.include_router(optical_sar_router, tags=["fusion"])
 app.include_router(trend_router, tags=["trend-analysis"])
+app.include_router(fetch_imagery_router, tags=["imagery-acquisition"])
 
 
 @app.get("/health")

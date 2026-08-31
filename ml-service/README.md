@@ -2,8 +2,8 @@
 
 The **ML and Geospatial service** for the SatQuery AI project. This FastAPI-based
 Python service is where all pixel-level work happens: reading rasters, validating
-images, computing NDVI/NDWI/area, change/fusion, and historical trend analysis
-(via Google Earth Engine).
+images, computing NDVI/NDWI/area, change/fusion, historical trend analysis, and
+region-based imagery acquisition (via Google Earth Engine).
 
 **Important architectural rule:** this service never talks to the frontend directly
 and never decides which tool to call — that is the Node.js backend's job (see
@@ -12,11 +12,12 @@ does the actual work when the backend calls them.
 
 ---
 
-## Milestone 1 + 2 + 3 + 4 + 5 scope — what this currently does
+## Milestone 1 + 2 + 3 + 4 + 5 + 6 scope — what this currently does
 
 This implements **Milestone 1 (foundation)**, **Milestone 2 (geospatial tools)**,
 **Milestone 3 (bi-temporal change detection)**, **Milestone 4 (optical+SAR
-fusion / cross-modal analysis)**, and **Milestone 5 (historical trend analysis
+fusion / cross-modal analysis)**, **Milestone 5 (historical trend analysis via
+Google Earth Engine)**, and **Milestone 6 (region-based imagery acquisition
 via Google Earth Engine)**:
 
 | Capability | Status |
@@ -29,6 +30,7 @@ via Google Earth Engine)**:
 | `/change` endpoint (bi-temporal change detection) | ✅ Done |
 | `/optical-sar` endpoint (optical + SAR cross-modal analysis) | ✅ Done |
 | `/trend` endpoint (historical trend analysis via GEE) | ✅ Done |
+| `/fetch-imagery` endpoint (region-based optical + SAR acquisition via GEE) | ✅ Done |
 | Raster I/O (GeoTIFF/TIFF via rasterio) | ✅ Done |
 | PNG/JPEG support (via rasterio/Pillow) | ✅ Done |
 | Metadata extraction (CRS, bounds, resolution, bands, nodata) | ✅ Done |
@@ -40,14 +42,15 @@ via Google Earth Engine)**:
 | Change statistics + confidence | ✅ Done |
 | Optical+SAR alignment, speckle filtering, fusion stats + confidence | ✅ Done |
 | Trend region/date/metric validation + deterministic trend stats | ✅ Done |
+| Fetch bbox/date validation + least-cloudy S2 + nearest-date S1 acquisition | ✅ Done |
+| Fetched-raster validation-pipeline integration + acquisition metadata | ✅ Done |
 | GEE provider abstraction (real + explicit mock, clean failures) | ✅ Done |
 | Unit tests using synthetic rasters (no live GEE required) | ✅ Done |
 | Dockerfile | ✅ (not built in this environment) |
 
-**Not yet implemented** (later milestones): VQA/captioning/grounding, model training,
-LoRA adaptation, image acquisition (`/fetch-imagery`). Semantic interpretation of
-cross-modal / trend evidence is the Agent / VLM / ML layer's job (Member 5), **not**
-this service.
+**Not yet implemented** (later milestones / other members): VQA, captioning,
+grounding, model training, LoRA adaptation, `/fetch`, and any semantic
+interpretation of the imagery/trend evidence. Semantic interpretation is the
 Agent / VLM / ML layer's job (Member 5), **not** this service.
 
 ---
@@ -87,11 +90,18 @@ POST /trend ──▶ app/api/trend.py ──▶ app/tools/trend.py ──▶ ap
                         └── GeeProvider abstraction
                             ├── RealGeeProvider (ee, credentials from env)
                             └── MockGeeProvider (deterministic fixture, tagged "mock")
+
+POST /fetch-imagery ──▶ app/api/fetch_imagery.py ──▶ app/tools/fetch_imagery.py
+                    └── bbox/date validation + download/validation-orchestration (pure)
+                        └── GeeProvider.fetch_pair (reuses the same provider)
+                            ├── Real: least-cloudy S2 + nearest-date S1 + GeoTIFF download
+                            └── Mock: deterministic metadata only (no files, tagged "mock")
+                                └── downloaded rasters ──▶ app/geospatial/validation.py
 ```
 
 - **`app/geospatial/`** — raster I/O, CRS handling, and the validation pipeline.
 - **`app/preprocessing/`** — image loading, band detection, normalization, speckle filtering.
-- **`app/tools/`** — the actual computation (NDVI, NDWI, area, change, fusion, trend) plus
+- **`app/tools/`** — the actual computation (NDVI, NDWI, area, change, fusion, trend, imagery acquisition) plus
   shared band-resolution, index, and alignment utilities.
 - **`app/services/`** — external data-provider abstractions (Google Earth Engine client).
 - **`app/api/`** — FastAPI route definitions.
@@ -686,6 +696,140 @@ not own or write to the cache.
 
 ---
 
+## Imagery Acquisition endpoint (`/fetch-imagery`)
+
+```
+POST /fetch-imagery
+```
+
+**Region-based imagery acquisition** (ML_SERVICE.md §10.8 stretch; supports
+BACKEND.md §6.1a and the frontend region picker). Given a geographic bounding box,
+it finds and returns a co-registered **optical (Sentinel-2) + SAR (Sentinel-1) pair**
+covering that region via Google Earth Engine, and runs any downloaded rasters through
+the existing validation pipeline.
+
+This is an **acquisition** step, not an agent tool. It produces the same per-image
+metadata (file path, modality, source, capture date, bbox, CRS, resolution, bands)
+that a direct upload produces, so the backend can store each returned image as a
+`tiles` document with `source: "gee-fetch"` and `validated` set from the ML service's
+validation.
+
+Request body (JSON):
+
+```json
+{
+  "bounding_box": {
+    "type": "Polygon",
+    "coordinates": [[[78.0, 28.0], [78.5, 28.0], [78.5, 28.5], [78.0, 28.5], [78.0, 28.0]]]
+  },
+  "start_date": "2021-01-01",
+  "end_date": "2021-06-01",
+  "preferred_date": "2021-03-15"
+}
+```
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `bounding_box` | GeoJSON | yes | `Polygon` or `MultiPolygon` geometry in lon/lat. |
+| `start_date` | string | no | ISO `YYYY-MM-DD`, inclusive search-window start. |
+| `end_date` | string | no | ISO `YYYY-MM-DD`, inclusive search-window end. |
+| `preferred_date` | string | no | ISO `YYYY-MM-DD`; anchors the SAR nearest-date search. |
+
+If neither `start_date` nor `end_date` is given, the search window defaults to the
+documented "reasonable recent" range of `DEFAULT_FETCH_DAYS` (90 days) ending today.
+
+### What the pipeline does
+
+Validate bounding box → validate/normalise the date window → query the GEE provider
+for a pair → (real) download both scenes as local GeoTIFFs → run each downloaded
+raster through `app/geospatial/validation.py` → attach acquisition + validation
+metadata → deterministic confidence → `ToolOutput`.
+
+### Sentinel-2 (optical)
+
+- Collection `COPERNICUS/S2_SR_HARMONIZED` (the archive already used by `/trend`).
+- Selects the **least-cloudy** suitable scene (`CLOUDY_PIXEL_PERCENTAGE < 20`,
+  sorted ascending) over the region and window — never a random scene.
+- Applies a documented cloud/quality mask (`QA60` bits 10/11 + cloud filter) and
+  exports `B2/B3/B4/B8` at 10 m resolution.
+- Returns `cloudCover`, `quality_mask`, `captureDate`, `product_id`, etc.
+
+### Sentinel-1 (SAR)
+
+- Collection `COPERNICUS/S1_GRD` (Ground Range Detected).
+- Selects the **nearest acquisition date** to the chosen optical scene within a
+  documented tolerance (`SAR_TOLERANCE_DAYS = 7`). Exact same-day matches are
+  unlikely, so a small window is accepted (documented, as §10.8 requires).
+- **SAR is never treated as optical.** `modality: "sar"` with SAR-specific metadata
+  preserved: `polarization` (`VV`/`VH`), `orbit`, `sar_processing`, `product_id`.
+
+### Bounding box
+
+Accept a GeoJSON `Polygon`/`MultiPolygon` in lon/lat. Validates longitude `[-180,180]`,
+latitude `[-90,90]`, non-empty, valid (shapely), and **non-zero area**. Rejects
+malformed/empty/invalid/zero-area/Point inputs — never silently repairs them.
+
+### Dates
+
+ISO `YYYY-MM-DD`; `start < end`; **future dates rejected**; window bounded to the
+project's documented span cap (30 years). No dates are invented.
+
+### Download / export
+
+Real mode exports both scenes as **local GeoTIFFs** to a temporary directory (no
+cloud storage) and returns their `filePath`. Non-georeferenced or empty outputs fail
+the validation pipeline honestly. The files are kept for the request so the backend
+can reference `filePath` when storing the tile documents (the backend/temp layer owns
+their lifecycle). Mock mode produces **no files** (see below).
+
+### Validation-pipeline integration
+
+Every raster that is actually downloaded (real mode) is passed through
+`run_validation()` (geospatial + raster + band + data-quality checks). Each image's
+`validated` flag, `validation_status`, and any `validation_warnings`/`validation_errors`
+are attached. Pair-level co-registration is handled downstream by the existing
+`/change` / `/optical-sar` tools when the pair is consumed.
+
+### GEE authentication
+
+Credentials come **only** from the environment (`GEE_PROJECT_ID`,
+`GEE_SERVICE_ACCOUNT`, `GEE_SERVICE_ACCOUNT_KEY_PATH` — see `.env.example`), never
+hard-coded. Real GEE data is used only when these are configured; otherwise
+`/fetch-imagery` returns a clear, structured `failed` result (confidence 0.0) — it
+does **not** fabricate imagery.
+
+### Real GEE data vs. Mock/test data
+
+The provider is selected by `GEE_MODE` (same mechanism and `GeeProvider` as `/trend`):
+
+- unset / `real` → `RealGeeProvider` — live GEE, downloads real GeoTIFFs, fails
+  clearly without credentials.
+- `mock` / `dev` → `MockGeeProvider` — deterministic acquisition **metadata only**
+  (no files), explicitly labelled `source: "mock"`, `downloaded: false`,
+  `filePath: null`, plus a `source_warning`.
+
+Every response carries `metadata.data_source` (`gee` or `mock`) so real and test data
+can never be confused. Mock → confidence `0.7`; clean real pair → `1.0`.
+
+### Confidence (deterministic)
+
+Reliability-based, never random, never statistical significance:
+
+- `0.7` — explicit mock/fixture acquisition.
+- `1.0` — real, complete optical+SAR pair, both downloaded and validated, no warnings.
+- `0.8` — real pair with warnings (e.g. large `date_gap_days`, validation warnings).
+- `0.5` — only one of the pair acquired (partial).
+- `0.0` — failure / no usable imagery.
+
+### Caching
+
+Like `/trend`, persistence of fetched tiles is **owned by the Node backend**: it
+stores each returned image as a `tiles` document (source `"gee-fetch"`, `filePath`
+pointing at the returned raster, `validated` taken from the ML response). The ML
+service does not write to the backend database.
+
+---
+
 ## Supported input types
 
 | Type | Notes |
@@ -732,9 +876,12 @@ This runs:
 - `test_optical_sar_api.py` — the `/optical-sar` HTTP endpoint (success/failure schema, missing inputs, invalid files/params)
 - `test_trend.py` — region/date/metric validation, chronological + missing/duplicate handling, deterministic trend stats (increase/decrease/stable, slope, percentage change, no NaN/Inf), provider selection, GEE-auth & query-failure behavior
 - `test_trend_api.py` — the `/trend` HTTP endpoint (success schema, data_source labelling, missing fields → 422, validation failure, GEE-unavailable structured failure, deterministic confidence)
+- `test_fetch_imagery.py` — bbox validation (valid/invalid/zero-area/bad lon/bad lat), date-window validation (defaults/order/future/preferred hint), deterministic mock provider (explicitly labelled, no files), real provider fails clearly without creds, orchestrator (mock, fake-real download+validate, partial, no-image, unsupported modality), SAR identity preserved, no NaN/Infinity JSON
+- `test_fetch_imagery_api.py` — the `/fetch-imagery` HTTP endpoint (success schema, data_source labelling, Sentinel-2 + Sentinel-1 metadata, missing fields → 422, invalid bbox, invalid/future dates, GEE-auth and GEE-query structured failures, real validated pair → confidence 1.0, partial → 0.5, deterministic confidence, no NaN/Infinity)
 
-Trend tests require **no live GEE**: they use deterministic mock/fake providers (and
-override the FastAPI dependency) so they run offline and stay deterministic.
+Trend and fetch tests require **no live GEE**: they use deterministic mock/fake
+providers (and override the FastAPI dependency) so they run offline and stay
+deterministic.
 
 The tests are deterministic — they should pass every time.
 
@@ -758,8 +905,26 @@ integration milestone, when the Node backend and ML service are orchestrated tog
 
 ---
 
-## Limitations (Milestones 4–5)
+## Limitations (Milestones 4–6)
 
+- Imagery acquisition is **quantitative acquisition only** — it never interprets the
+  fetched scene (flood/deforestation/land cover). Semantic interpretation is Member 5's.
+- Live GEE fetch could **not** be verified in this environment (no `GEE_*` credentials/
+  project). `RealGeeProvider.fetch_pair` (least-cloudy S2 + nearest-date S1 + GeoTIFF
+  download) is implemented but only runs with credentials; without them, `/fetch-imagery`
+  returns a clear failure — verified by tests and boot checks. The `earthengine-api`
+  dependency is installed but never imports on a normal code path (lazy).
+- Sentinel-1 (SAR) is restricted to the GRD archive and a documented nearest-date
+  tolerance (`SAR_TOLERANCE_DAYS = 7`); a scene outside that window is reported as
+  "no sufficiently close SAR pass" rather than forcing a pair.
+- Mock mode returns acquisition **metadata only** — it does not (and must not) produce
+  files that could be mistaken for real imagery. `filePath` is `null` and `downloaded`
+  is `false` for mock output.
+- Downloaded rasters are exported at a fixed 10 m scale over the requested bbox; very
+  large regions produce large files and cost more GEE compute. No arbitrary bbox-size
+  cap is enforced (the spec does not require one).
+- `preferred_date` is a hint anchored for the SAR search; if it falls outside the
+  window it is logged as a warning, not an error. No dates are invented.
 - Trend analysis is **quantitative only** — it never concludes a semantic event
   (deforestation/flood/urbanization) from a slope; interpretation is Member 5's job.
 - Live GEE data could **not** be verified in this environment (no `GEE_*` credentials/
