@@ -191,3 +191,81 @@ def single_band_raster(tmp_path: Path) -> Path:
     ) as dst:
         dst.write(data, 1)
     return path
+
+
+@pytest.fixture
+def unlabeled_multiband_raster(tmp_path: Path) -> Path:
+    """A multiband raster whose bands carry NO descriptions.
+
+    Used to verify that NDVI/NDWI fail honestly when band identities
+    cannot be determined from metadata.
+    """
+    path = tmp_path / "unlabeled_multiband.tif"
+    data = np.zeros((4, 10, 10), dtype=np.uint16)
+    for i in range(4):
+        data[i] = (i + 1) * 100
+    with rasterio.open(
+        path,
+        "w",
+        driver="GTiff",
+        width=10,
+        height=10,
+        count=4,
+        dtype="uint16",
+        crs=CRS.from_epsg(32643),
+        transform=from_origin(500000, 4600000, 10, 10),
+    ) as dst:
+        dst.write(data)
+    return path
+
+
+@pytest.fixture
+def geographic_raster(tmp_path: Path) -> Path:
+    """A raster in a geographic (degree-based) CRS, EPSG:4326."""
+    path = tmp_path / "geographic.tif"
+    data = np.ones((10, 10), dtype=np.uint8)
+    with rasterio.open(
+        path,
+        "w",
+        driver="GTiff",
+        width=10,
+        height=10,
+        count=1,
+        dtype="uint8",
+        crs=CRS.from_epsg(4326),
+        transform=from_origin(72.0, 19.0, 0.0001, 0.0001),
+    ) as dst:
+        dst.write(data, 1)
+    return path
+
+
+@pytest.fixture
+def ndvi_ndwi_raster(tmp_path: Path) -> Path:
+    """A multispectral raster with labelled RED/GREEN/NIR bands and a nodata zone.
+
+    Values: band red=red_val, green=green_val, nir=nir_val; a 6x6 central
+    region carries real values and the surrounding border is nodata.
+    """
+    path = tmp_path / "ndvi_ndwi.tif"
+    nodata = -9999.0
+    data = np.full((3, 10, 10), nodata, dtype=np.float32)
+    data[0, 2:8, 2:8] = 200.0   # red
+    data[1, 2:8, 2:8] = 260.0   # green
+    data[2, 2:8, 2:8] = 500.0   # nir
+    with rasterio.open(
+        path,
+        "w",
+        driver="GTiff",
+        width=10,
+        height=10,
+        count=3,
+        dtype="float32",
+        nodata=nodata,
+        crs=CRS.from_epsg(32643),
+        transform=from_origin(500000, 4600000, 10, 10),
+    ) as dst:
+        dst.write(data)
+        dst.set_band_description(1, "red")
+        dst.set_band_description(2, "green")
+        dst.set_band_description(3, "nir")
+    return path

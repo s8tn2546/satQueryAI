@@ -14,6 +14,9 @@ from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.api.area import router as area_router
+from app.api.ndvi import router as ndvi_router
+from app.api.ndwi import router as ndwi_router
 from app.api.validate import router as validate_router
 
 # Load environment variables from .env if present
@@ -46,6 +49,9 @@ app.add_middleware(
 )
 
 app.include_router(validate_router, tags=["validation"])
+app.include_router(ndvi_router, tags=["spectral-index"])
+app.include_router(ndwi_router, tags=["spectral-index"])
+app.include_router(area_router, tags=["geospatial"])
 
 
 @app.get("/health")

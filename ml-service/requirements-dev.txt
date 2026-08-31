@@ -1,0 +1,5 @@
+-r requirements.txt
+
+# Development / test-only dependencies (not needed at runtime)
+pytest>=8.0.0
+httpx>=0.24.0

@@ -2,8 +2,8 @@
 
 The **ML and Geospatial service** for the SatQuery AI project. This FastAPI-based
 Python service is where all pixel-level work happens: reading rasters, validating
-images, and (in later milestones) computing NDVI/NDWI, change detection, optical+SAR
-fusion, etc.
+images, and computing NDVI/NDWI/area. (Later milestones add change detection,
+optical+SAR fusion, etc.)
 
 **Important architectural rule:** this service never talks to the frontend directly
 and never decides which tool to call — that is the Node.js backend's job (see
@@ -12,14 +12,17 @@ does the actual work when the backend calls them.
 
 ---
 
-## Milestone 1 scope — what this currently does
+## Milestone 1 + 2 scope — what this currently does
 
-This is **Milestone 1: the foundation**. It implements:
+This implements **Milestone 1 (foundation)** and **Milestone 2 (geospatial tools)**:
 
 | Capability | Status |
 |---|---|
 | FastAPI application + `/health` | ✅ Done |
 | `/validate` endpoint | ✅ Done |
+| `/ndvi` endpoint (Normalized Difference Vegetation Index) | ✅ Done |
+| `/ndwi` endpoint (Normalized Difference Water Index) | ✅ Done |
+| `/area` endpoint (surface area from valid pixels) | ✅ Done |
 | Raster I/O (GeoTIFF/TIFF via rasterio) | ✅ Done |
 | PNG/JPEG support (via rasterio/Pillow) | ✅ Done |
 | Metadata extraction (CRS, bounds, resolution, bands, nodata) | ✅ Done |
@@ -30,9 +33,9 @@ This is **Milestone 1: the foundation**. It implements:
 | Unit tests using synthetic rasters | ✅ Done |
 | Dockerfile | ✅ (not built in this environment) |
 
-**Not yet implemented** (later milestones): NDVI, NDWI, area calculation, change
-detection, optical+SAR fusion, trend analysis, Google Earth Engine, VQA/captioning/
-grounding, model training, LoRA adaptation, image acquisition (`/fetch-imagery`).
+**Not yet implemented** (later milestones): change detection, optical+SAR fusion,
+trend analysis, Google Earth Engine, VQA/captioning/grounding, model training, LoRA
+adaptation, image acquisition (`/fetch-imagery`).
 
 ---
 
@@ -50,15 +53,21 @@ POST /validate  ──▶  app/api/validate.py     (HTTP layer, file upload hand
  raster_io.py     loader.py             common.py
  crs.py           band_detection.py     requests.py
                   normalize.py
+
+POST /ndvi  ──▶  app/api/ndvi.py  ──▶  app/tools/ndvi.py
+POST /ndwi  ──▶  app/api/ndwi.py  ──▶  app/tools/ndwi.py
+POST /area  ──▶  app/api/area.py  ──▶  app/tools/area.py
+                    └──── app/tools/{band_utils,index_utils}.py
 ```
 
 - **`app/geospatial/`** — raster I/O, CRS handling, and the validation pipeline.
 - **`app/preprocessing/`** — image loading, band detection, normalization.
+- **`app/tools/`** — the actual computation (NDVI, NDWI, area) plus shared
+  band-resolution and index utilities.
 - **`app/api/`** — FastAPI route definitions.
 - **`app/schemas/`** — Pydantic request/response models.
 
-The module responsibilities are kept small and focused. Later milestones add new
-files under `app/tools/` and `app/api/` without rewriting this foundation.
+The module responsibilities are kept small and focused.
 
 ---
 
@@ -230,6 +239,110 @@ warning, `0.0` for invalid. It is never random.
 
 ---
 
+## NDVI endpoint
+
+```
+POST /ndvi
+```
+
+**NDVI** (Normalized Difference Vegetation Index) measures vegetation vigor:
+
+```
+NDVI = (NIR - RED) / (NIR + RED)
+```
+
+Values range from -1 to +1 (healthy dense vegetation is high positive).
+
+Form fields:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `file` | file | yes | Multispectral raster (must expose RED + NIR bands) |
+| `red_band` | int | no | Explicit 1-based RED band index (skips auto-detection) |
+| `nir_band` | int | no | Explicit 1-based NIR band index (skips auto-detection) |
+
+```bash
+curl -X POST http://localhost:8000/ndvi \
+  -F "file=@multispectral.tif"
+```
+
+`result` includes `min`, `max`, `mean`, `median`, `valid_pixel_count`,
+`total_pixel_count`, `bands` (which indices were used), and `warnings`.
+
+**Band detection rule:** RED/NIR are located **only** from explicit band
+descriptions in the file's metadata (e.g. a band literally named `red` or `nir`).
+The service never assumes a band's identity from its position. If RED/NIR cannot
+be identified, the endpoint returns a structured failure (`status: "failure"`)
+rather than guessing.
+
+---
+
+## NDWI endpoint
+
+```
+POST /ndwi
+```
+
+**NDWI** (Normalized Difference Water Index) highlights open water:
+
+```
+NDWI = (GREEN - NIR) / (GREEN + NIR)
+```
+
+Form fields:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `file` | file | yes | Multispectral raster (must expose GREEN + NIR bands) |
+| `green_band` | int | no | Explicit 1-based GREEN band index (skips auto-detection) |
+| `nir_band` | int | no | Explicit 1-based NIR band index (skips auto-detection) |
+
+```bash
+curl -X POST http://localhost:8000/ndwi \
+  -F "file=@multispectral.tif"
+```
+
+The same band-detection rule applies as NDVI: GREEN/NIR must be identifiable from
+explicit metadata, otherwise a structured failure is returned.
+
+---
+
+## Area endpoint
+
+```
+POST /area
+```
+
+Computes the surface area covered by **valid (non-nodata) pixels** in a raster:
+
+```
+area = valid_pixel_count × pixel_area     (pixel_area = res_x × res_y)
+```
+
+Form fields:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `file` | file | yes | Georeferenced raster in a **projected** CRS |
+| `feature_type` | string | no | Label for the feature being measured (e.g. `water`, `deforested`) |
+
+```bash
+curl -X POST http://localhost:8000/area \
+  -F "file=@scene.tif" \
+  -F "feature_type=water"
+```
+
+`result` includes `area_m2`, `area_km2`, `area_ha`, `valid_pixel_count`,
+`total_pixel_count`, `resolution_m`, `crs`, `pixel_area_m2`, and `warnings`.
+
+**CRS rule:** resolution is always read from the image's actual metadata (never
+assumed). Because `deg × deg` is not a real area, images in a **geographic**
+(degree-based) CRS such as EPSG:4326 return a structured failure explaining that
+they must first be reprojected to a projected CRS (e.g. UTM) — the service does
+not invent a wrong number.
+
+---
+
 ## Supported input types
 
 | Type | Notes |
@@ -249,6 +362,14 @@ warning. It does not guess.
 The tests use **synthetic rasters** created in memory/temp files (via rasterio and
 Pillow) — no external satellite datasets needed.
 
+Install the dev/test dependencies (`pytest` + `httpx`, not required at runtime):
+
+```bash
+pip install -r requirements-dev.txt
+```
+
+Then:
+
 ```bash
 python -m pytest -v
 ```
@@ -259,6 +380,9 @@ This runs:
 - `test_validation.py` — the validation pipeline across valid/corrupt/no-CRS/nodata cases
 - `test_band_detection.py` — band identity inference and modality detection
 - `test_validate_api.py` — the `/health` and `/validate` HTTP endpoints
+- `test_ndvi.py` / `test_ndwi.py` — index computation incl. band detection and honest failure
+- `test_area.py` — area math, nodata masking, and geographic-CRS failure
+- `test_tools_api.py` — the `/ndvi`, `/ndwi`, and `/area` HTTP endpoints
 
 The tests are deterministic — they should pass every time.
 
@@ -282,17 +406,23 @@ integration milestone, when the Node backend and ML service are orchestrated tog
 
 ---
 
-## Limitations (Milestone 1)
+## Limitations (Milestone 2)
 
 - Band detection only reads **explicit** band metadata/descriptions present in the
   file. It does **not** guess band meaning from band position (e.g. it won't assume
   "band 1 = red") — this is intentional and avoids hardcoding source-specific
   assumptions (Sentinel-2 vs Cartosat-2S vs RISAT slicing).
+- NDVI/NDWI require bands that are explicitly labelled RED/NIR/GREEN in the metadata.
+  Many raw single-band or unlabelled rasters will therefore fail with a structured
+  error until the user supplies an explicit `*_band` override or a labelled image.
+- Area measurement requires a **projected** CRS. Geographic (degree) rasters return
+  a failure requesting reprojection; there is no automatic reprojection yet.
+- Area uses band 1 to derive the valid-pixel mask. For single-band masks this is
+  exact; a multi-band image measures the area covered by valid values in band 1.
 - Modality is inferred only from band metadata or an explicit `modality_hint`.
-  A single unlabeled band reports `"unknown"` modality (honest, not assumed).
-- No NDVI/NDWI/change/fusion/trend yet — those come in later milestones.
-- The `/validate` endpoint does **not** store the uploaded file permanently; it
-  writes to a temp file, validates, then deletes it.
+- No change detection / fusion / trend / GEE / VQA / training / `/fetch-imagery` yet.
+- The endpoints do **not** store the uploaded file permanently; each writes to a
+  temp file, computes, then deletes it.
 
 ---
 
