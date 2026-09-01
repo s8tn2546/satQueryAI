@@ -6,6 +6,15 @@ const executionTraceEntrySchema = new mongoose.Schema({
   timestamp: { type: Date, default: Date.now }
 }, { _id: false });
 
+const toolResultSchema = new mongoose.Schema({
+  tool: { type: String, required: true },
+  status: { type: String, enum: ['success', 'partial', 'failed'], required: true },
+  result: { type: mongoose.Schema.Types.Mixed, default: {} },
+  evidence: { type: mongoose.Schema.Types.Mixed, default: {} },
+  confidence: { type: Number, min: 0, max: 1, default: 0 },
+  error: { type: String, default: '' }
+}, { _id: false, strict: false });
+
 const querySchema = new mongoose.Schema({
   userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
   queryText: { type: String, required: true },
@@ -16,6 +25,7 @@ const querySchema = new mongoose.Schema({
     required: true
   },
   toolsInvoked: [{ type: String }],
+  toolResults: [toolResultSchema],
   parameters: { type: Object, default: {} },
   result: { type: Object, default: {} },
   evidence: {

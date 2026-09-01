@@ -10,7 +10,7 @@ export function validateInputs(taskType, tiles, trace) {
   const warnings = [];
 
   if (PAIR_TASKS.has(taskType)) {
-    if (tiles.length < 2) {
+    if (tiles.length !== 2) {
       const reason = `Task ${taskType} requires exactly 2 images; got ${tiles.length}.`;
       trace.push(makeTraceEntry('input_validation', `FAIL: ${reason}`));
       return { valid: false, reason };

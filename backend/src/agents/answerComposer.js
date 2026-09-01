@@ -23,6 +23,15 @@ Rules:
 Provide a natural-language answer to the user's query based strictly on the tool results.`;
 }
 
+function isFiniteNumber(v) {
+  return typeof v === 'number' && Number.isFinite(v);
+}
+
+function formatNumber(v) {
+  if (!isFiniteNumber(v)) return null;
+  return Math.round(v * 100) / 100;
+}
+
 function buildFallbackAnswer(queryText, taskType, toolResults) {
   const successful = toolResults.filter(r => r.status === 'success');
   if (successful.length === 0) {
@@ -32,14 +41,36 @@ function buildFallbackAnswer(queryText, taskType, toolResults) {
   const r = successful[0];
   const result = r.result || {};
 
-  if (result.answer) return result.answer;
-  if (result.caption) return result.caption;
-  if (result.summary) return result.summary;
+  if (typeof result.answer === 'string' && result.answer) return result.answer;
+  if (typeof result.caption === 'string' && result.caption) return result.caption;
+  if (typeof result.summary === 'string' && result.summary) return result.summary;
   if (result.fusedLandCover) return `Fused analysis result: ${JSON.stringify(result.fusedLandCover)}`;
-  if (typeof result.value === 'number') return `${r.tool.toUpperCase()} value: ${result.value}`;
   if (result.series) return `Trend analysis returned ${result.series.length} data point(s).`;
-  if (result.changePercentage !== undefined) return `Change detected: ${result.changePercentage}% change. ${result.summary || ''}`;
-  if (result.areaKm2 !== undefined) return `Calculated area: ${result.areaKm2} km².`;
+
+  // NDVI / NDWI — real ML returns `mean`; legacy fixtures used `value`.
+  const indexValue = formatNumber(result.mean) ?? formatNumber(result.value);
+  if (indexValue !== null) return `${r.tool.toUpperCase()} value: ${indexValue}.`;
+
+  // CHANGE — real ML returns `change_percentage` (+ optional mean/max difference);
+  // legacy fixtures used `changePercentage` and often a `summary`.
+  const changePct = formatNumber(result.change_percentage) ?? formatNumber(result.changePercentage);
+  if (changePct !== null) {
+    const parts = [`Change detected: ${changePct}%`];
+    const meanDiff = formatNumber(result.mean_difference);
+    const maxDiff = formatNumber(result.max_difference);
+    if (meanDiff !== null) parts.push(`mean difference ${meanDiff}`);
+    if (maxDiff !== null) parts.push(`max difference ${maxDiff}`);
+    return `${parts.join('; ')}.`;
+  }
+
+  // AREA — real ML returns area_km2/area_m2/area_ha; legacy fixtures used areaKm2.
+  const km2 = formatNumber(result.area_km2) ?? formatNumber(result.areaKm2);
+  if (km2 !== null) return `Calculated area: ${km2} km².`;
+  const m2 = formatNumber(result.area_m2);
+  if (m2 !== null) return `Calculated area: ${m2} m².`;
+  const ha = formatNumber(result.area_ha);
+  if (ha !== null) return `Calculated area: ${ha} ha.`;
+
   if (result.boundingBox) return `Feature located at bounding box: ${JSON.stringify(result.boundingBox)}.`;
 
   return `Analysis complete. Result: ${JSON.stringify(result)}`;

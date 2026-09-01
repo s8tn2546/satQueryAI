@@ -18,6 +18,17 @@ function sanitizeImageRefs(refs) {
   return refs.filter(ref => mongoose.Types.ObjectId.isValid(ref));
 }
 
+function persistableToolResults(toolResults) {
+  return toolResults.map(tr => ({
+    tool: tr.tool,
+    status: tr.status,
+    result: tr.result || {},
+    evidence: tr.evidence || {},
+    confidence: typeof tr.confidence === 'number' ? tr.confidence : 0,
+    error: tr.error || ''
+  }));
+}
+
 export async function runAgentPipeline(queryText, imageRefIds, parameters = {}) {
   const trace = [];
   
@@ -50,6 +61,7 @@ export async function runAgentPipeline(queryText, imageRefIds, parameters = {}) 
       inputRefs: sanitizedRefs,
       taskType: 'VQA',
       toolsInvoked: [],
+      toolResults: [],
       parameters: mergedParams,
       result: {},
       evidence: response.evidence,
@@ -59,20 +71,21 @@ export async function runAgentPipeline(queryText, imageRefIds, parameters = {}) 
       status: 'rejected'
     });
 
-    return { _id: queryDoc._id, ...response };
+    return { _id: queryDoc._id, toolResults: [], ...response };
   }
 
   const resolvedTaskType = TASK_TYPE_ENUM.has(taskType) ? taskType : 'VQA';
 
   const validationResult = validateInputs(resolvedTaskType, tiles, trace);
   if (!validationResult.valid) {
-    const response = makeRejectedResponse(validationResult.reason, trace);
+    const response = makeRejectedResponse(validationResult.reason, trace, resolvedTaskType);
 
     const queryDoc = await Query.create({
       queryText,
       inputRefs: sanitizedRefs,
       taskType: resolvedTaskType,
       toolsInvoked: [],
+      toolResults: [],
       parameters: mergedParams,
       result: {},
       evidence: response.evidence,
@@ -82,7 +95,7 @@ export async function runAgentPipeline(queryText, imageRefIds, parameters = {}) 
       status: 'rejected'
     });
 
-    return { _id: queryDoc._id, ...response };
+    return { _id: queryDoc._id, toolResults: [], ...response };
   }
 
   const tools = await planTools(resolvedTaskType, toolNames, trace);
@@ -91,18 +104,17 @@ export async function runAgentPipeline(queryText, imageRefIds, parameters = {}) 
 
   const toolResults = await executeTools(tools, tiles, mergedParams, trace);
 
-  const successResults = toolResults.filter(r => r.status === 'success');
-  const allFailed = successResults.length === 0 && toolResults.length > 0;
-
-  if (allFailed) {
-    const reasons = toolResults.map(r => r.error || 'unknown error').join('; ');
-    const response = makeFailedResponse(reasons, resolvedTaskType, trace);
+  if (toolResults.length === 0) {
+    const reason = `No tools could be executed for task ${resolvedTaskType}.`;
+    trace.push(makeTraceEntry('tool_execution_failed', reason));
+    const response = makeFailedResponse(reason, resolvedTaskType, trace);
 
     const queryDoc = await Query.create({
       queryText,
       inputRefs: sanitizedRefs,
       taskType: resolvedTaskType,
       toolsInvoked: tools.map(t => t.name),
+      toolResults: [],
       parameters: mergedParams,
       result: {},
       evidence: response.evidence,
@@ -112,7 +124,33 @@ export async function runAgentPipeline(queryText, imageRefIds, parameters = {}) 
       status: 'failed'
     });
 
-    return { _id: queryDoc._id, ...response };
+    return { _id: queryDoc._id, toolResults: [], ...response };
+  }
+
+  const successResults = toolResults.filter(r => r.status === 'success');
+  const allFailed = successResults.length === 0 && toolResults.length > 0;
+
+  if (allFailed) {
+    const reasons = toolResults.map(r => r.error || 'unknown error').join('; ');
+    const response = makeFailedResponse(reasons, resolvedTaskType, trace);
+    const persistedToolResults = persistableToolResults(toolResults);
+
+    const queryDoc = await Query.create({
+      queryText,
+      inputRefs: sanitizedRefs,
+      taskType: resolvedTaskType,
+      toolsInvoked: tools.map(t => t.name),
+      toolResults: persistedToolResults,
+      parameters: mergedParams,
+      result: {},
+      evidence: response.evidence,
+      confidence: 0,
+      executionTrace: response.executionTrace,
+      answerText: response.answerText,
+      status: 'failed'
+    });
+
+    return { _id: queryDoc._id, toolResults: persistedToolResults, ...response };
   }
 
   const { score: confidence } = estimateConfidence(validationResult, toolResults);
@@ -126,12 +164,14 @@ export async function runAgentPipeline(queryText, imageRefIds, parameters = {}) 
   trace.push(makeTraceEntry('execution_trace_assembly', 'Pipeline complete'));
 
   const overallStatus = toolResults.some(r => r.status === 'failed') ? 'partial' : 'success';
+  const persistedToolResults = persistableToolResults(toolResults);
 
   const queryDoc = await Query.create({
     queryText,
     inputRefs: sanitizedRefs,
     taskType: resolvedTaskType,
     toolsInvoked: tools.map(t => t.name),
+    toolResults: persistedToolResults,
     parameters: mergedParams,
     result: primaryResult.result || {},
     evidence,
@@ -146,6 +186,7 @@ export async function runAgentPipeline(queryText, imageRefIds, parameters = {}) 
     answerText,
     taskType: resolvedTaskType,
     result: primaryResult.result || {},
+    toolResults: persistedToolResults,
     evidence,
     confidence,
     executionTrace: trace,
