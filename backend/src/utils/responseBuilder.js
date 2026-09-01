@@ -2,10 +2,10 @@ export function makeTraceEntry(step, detail) {
   return { step, detail, timestamp: new Date().toISOString() };
 }
 
-export function makeRejectedResponse(reason, trace = []) {
+export function makeRejectedResponse(reason, trace = [], taskType = 'VQA') {
   return {
     answerText: reason,
-    taskType: 'VQA',
+    taskType,
     result: {},
     evidence: { images: [], region: {}, notes: reason },
     confidence: 0,

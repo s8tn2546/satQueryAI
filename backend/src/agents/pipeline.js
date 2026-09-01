@@ -71,7 +71,7 @@ export async function runAgentPipeline(queryText, imageRefIds, parameters = {}) 
 
   const validationResult = validateInputs(resolvedTaskType, tiles, trace);
   if (!validationResult.valid) {
-    const response = makeRejectedResponse(validationResult.reason, trace);
+    const response = makeRejectedResponse(validationResult.reason, trace, resolvedTaskType);
 
     const queryDoc = await Query.create({
       queryText,
@@ -96,6 +96,32 @@ export async function runAgentPipeline(queryText, imageRefIds, parameters = {}) 
   trace.push(makeTraceEntry('parameter_extraction', `Parameters: ${JSON.stringify(mergedParams)}`));
 
   const toolResults = await executeTools(tools, tiles, mergedParams, trace);
+
+  if (toolResults.length === 0) {
+    // Every requested tool was unresolvable (e.g. empty tool registry, or the
+    // LLM suggested only unknown tool names and no fallback existed). Fail
+    // honestly instead of dereferencing an undefined primary result.
+    const reason = `No tools could be executed for task ${resolvedTaskType}.`;
+    trace.push(makeTraceEntry('tool_execution_failed', reason));
+    const response = makeFailedResponse(reason, resolvedTaskType, trace);
+
+    const queryDoc = await Query.create({
+      queryText,
+      inputRefs: imageRefIds,
+      taskType: resolvedTaskType,
+      toolsInvoked: tools.map(t => t.name),
+      toolResults: [],
+      parameters: mergedParams,
+      result: {},
+      evidence: response.evidence,
+      confidence: 0,
+      executionTrace: response.executionTrace,
+      answerText: response.answerText,
+      status: 'failed'
+    });
+
+    return { _id: queryDoc._id, toolResults: [], ...response };
+  }
 
   const successResults = toolResults.filter(r => r.status === 'success');
   const allFailed = successResults.length === 0 && toolResults.length > 0;

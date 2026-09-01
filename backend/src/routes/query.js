@@ -1,4 +1,5 @@
 import express from 'express';
+import mongoose from 'mongoose';
 import Query from '../models/Query.js';
 import ResultsCache from '../models/ResultsCache.js';
 import mlServiceClient from '../services/mlServiceClient.js';
@@ -112,6 +113,31 @@ router.post('/', async (req, res) => {
       });
     }
 
+    if (!Array.isArray(imageRefs)) {
+      return res.status(400).json({
+        answerText: 'imageRefs must be an array of tile IDs.',
+        taskType: 'VQA',
+        result: {},
+        evidence: { images: [], region: {}, notes: 'Validation failure: imageRefs is not an array' },
+        confidence: 0,
+        executionTrace: [{ step: 'input_validation', detail: 'imageRefs was not an array', timestamp: new Date().toISOString() }],
+        status: 'rejected'
+      });
+    }
+
+    const invalidRefs = imageRefs.filter(ref => !mongoose.isValidObjectId(ref));
+    if (invalidRefs.length > 0) {
+      return res.status(400).json({
+        answerText: `Invalid image reference(s): ${invalidRefs.join(', ')}`,
+        taskType: 'VQA',
+        result: {},
+        evidence: { images: [], region: {}, notes: 'Validation failure: malformed image reference' },
+        confidence: 0,
+        executionTrace: [{ step: 'input_validation', detail: 'One or more imageRefs were malformed', timestamp: new Date().toISOString() }],
+        status: 'rejected'
+      });
+    }
+
     const response = await runAgentPipeline(queryText.trim(), imageRefs, parameters);
     return res.status(200).json(response);
   } catch (error) {
@@ -120,9 +146,9 @@ router.post('/', async (req, res) => {
       answerText: 'An internal server error occurred while processing the query.',
       taskType: 'VQA',
       result: {},
-      evidence: { images: [], region: {}, notes: error.message },
+      evidence: { images: [], region: {}, notes: 'internal error' },
       confidence: 0,
-      executionTrace: [{ step: 'error', detail: error.message, timestamp: new Date().toISOString() }],
+      executionTrace: [{ step: 'error', detail: 'internal error', timestamp: new Date().toISOString() }],
       status: 'failed'
     });
   }
@@ -192,19 +218,30 @@ router.post('/trend', async (req, res) => {
     // duplicate where an existing exact/superset entry already covers the request.
     const existing = await findCoveringCacheEntry({ region, metric: metricLower, startDate, endDate, interval });
     if (!existing) {
-      await ResultsCache.create({
-        metric: metricLower,
-        region,
-        regionKey: regionKey(region),
-        dateRange: { start: new Date(startDate), end: new Date(endDate) },
-        series: (result.series || []).map(p => ({ date: p.date, value: p.value ?? null })),
-        interval,
-        confidence,
-        evidence,
-        result,
-        computedAt: new Date()
-      });
-      trace.push(makeTraceEntry('trend_cache_store', `Stored result in results_cache for ${metricLower}`));
+      try {
+        await ResultsCache.create({
+          metric: metricLower,
+          region,
+          regionKey: regionKey(region),
+          dateRange: { start: new Date(startDate), end: new Date(endDate) },
+          series: (result.series || []).map(p => ({ date: p.date, value: p.value ?? null })),
+          interval,
+          confidence,
+          evidence,
+          result,
+          computedAt: new Date()
+        });
+        trace.push(makeTraceEntry('trend_cache_store', `Stored result in results_cache for ${metricLower}`));
+      } catch (err) {
+        // A concurrent identical request can hit the unique dedup index and raise
+        // E11000 after both missed the covering check. That is not a failure: the
+        // computed result is still valid and identical — serve it, don't 500.
+        if (err && err.code === 11000) {
+          trace.push(makeTraceEntry('trend_cache_store', 'Deduplicated concurrent cache insert; reusing in-flight result'));
+        } else {
+          throw err;
+        }
+      }
     }
 
     const answerText = await composeTrendAnswer(result, confidence, trace);
@@ -241,6 +278,9 @@ router.get('/history', async (req, res) => {
  */
 router.get('/:id/report', async (req, res) => {
   try {
+    if (!mongoose.isValidObjectId(req.params.id)) {
+      return res.status(400).json({ status: 'failed', error: 'Invalid query id format.' });
+    }
     const queryDoc = await Query.findById(req.params.id);
     if (!queryDoc) {
       return res.status(404).json({ status: 'failed', error: 'Query not found' });
@@ -255,6 +295,8 @@ router.get('/:id/report', async (req, res) => {
       evidence: queryDoc.evidence,
       result: queryDoc.result,
       executionTrace: queryDoc.executionTrace,
+      toolsInvoked: queryDoc.toolsInvoked || [],
+      toolResults: queryDoc.toolResults || [],
       generatedAt: new Date().toISOString()
     };
     return res.status(200).json(report);
@@ -268,6 +310,9 @@ router.get('/:id/report', async (req, res) => {
  */
 router.get('/:id', async (req, res) => {
   try {
+    if (!mongoose.isValidObjectId(req.params.id)) {
+      return res.status(400).json({ status: 'failed', error: 'Invalid query id format.' });
+    }
     const queryDoc = await Query.findById(req.params.id);
     if (!queryDoc) {
       return res.status(404).json({ status: 'failed', error: 'Query not found' });

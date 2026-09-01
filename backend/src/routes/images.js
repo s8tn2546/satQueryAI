@@ -23,7 +23,19 @@ const storage = multer.diskStorage({
   }
 });
 
-const upload = multer({ storage });
+const MAX_FILE_SIZE = 500 * 1024 * 1024; // align with ML /validate MAX_FILE_SIZE_MB = 500
+
+const upload = multer({
+  storage,
+  limits: {
+    fileSize: MAX_FILE_SIZE,
+    files: 5
+  }
+});
+
+const ALLOWED_UPLOAD_EXTS = new Set(['.tif', '.tiff', '.gtiff', '.png', '.jpg', '.jpeg']);
+const ALLOWED_SOURCES = new Set(['sentinel-2', 'bhuvan', 'cartosat-2s', 'risat', 'benchmark-upload', 'gee-fetch']);
+const ALLOWED_MODALITIES = new Set(['optical', 'sar']);
 
 function inferFormat(ext) {
   ext = (ext || '').toLowerCase().replace('.', '');
@@ -31,6 +43,20 @@ function inferFormat(ext) {
   if (['tiff', 'tif'].includes(ext)) return 'tiff';
   if (['jpg', 'jpeg'].includes(ext)) return 'jpeg';
   return 'png';
+}
+
+function cleanupStoredFiles(files) {
+  for (const f of files || []) {
+    try {
+      fs.unlinkSync(f.path);
+    } catch {
+      // best effort — ignore missing files
+    }
+  }
+}
+
+function rejectedUpload(res, error) {
+  return res.status(400).json({ status: 'rejected', error });
 }
 
 /**
@@ -82,72 +108,107 @@ async function validateWithMlService(file, modalityHint, format) {
   };
 }
 
-router.post('/upload', upload.array('images', 5), async (req, res) => {
-  try {
-    const files = req.files || [];
-    if (files.length === 0 && req.file) {
-      files.push(req.file);
+router.post('/upload', (req, res) => {
+  upload.array('images', 5)(req, res, async (uploadErr) => {
+    if (uploadErr) {
+      cleanupStoredFiles(req.files);
+      if (uploadErr instanceof multer.MulterError) {
+        if (uploadErr.code === 'LIMIT_FILE_SIZE') {
+          return res.status(413).json({
+            status: 'rejected',
+            error: `File too large. Maximum file size is ${MAX_FILE_SIZE / (1024 * 1024)} MB.`
+          });
+        }
+        return rejectedUpload(res, `Upload rejected: ${uploadErr.message}`);
+      }
+      return rejectedUpload(res, `Upload rejected: ${uploadErr.message}`);
     }
 
-    if (files.length === 0) {
-      return res.status(400).json({
-        status: 'rejected',
-        error: 'No image files provided for upload.'
-      });
-    }
-
-    const { source, modality } = req.body;
-    const tileIds = [];
-    const tiles = [];
-
-    for (let i = 0; i < files.length; i++) {
-      const file = files[i];
-      const ext = path.extname(file.originalname);
-      const format = inferFormat(ext);
-
-      let fileModality = 'optical';
-      if (Array.isArray(modality)) {
-        fileModality = modality[i] || 'optical';
-      } else if (modality) {
-        fileModality = modality;
+    try {
+      const files = req.files || [];
+      if (files.length === 0 && req.file) {
+        files.push(req.file);
       }
 
-      const { validated, validationDetails } = await validateWithMlService(
-        file,
-        req.body.modality_hint || fileModality,
-        format
-      );
-
-      const tile = await Tile.create({
-        source: source || 'benchmark-upload',
-        modality: fileModality,
-        format: format,
-        filePath: file.path,
-        validated,
-        validationDetails
-      });
-
-      tileIds.push(tile._id);
-      tiles.push(tile);
-    }
-
-    return res.status(200).json({
-      status: 'success',
-      tileId: tileIds[0],
-      tileIds: tileIds,
-      tiles: tiles,
-      validationResult: {
-        valid: tiles.every(t => t.validated),
-        count: tiles.length
+      if (files.length === 0) {
+        return rejectedUpload(res, 'No image files provided for upload.');
       }
-    });
-  } catch (error) {
-    console.error('[Upload] Error uploading images:', error);
-    return res.status(500).json({
-      status: 'failed',
-      error: error.message
-    });
-  }
+
+      const { source, modality } = req.body;
+
+      if (source && !ALLOWED_SOURCES.has(source)) {
+        cleanupStoredFiles(files);
+        return rejectedUpload(res, `Unsupported source "${source}". Accepted: ${[...ALLOWED_SOURCES].join(', ')}.`);
+      }
+
+      const modalityList = Array.isArray(modality) ? modality : [modality];
+      const invalidModalities = modalityList.filter(m => m && !ALLOWED_MODALITIES.has(String(m).toLowerCase()));
+      if (invalidModalities.length > 0) {
+        cleanupStoredFiles(files);
+        return rejectedUpload(res, `Unsupported modality "${invalidModalities.join(', ')}". Accepted: optical, sar.`);
+      }
+
+      const unsupportedExts = files
+        .map(f => path.extname(f.originalname).toLowerCase())
+        .filter(ext => !ALLOWED_UPLOAD_EXTS.has(ext));
+      if (unsupportedExts.length > 0) {
+        cleanupStoredFiles(files);
+        return rejectedUpload(res, `Unsupported file type "${unsupportedExts.join(', ')}". Accepted: .tif, .tiff, .gtiff, .png, .jpg, .jpeg.`);
+      }
+
+      const tileIds = [];
+      const tiles = [];
+
+      for (let i = 0; i < files.length; i++) {
+        const file = files[i];
+        const ext = path.extname(file.originalname);
+        const format = inferFormat(ext);
+
+        let fileModality = 'optical';
+        if (Array.isArray(modality)) {
+          fileModality = String(modality[i] || 'optical').toLowerCase();
+        } else if (modality) {
+          fileModality = String(modality).toLowerCase();
+        }
+
+        const { validated, validationDetails } = await validateWithMlService(
+          file,
+          req.body.modality_hint || fileModality,
+          format
+        );
+
+        const tile = await Tile.create({
+          source: source || 'benchmark-upload',
+          modality: fileModality,
+          format: format,
+          filePath: file.path,
+          validated,
+          validationDetails
+        });
+
+        tileIds.push(tile._id);
+        tiles.push(tile);
+      }
+
+      return res.status(200).json({
+        status: 'success',
+        tileId: tileIds[0],
+        tileIds: tileIds,
+        tiles: tiles,
+        validationResult: {
+          valid: tiles.every(t => t.validated),
+          count: tiles.length
+        }
+      });
+    } catch (error) {
+      cleanupStoredFiles(req.files || []);
+      console.error('[Upload] Error uploading images:', error);
+      return res.status(500).json({
+        status: 'failed',
+        error: error.message
+      });
+    }
+  });
 });
 
 /**
