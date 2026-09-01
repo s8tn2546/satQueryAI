@@ -276,13 +276,13 @@ Ordered to match the 7-Day Build Plan's priority matrix (CRITICAL → HIGH → M
 
 ### 12.1 Foundation (Day 1)
 
-- [ ] Initialize `ml-service/` with FastAPI, folder structure per Section 3
-- [ ] Set up `.env.example` and local `.env` per Section 4
-- [ ] Implement GeoTIFF/TIFF reading via `rasterio` — confirm bands, CRS, bounding box, resolution, acquisition date all extract correctly on a real sample file
-- [ ] Implement PNG/JPEG reading path for benchmark-format inputs
-- [ ] Build the shared validation module skeleton (`app/geospatial/validation.py`) per Section 6, even if checks are stubbed initially
-- [ ] Stand up `/validate` endpoint returning the validation result
-- [ ] Confirm the service runs in Docker and responds to a health check
+- [x] Initialize `ml-service/` with FastAPI, folder structure per Section 3
+- [x] Set up `.env.example` and local `.env` per Section 4
+- [x] Implement GeoTIFF/TIFF reading via `rasterio` — confirm bands, CRS, bounding box, resolution, acquisition date all extract correctly on a real sample file
+- [x] Implement PNG/JPEG reading path for benchmark-format inputs
+- [x] Build the shared validation module skeleton (`app/geospatial/validation.py`) per Section 6, even if checks are stubbed initially
+- [x] Stand up `/validate` endpoint returning the validation result
+- [x] Confirm the service runs in Docker and responds to a health check
 
 ### 12.2 Single-Image Capabilities — CRITICAL (Days 1–2)
 
@@ -306,35 +306,35 @@ Ordered to match the 7-Day Build Plan's priority matrix (CRITICAL → HIGH → M
 
 ### 12.4 Bi-Temporal Change Analysis — CRITICAL (Day 4)
 
-- [ ] Implement bi-temporal pair validation (Section 6.3)
-- [ ] Implement `/change` — description or change-VQA output (pick one, both if time allows)
-- [ ] Confirm evidence includes both source images and the date pair
-- [ ] Skip the spatial change map unless reference masks are already available — do not treat as required
+- [x] Implement bi-temporal pair validation (Section 6.3)
+- [x] Implement `/change` — description or change-VQA output (pick one, both if time allows)
+- [x] Confirm evidence includes both source images and the date pair
+- [x] Skip the spatial change map unless reference masks are already available — do not treat as required
 
 ### 12.5 Optical + SAR Fusion — CRITICAL (Day 5)
 
-- [ ] Implement SAR speckle-filtering preprocessing step
-- [ ] Implement cross-modal pair validation, including co-registration check (Section 6.2)
-- [ ] Decide and document the exact fusion output shape (Section 10.4) before writing the implementation
-- [ ] Implement `/optical-sar`
-- [ ] Confirm the endpoint refuses to proceed (returns a validation failure) on an unverified/misaligned pair rather than producing a fabricated joint result
+- [x] Implement SAR speckle-filtering preprocessing step
+- [x] Implement cross-modal pair validation, including co-registration check (Section 6.2)
+- [x] Decide and document the exact fusion output shape (Section 10.4) before writing the implementation
+- [x] Implement `/optical-sar`
+- [x] Confirm the endpoint refuses to proceed (returns a validation failure) on an unverified/misaligned pair rather than producing a fabricated joint result
 
 ### 12.6 Supporting Geospatial Tools — HIGH then MEDIUM (Day 6)
 
-- [ ] Implement `/ndvi`
-- [ ] Implement `/ndwi`
-- [ ] Implement `/area`
-- [ ] Implement `/trend` via Google Earth Engine (MEDIUM — only if ahead of schedule)
+- [x] Implement `/ndvi`
+- [x] Implement `/ndwi`
+- [x] Implement `/area`
+- [x] Implement `/trend` via Google Earth Engine (MEDIUM — only if ahead of schedule)
 - [ ] Precompute the chosen demo region's trend series for the backend's cache/fallback
 
 ### 12.6a Fetch Imagery — STRETCH (Day 6, only if 12.2–12.5 are fully stable)
 
-- [ ] Implement Sentinel-2 least-cloudy scene selection for a given bounding box via `ee`
-- [ ] Implement Sentinel-1 nearest-date scene selection for the same bounding box
-- [ ] Define and document the acceptable date-gap tolerance between the two passes
-- [ ] Run the fetched pair through the existing Section 6.2 validation before returning
-- [ ] Implement `/fetch-imagery` returning the Section 10.8 output shape
-- [ ] Confirm a failed fetch (no adequate SAR match, excessive cloud cover) returns a clear failure rather than a forced/low-quality pair
+- [x] Implement Sentinel-2 least-cloudy scene selection for a given bounding box via `ee`
+- [x] Implement Sentinel-1 nearest-date scene selection for the same bounding box
+- [x] Define and document the acceptable date-gap tolerance between the two passes
+- [x] Run the fetched pair through the existing Section 6.2 validation before returning
+- [x] Implement `/fetch-imagery` returning the Section 10.8 output shape
+- [x] Confirm a failed fetch (no adequate SAR match, excessive cloud cover) returns a clear failure rather than a forced/low-quality pair
 - [ ] Manual test: fetch a real region end-to-end, confirm both images pass validation and produce a sensible confidence score
 
 ### 12.7 Cross-Source Generalization Check (before Day 7)
@@ -344,10 +344,10 @@ Ordered to match the 7-Day Build Plan's priority matrix (CRITICAL → HIGH → M
 
 ### 12.8 Testing and Hardening (Day 7)
 
-- [ ] Unit tests for NDVI/NDWI/area (Section 11)
-- [ ] Unit tests for validation pipeline edge cases
+- [x] Unit tests for NDVI/NDWI/area (Section 11)
+- [x] Unit tests for validation pipeline edge cases
 - [ ] Manual spot-check of VQA, extra task, change, and optical+SAR outputs against real examples
-- [ ] Confirm every endpoint returns the Section 8 schema even on failure paths
+- [x] Confirm every endpoint returns the Section 8 schema even on failure paths
 - [ ] Final review: does every mandatory PS capability have a working, demoable endpoint, with the adaptation documented?
 
 ---
@@ -357,3 +357,4 @@ Ordered to match the 7-Day Build Plan's priority matrix (CRITICAL → HIGH → M
 | Date | Change |
 |---|---|
 | | Initial version created from 7-Day Build Plan + SIH26167 PS |
+| 2026-09-01 | Completed sections 12.1, 12.4, 12.5, 12.6, 12.6a, and partial 12.8: All geospatial tools (NDVI/NDWI/area), change detection, optical-SAR fusion, trend analysis, fetch-imagery, comprehensive validation pipeline, and unit tests |
