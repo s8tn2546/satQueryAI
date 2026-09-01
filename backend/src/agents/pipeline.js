@@ -10,6 +10,22 @@ import { makeTraceEntry, makeRejectedResponse, makeFailedResponse, buildEvidence
 
 const TASK_TYPE_ENUM = new Set(['VQA', 'CAPTION', 'GROUNDING', 'CHANGE_ANALYSIS', 'OPTICAL_SAR', 'NDVI', 'NDWI', 'AREA', 'TREND']);
 
+/**
+ * Normalize every tool result (success, partial, or failed) into a stable,
+ * persistence-safe shape so Query.toolResults retains per-tool result,
+ * evidence, confidence, and failure detail in tool ordering.
+ */
+function persistableToolResults(toolResults) {
+  return toolResults.map(tr => ({
+    tool: tr.tool,
+    status: tr.status,
+    result: tr.result || {},
+    evidence: tr.evidence || {},
+    confidence: typeof tr.confidence === 'number' ? tr.confidence : 0,
+    error: tr.error || ''
+  }));
+}
+
 export async function runAgentPipeline(queryText, imageRefIds, parameters = {}) {
   const trace = [];
   trace.push(makeTraceEntry('pipeline_start', `Received query with ${imageRefIds.length} image ref(s)`));
@@ -38,6 +54,7 @@ export async function runAgentPipeline(queryText, imageRefIds, parameters = {}) 
       inputRefs: imageRefIds,
       taskType: 'VQA',
       toolsInvoked: [],
+      toolResults: [],
       parameters: mergedParams,
       result: {},
       evidence: response.evidence,
@@ -47,7 +64,7 @@ export async function runAgentPipeline(queryText, imageRefIds, parameters = {}) 
       status: 'rejected'
     });
 
-    return { _id: queryDoc._id, ...response };
+    return { _id: queryDoc._id, toolResults: [], ...response };
   }
 
   const resolvedTaskType = TASK_TYPE_ENUM.has(taskType) ? taskType : 'VQA';
@@ -61,6 +78,7 @@ export async function runAgentPipeline(queryText, imageRefIds, parameters = {}) 
       inputRefs: imageRefIds,
       taskType: resolvedTaskType,
       toolsInvoked: [],
+      toolResults: [],
       parameters: mergedParams,
       result: {},
       evidence: response.evidence,
@@ -70,7 +88,7 @@ export async function runAgentPipeline(queryText, imageRefIds, parameters = {}) 
       status: 'rejected'
     });
 
-    return { _id: queryDoc._id, ...response };
+    return { _id: queryDoc._id, toolResults: [], ...response };
   }
 
   const tools = await planTools(resolvedTaskType, toolNames, trace);
@@ -85,12 +103,14 @@ export async function runAgentPipeline(queryText, imageRefIds, parameters = {}) 
   if (allFailed) {
     const reasons = toolResults.map(r => r.error || 'unknown error').join('; ');
     const response = makeFailedResponse(reasons, resolvedTaskType, trace);
+    const persistedToolResults = persistableToolResults(toolResults);
 
     const queryDoc = await Query.create({
       queryText,
       inputRefs: imageRefIds,
       taskType: resolvedTaskType,
       toolsInvoked: tools.map(t => t.name),
+      toolResults: persistedToolResults,
       parameters: mergedParams,
       result: {},
       evidence: response.evidence,
@@ -100,7 +120,7 @@ export async function runAgentPipeline(queryText, imageRefIds, parameters = {}) 
       status: 'failed'
     });
 
-    return { _id: queryDoc._id, ...response };
+    return { _id: queryDoc._id, toolResults: persistedToolResults, ...response };
   }
 
   const { score: confidence } = estimateConfidence(validationResult, toolResults);
@@ -114,12 +134,14 @@ export async function runAgentPipeline(queryText, imageRefIds, parameters = {}) 
   trace.push(makeTraceEntry('execution_trace_assembly', 'Pipeline complete'));
 
   const overallStatus = toolResults.some(r => r.status === 'failed') ? 'partial' : 'success';
+  const persistedToolResults = persistableToolResults(toolResults);
 
   const queryDoc = await Query.create({
     queryText,
     inputRefs: imageRefIds,
     taskType: resolvedTaskType,
     toolsInvoked: tools.map(t => t.name),
+    toolResults: persistedToolResults,
     parameters: mergedParams,
     result: primaryResult.result || {},
     evidence,
@@ -134,6 +156,7 @@ export async function runAgentPipeline(queryText, imageRefIds, parameters = {}) 
     answerText,
     taskType: resolvedTaskType,
     result: primaryResult.result || {},
+    toolResults: persistedToolResults,
     evidence,
     confidence,
     executionTrace: trace,

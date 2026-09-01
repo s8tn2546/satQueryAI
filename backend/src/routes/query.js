@@ -1,8 +1,95 @@
 import express from 'express';
 import Query from '../models/Query.js';
+import ResultsCache from '../models/ResultsCache.js';
+import mlServiceClient from '../services/mlServiceClient.js';
 import { runAgentPipeline } from '../agents/pipeline.js';
+import { composeAnswer } from '../agents/answerComposer.js';
+import { makeTraceEntry } from '../utils/responseBuilder.js';
 
 const router = express.Router();
+
+const SUPPORTED_TREND_METRICS = new Set(['ndvi', 'ndwi']);
+const SUPPORTED_INTERVALS = new Set(['monthly', 'yearly']);
+const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+function regionKey(region) {
+  return JSON.stringify({ type: region.type, coordinates: region.coordinates });
+}
+
+function parseIsoDate(value) {
+  if (typeof value !== 'string' || !ISO_DATE_RE.test(value)) return null;
+  const d = new Date(`${value}T00:00:00.000Z`);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+function validateTrendRequest(body) {
+  const { region, metric = 'ndvi', startDate, endDate, interval = 'monthly' } = body || {};
+
+  if (!region || typeof region !== 'object' || !['Polygon', 'MultiPolygon'].includes(region.type) ||
+      !Array.isArray(region.coordinates) || region.coordinates.length === 0) {
+    return 'region (GeoJSON Polygon or MultiPolygon) is required.';
+  }
+
+  const metricLower = String(metric).toLowerCase();
+  if (!SUPPORTED_TREND_METRICS.has(metricLower)) {
+    return `Unsupported metric "${metric}". Supported: ndvi, ndwi.`;
+  }
+
+  if (!SUPPORTED_INTERVALS.has(interval)) {
+    return `Unsupported interval "${interval}". Supported: monthly, yearly.`;
+  }
+
+  const start = parseIsoDate(startDate);
+  const end = parseIsoDate(endDate);
+  if (!start) return 'startDate (ISO YYYY-MM-DD) is required and must be a valid date.';
+  if (!end) return 'endDate (ISO YYYY-MM-DD) is required and must be a valid date.';
+  if (start >= end) return 'endDate must be later than startDate.';
+
+  return null;
+}
+
+const TREND_TASK_TYPE = 'TREND';
+
+function trendFailureResponse(reason, trace = []) {
+  return {
+    answerText: `Unable to process trend: ${reason}`,
+    taskType: TREND_TASK_TYPE,
+    result: {},
+    evidence: { images: [], region: {}, notes: reason },
+    confidence: 0,
+    executionTrace: trace,
+    status: 'failed'
+  };
+}
+
+function trendRejectedResponse(reason, trace = []) {
+  return {
+    answerText: reason,
+    taskType: TREND_TASK_TYPE,
+    result: {},
+    evidence: { images: [], region: {}, notes: reason },
+    confidence: 0,
+    executionTrace: [...trace, makeTraceEntry('trend_validation_failed', reason)],
+    status: 'rejected'
+  };
+}
+
+async function composeTrendAnswer(result, confidence, trace) {
+  const toolResults = [{ tool: 'trend', status: 'success', result: result || {}, confidence: confidence || 0 }];
+  return composeAnswer('Historical trend analysis', TREND_TASK_TYPE, toolResults, trace);
+}
+
+async function findCoveringCacheEntry({ region, metric, startDate, endDate, interval }) {
+  const start = parseIsoDate(startDate);
+  const end = parseIsoDate(endDate);
+  return ResultsCache.findOne({
+    metric,
+    regionKey: regionKey(region),
+    interval,
+    'dateRange.start': { $lte: start },
+    'dateRange.end': { $gte: end }
+  }).sort({ computedAt: -1 });
+}
 
 /**
  * POST /api/query
@@ -38,6 +125,102 @@ router.post('/', async (req, res) => {
       executionTrace: [{ step: 'error', detail: error.message, timestamp: new Date().toISOString() }],
       status: 'failed'
     });
+  }
+});
+
+/**
+ * POST /api/query/trend
+ * Historical trend query: { region, metric, startDate, endDate, interval? }
+ * Two-phase cache resolution per BACKEND.md §10:
+ *   Phase 1: exact/superset cache match -> return cached result.
+ *   Phase 2: cache miss -> call ML /trend, store successful result, return.
+ */
+router.post('/trend', async (req, res) => {
+  try {
+    const validationError = validateTrendRequest(req.body);
+    if (validationError) {
+      return res.status(400).json(trendRejectedResponse(validationError));
+    }
+
+    const { region, metric = 'ndvi', startDate, endDate, interval = 'monthly' } = req.body;
+    const metricLower = String(metric).toLowerCase();
+
+    const cached = await findCoveringCacheEntry({ region, metric: metricLower, startDate, endDate, interval });
+    if (cached) {
+      const trace = [
+        makeTraceEntry('trend_cache_check', `Cache lookup for ${metricLower} over ${region.type} region`),
+        makeTraceEntry('trend_cache_hit', `Using cached result computed ${cached.computedAt.toISOString()}`)
+      ];
+      const answerText = await composeTrendAnswer(cached.result, cached.confidence, trace);
+      return res.status(200).json({
+        answerText,
+        taskType: TREND_TASK_TYPE,
+        result: cached.result || {},
+        evidence: cached.evidence || { images: [], region: {}, notes: '' },
+        confidence: cached.confidence || 0,
+        executionTrace: trace,
+        status: 'success',
+        cache: { hit: true, computedAt: cached.computedAt }
+      });
+    }
+
+    const trace = [
+      makeTraceEntry('trend_cache_check', `Cache miss for ${metricLower} over ${region.type} region`)
+    ];
+
+    const mlResult = await mlServiceClient.callMlService('/trend', {
+      region,
+      metric: metricLower,
+      start_date: startDate,
+      end_date: endDate,
+      interval
+    });
+
+    if (!mlResult || !['success', 'partial'].includes(mlResult.status)) {
+      const reason = mlResult?.result?.error || mlResult?.error || `ML service returned ${mlResult?.status || 'no status'} for /trend`;
+      trace.push(makeTraceEntry('trend_ml_failed', reason));
+      return res.status(200).json(trendFailureResponse(reason, trace));
+    }
+
+    const result = mlResult.result || {};
+    const confidence = mlResult.confidence || 0;
+    const evidence = mlResult.evidence || { images: [], region: {}, notes: '' };
+
+    trace.push(makeTraceEntry('trend_ml_call', `ML /trend returned ${(result.series || []).length} data point(s)`));
+
+    // Only cache successful results (BACKEND.md §10). Guard against inserting a
+    // duplicate where an existing exact/superset entry already covers the request.
+    const existing = await findCoveringCacheEntry({ region, metric: metricLower, startDate, endDate, interval });
+    if (!existing) {
+      await ResultsCache.create({
+        metric: metricLower,
+        region,
+        regionKey: regionKey(region),
+        dateRange: { start: new Date(startDate), end: new Date(endDate) },
+        series: (result.series || []).map(p => ({ date: p.date, value: p.value ?? null })),
+        interval,
+        confidence,
+        evidence,
+        result,
+        computedAt: new Date()
+      });
+      trace.push(makeTraceEntry('trend_cache_store', `Stored result in results_cache for ${metricLower}`));
+    }
+
+    const answerText = await composeTrendAnswer(result, confidence, trace);
+    return res.status(200).json({
+      answerText,
+      taskType: TREND_TASK_TYPE,
+      result,
+      evidence,
+      confidence,
+      executionTrace: trace,
+      status: 'success',
+      cache: { hit: false }
+    });
+  } catch (error) {
+    console.error('[Trend] Error processing trend query:', error);
+    return res.status(500).json(trendFailureResponse(error.message));
   }
 });
 
