@@ -1,3 +1,4 @@
+import mongoose from 'mongoose';
 import Tile from '../models/Tile.js';
 import Query from '../models/Query.js';
 import { classifyIntent } from './intentClassifier.js';
@@ -10,16 +11,27 @@ import { makeTraceEntry, makeRejectedResponse, makeFailedResponse, buildEvidence
 
 const TASK_TYPE_ENUM = new Set(['VQA', 'CAPTION', 'GROUNDING', 'CHANGE_ANALYSIS', 'OPTICAL_SAR', 'NDVI', 'NDWI', 'AREA', 'TREND']);
 
+function sanitizeImageRefs(refs) {
+  if (!Array.isArray(refs)) {
+    return [];
+  }
+  return refs.filter(ref => mongoose.Types.ObjectId.isValid(ref));
+}
+
 export async function runAgentPipeline(queryText, imageRefIds, parameters = {}) {
   const trace = [];
-  trace.push(makeTraceEntry('pipeline_start', `Received query with ${imageRefIds.length} image ref(s)`));
+  
+  const sanitizedRefs = sanitizeImageRefs(imageRefIds);
+  
+  trace.push(makeTraceEntry('pipeline_start', `Received query with ${sanitizedRefs.length} image ref(s)`));
 
   let tiles = [];
-  if (imageRefIds.length > 0) {
+  if (sanitizedRefs.length > 0) {
     try {
-      tiles = await Tile.find({ _id: { $in: imageRefIds } });
+      tiles = await Tile.find({ _id: { $in: sanitizedRefs } });
     } catch (err) {
       console.error('[Pipeline] Failed to fetch tiles:', err.message);
+      trace.push(makeTraceEntry('tile_fetch_error', `Could not fetch images: ${err.message}`));
     }
   }
 
@@ -35,7 +47,7 @@ export async function runAgentPipeline(queryText, imageRefIds, parameters = {}) 
 
     const queryDoc = await Query.create({
       queryText,
-      inputRefs: imageRefIds,
+      inputRefs: sanitizedRefs,
       taskType: 'VQA',
       toolsInvoked: [],
       parameters: mergedParams,
@@ -58,7 +70,7 @@ export async function runAgentPipeline(queryText, imageRefIds, parameters = {}) 
 
     const queryDoc = await Query.create({
       queryText,
-      inputRefs: imageRefIds,
+      inputRefs: sanitizedRefs,
       taskType: resolvedTaskType,
       toolsInvoked: [],
       parameters: mergedParams,
@@ -88,7 +100,7 @@ export async function runAgentPipeline(queryText, imageRefIds, parameters = {}) 
 
     const queryDoc = await Query.create({
       queryText,
-      inputRefs: imageRefIds,
+      inputRefs: sanitizedRefs,
       taskType: resolvedTaskType,
       toolsInvoked: tools.map(t => t.name),
       parameters: mergedParams,
@@ -107,7 +119,7 @@ export async function runAgentPipeline(queryText, imageRefIds, parameters = {}) 
   trace.push(makeTraceEntry('confidence_estimation', `Confidence score: ${confidence}`));
 
   const primaryResult = successResults[0];
-  const evidence = buildEvidence(imageRefIds, primaryResult, mergedParams);
+  const evidence = buildEvidence(sanitizedRefs, primaryResult, mergedParams);
 
   const answerText = await composeAnswer(queryText, resolvedTaskType, toolResults, trace);
 
@@ -117,7 +129,7 @@ export async function runAgentPipeline(queryText, imageRefIds, parameters = {}) 
 
   const queryDoc = await Query.create({
     queryText,
-    inputRefs: imageRefIds,
+    inputRefs: sanitizedRefs,
     taskType: resolvedTaskType,
     toolsInvoked: tools.map(t => t.name),
     parameters: mergedParams,
