@@ -73,7 +73,7 @@ def compute_area(
     # ---- Geographic CRS guard ----
     if crs is not None and crs_is_geographic(crs):
         return {
-            "status": "failure",
+            "status": "failed",
             "area_km2": None,
             "area_ha": None,
             "area_m2": None,

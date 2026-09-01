@@ -298,6 +298,31 @@ describe('§15.3 — Mandatory Capability Wiring', () => {
       assertSection6Shape(res.body);
     });
 
+    it('treats the ML service failure status as a tool failure (not success)', async () => {
+      // ML contract (ML_SERVICE.md §8): status is success/partial/failed. A failed
+      // Geo/RS tool result must surface as a failed pipeline with the real reason
+      // preserved, not be misclassified as success.
+      mockCallMlService.mockResolvedValue({
+        tool: 'ndvi',
+        status: 'failed',
+        result: { error: 'Required RED band could not be identified from metadata.' },
+        evidence: {},
+        confidence: 0.0
+      });
+
+      const tile = await createTile({ modality: 'optical', format: 'geotiff' });
+
+      const res = await request(app)
+        .post('/api/query')
+        .send({ queryText: 'Calculate the NDVI for this image.', imageRefs: [String(tile._id)] });
+
+      expect(res.status).toBe(200);
+      expect(res.body.status).toBe('failed');
+      assertSection6Shape(res.body);
+      expect(res.body.confidence).toBe(0);
+      expect(res.body.answerText).toMatch(/RED band could not be identified/);
+    });
+
     it('returns valid Section 6 shape on network error from ML service', async () => {
       mockCallMlService.mockRejectedValue(new Error('Network error'));
 

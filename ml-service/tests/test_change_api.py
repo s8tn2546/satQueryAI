@@ -41,7 +41,7 @@ def test_change_failure_schema(change_nonoverlap_pair):
     body = res.json()
     assert set(body.keys()) == {"tool", "status", "result", "evidence", "confidence", "metadata"}
     assert body["tool"] == "change"
-    assert body["status"] == "failure"
+    assert body["status"] == "failed"
     assert body["confidence"] == 0.0
     assert "error" in body["result"]
 
@@ -80,7 +80,7 @@ def test_change_invalid_raster(georeferenced_raster, corrupt_file):
         )
     assert res.status_code == 200
     body = res.json()
-    assert body["status"] == "failure"
+    assert body["status"] == "failed"
     assert body["confidence"] == 0.0
 
 
@@ -94,14 +94,14 @@ def test_change_unsupported_extension(georeferenced_raster):
             },
         )
     assert res.status_code == 200
-    assert res.json()["status"] == "failure"
+    assert res.json()["status"] == "failed"
 
 
 def test_change_invalid_threshold(change_known_pair):
     p1, p2 = change_known_pair
     res = _post(p1, p2, threshold="-5")
     assert res.status_code == 200
-    assert res.json()["status"] == "failure"
+    assert res.json()["status"] == "failed"
     assert res.json()["confidence"] == 0.0
 
 

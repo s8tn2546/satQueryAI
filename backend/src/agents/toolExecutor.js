@@ -80,8 +80,14 @@ export async function executeTools(tools, tiles, parameters, trace) {
       continue;
     }
 
-    if (!mlResult || mlResult.status === 'error') {
-      const reason = mlResult?.error || `ML service returned an error for tool "${tool.name}"`;
+    if (!mlResult || ['error', 'failed', 'failure'].includes(mlResult.status)) {
+      // Normalize any ML failure signal (contract status "failed", legacy
+      // "failure", or transport-level "error") into a single backend status.
+      // Preserve the specific reason (result.error) so the final failure
+      // response is honest, not "unknown error".
+      const reason = mlResult?.error
+        || mlResult?.result?.error
+        || `ML service returned an error for tool "${tool.name}"`;
       trace.push(makeTraceEntry('tool_execution_failed', reason));
       results.push({ tool: tool.name, status: 'failed', result: {}, error: reason, confidence: 0 });
     } else if (!mlResult.result && !mlResult.answer && !mlResult.caption && !mlResult.series) {

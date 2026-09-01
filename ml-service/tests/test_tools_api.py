@@ -45,7 +45,7 @@ def test_ndvi_endpoint_unlabeled_fails(unlabeled_multiband_raster):
         )
     assert res.status_code == 200
     body = res.json()
-    assert body["status"] == "failure"
+    assert body["status"] == "failed"
     assert "could not be identified" in body["result"]["error"]
     assert body["confidence"] == 0.0
 
@@ -56,7 +56,7 @@ def test_ndvi_endpoint_unsupported_extension():
         files={"file": ("data.txt", b"x", "text/plain")},
     )
     assert res.status_code == 200
-    assert res.json()["status"] == "failure"
+    assert res.json()["status"] == "failed"
 
 
 def test_ndvi_endpoint_missing_file():
@@ -103,6 +103,6 @@ def test_area_endpoint_geographic_failure(geographic_raster):
         )
     assert res.status_code == 200
     body = res.json()
-    assert body["status"] == "failure"
+    assert body["status"] == "failed"
     assert "geographic" in body["result"]["error"].lower()
     assert "EPSG:4326" in body["result"]["crs"]

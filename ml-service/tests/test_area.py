@@ -32,7 +32,7 @@ def test_area_all_valid_pixels(georeferenced_raster):
 def test_area_geographic_crs_fails_honestly(geographic_raster):
     """EPSG:4326 must NOT be computed as deg*deg -> structured failure."""
     result = compute_area(geographic_raster)
-    assert result["status"] == "failure"
+    assert result["status"] == "failed"
     assert result["area_km2"] is None
     assert "geographic" in result["reason"].lower()
 

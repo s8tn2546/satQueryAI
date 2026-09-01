@@ -76,7 +76,7 @@ def error_output(
     message: str,
     *,
     detail: dict | None = None,
-    status: str = "failure",
+    status: str = "failed",
     confidence: float = 0.0,
 ) -> ToolOutput:
     """Build a structured ToolOutput representing a failure."""

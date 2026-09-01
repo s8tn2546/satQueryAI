@@ -63,7 +63,7 @@ async def area_endpoint(
         if tmp_path is not None:
             tmp_path.unlink(missing_ok=True)
 
-    if result.get("status") == "failure":
+    if result.get("status") == "failed":
         return error_output(
             "area",
             result.get("reason", "Area could not be computed."),

@@ -193,7 +193,7 @@ function getMockResult(endpoint, payload) {
           changeMaskUrl: '/cache/masks/change_mask_001.png',
           summary: 'Significant urban expansion and vegetation reduction detected between Time 1 and Time 2 across the central sector (14.8% net change).'
         },
-        evidence: { images: payload.imageRefs || [payload.tileId1, payload.tileId2], region: payload.region || {}, notes: 'Bi-temporal change detection mask generated.' },
+        evidence: { images: payload.imageRefs || [payload.tile_id_t1, payload.tile_id_t2], region: payload.region || {}, notes: 'Bi-temporal change detection mask generated.' },
         confidence: 0.94,
         metadata: { timestamp: new Date().toISOString() }
       };
@@ -211,7 +211,7 @@ function getMockResult(endpoint, payload) {
           },
           summary: 'Optical and SAR fusion successfully separated built-up structures from water bodies despite cloud/shadow coverage.'
         },
-        evidence: { images: payload.imageRefs || [payload.opticalTileId, payload.sarTileId], region: payload.region || {}, notes: 'Cross-modal Sentinel-1 SAR + Sentinel-2 Optical fusion.' },
+        evidence: { images: payload.imageRefs || [payload.optical_tile_id, payload.sar_tile_id], region: payload.region || {}, notes: 'Cross-modal Sentinel-1 SAR + Sentinel-2 Optical fusion.' },
         confidence: 0.95,
         metadata: { timestamp: new Date().toISOString() }
       };
@@ -225,7 +225,7 @@ function getMockResult(endpoint, payload) {
           map: '/cache/masks/ndvi_raster_001.png',
           classification: 'Moderate-to-dense healthy vegetation'
         },
-        evidence: { images: payload.imageRefs || [payload.tileId], region: payload.region || {}, notes: 'NDVI calculation from NIR and Red optical bands.' },
+        evidence: { images: payload.imageRefs || [payload.tile_id], region: payload.region || {}, notes: 'NDVI calculation from NIR and Red optical bands.' },
         confidence: 0.96,
         metadata: { timestamp: new Date().toISOString() }
       };
@@ -239,7 +239,7 @@ function getMockResult(endpoint, payload) {
           map: '/cache/masks/ndwi_raster_001.png',
           classification: 'Delineated surface water body'
         },
-        evidence: { images: payload.imageRefs || [payload.tileId], region: payload.region || {}, notes: 'NDWI calculation from Green and NIR optical bands.' },
+        evidence: { images: payload.imageRefs || [payload.tile_id], region: payload.region || {}, notes: 'NDWI calculation from Green and NIR optical bands.' },
         confidence: 0.95,
         metadata: { timestamp: new Date().toISOString() }
       };
@@ -253,7 +253,7 @@ function getMockResult(endpoint, payload) {
           featureType: payload.featureType || 'water body',
           pixelCount: 124500
         },
-        evidence: { images: payload.imageRefs || [payload.tileId], region: payload.region || {}, notes: 'Geospatial area measurement computed.' },
+        evidence: { images: payload.imageRefs || [payload.tile_id], region: payload.region || {}, notes: 'Geospatial area measurement computed.' },
         confidence: 0.93,
         metadata: { timestamp: new Date().toISOString() }
       };

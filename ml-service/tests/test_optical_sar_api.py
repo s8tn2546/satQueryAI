@@ -40,7 +40,7 @@ def test_failure_schema(fusion_nonoverlap_pair):
     body = res.json()
     assert set(body.keys()) == {"tool", "status", "result", "evidence", "confidence", "metadata"}
     assert body["tool"] == "optical-sar"
-    assert body["status"] == "failure"
+    assert body["status"] == "failed"
     assert body["confidence"] == 0.0
     assert "error" in body["result"]
 
@@ -79,7 +79,7 @@ def test_invalid_raster(multiband_raster, corrupt_file):
         )
     assert res.status_code == 200
     body = res.json()
-    assert body["status"] == "failure"
+    assert body["status"] == "failed"
     assert body["confidence"] == 0.0
 
 
@@ -93,14 +93,14 @@ def test_unsupported_extension(multiband_raster):
             },
         )
     assert res.status_code == 200
-    assert res.json()["status"] == "failure"
+    assert res.json()["status"] == "failed"
 
 
 def test_invalid_band_params(fusion_paired_rasters):
     optical, sar = fusion_paired_rasters
-    assert _post(optical, sar, optical_band="0").json()["status"] == "failure"
-    assert _post(optical, sar, sar_band="-3").json()["status"] == "failure"
-    assert _post(optical, sar, speckle_size="2").json()["status"] == "failure"
+    assert _post(optical, sar, optical_band="0").json()["status"] == "failed"
+    assert _post(optical, sar, sar_band="-3").json()["status"] == "failed"
+    assert _post(optical, sar, speckle_size="2").json()["status"] == "failed"
 
 
 def test_confidence_deterministic(fusion_paired_rasters, fusion_nonoverlap_pair):
