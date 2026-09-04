@@ -8,11 +8,12 @@ const executionTraceEntrySchema = new mongoose.Schema({
 
 const toolResultSchema = new mongoose.Schema({
   tool: { type: String, required: true },
-  status: { type: String, enum: ['success', 'partial', 'failed'], required: true },
+  status: { type: String, enum: ['success', 'partial', 'failed', 'skipped'], required: true },
   result: { type: mongoose.Schema.Types.Mixed, default: {} },
   evidence: { type: mongoose.Schema.Types.Mixed, default: {} },
   confidence: { type: Number, min: 0, max: 1, default: 0 },
-  error: { type: String, default: '' }
+  error: { type: String, default: '' },
+  metadata: { type: mongoose.Schema.Types.Mixed, default: {} }
 }, { _id: false, strict: false });
 
 const querySchema = new mongoose.Schema({

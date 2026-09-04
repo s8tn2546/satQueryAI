@@ -12,6 +12,7 @@ export function estimateConfidence(validationResult, toolResults) {
 
   const successResults = toolResults.filter(r => r.status === 'success');
   const failedResults = toolResults.filter(r => r.status === 'failed');
+  const skippedResults = toolResults.filter(r => r.status === 'skipped');
 
   for (const r of successResults) {
     const toolConf = r.confidence ?? r.result?.confidence;
@@ -41,6 +42,11 @@ export function estimateConfidence(validationResult, toolResults) {
   if (failedResults.length > 0) {
     score -= 0.2 * failedResults.length;
     signals.push(`-${0.2 * failedResults.length}: ${failedResults.length} tool(s) failed`);
+  }
+
+  if (skippedResults.length > 0) {
+    score -= 0.2 * skippedResults.length;
+    signals.push(`-${0.2 * skippedResults.length}: ${skippedResults.length} dependent tool(s) skipped`);
   }
 
   const clamped = Math.min(1, Math.max(0, score));

@@ -25,7 +25,8 @@ function persistableToolResults(toolResults) {
     result: tr.result || {},
     evidence: tr.evidence || {},
     confidence: typeof tr.confidence === 'number' ? tr.confidence : 0,
-    error: tr.error || ''
+    error: tr.error || '',
+    metadata: tr.metadata || {}
   }));
 }
 
@@ -103,7 +104,7 @@ export async function runAgentPipeline(queryText, imageRefIds, parameters = {}) 
 
   trace.push(makeTraceEntry('parameter_extraction', `Parameters: ${JSON.stringify(mergedParams)}`));
 
-  const toolResults = await executeTools(tools, tiles, mergedParams, trace);
+  const toolResults = await executeTools(tools, tiles, mergedParams, trace, plan);
 
   if (toolResults.length === 0) {
     const reason = `No tools could be executed for task ${resolvedTaskType}.`;
@@ -166,7 +167,7 @@ export async function runAgentPipeline(queryText, imageRefIds, parameters = {}) 
 
   trace.push(makeTraceEntry('execution_trace_assembly', 'Pipeline complete'));
 
-  const overallStatus = toolResults.some(r => r.status === 'failed') ? 'partial' : 'success';
+  const overallStatus = toolResults.some(r => r.status === 'failed' || r.status === 'skipped') ? 'partial' : 'success';
   const persistedToolResults = persistableToolResults(toolResults);
 
   const queryDoc = await Query.create({
