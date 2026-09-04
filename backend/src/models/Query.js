@@ -27,6 +27,7 @@ const querySchema = new mongoose.Schema({
   toolsInvoked: [{ type: String }],
   toolResults: [toolResultSchema],
   parameters: { type: Object, default: {} },
+  plan: { type: Object, default: {} },
   result: { type: Object, default: {} },
   evidence: {
     images: [{ type: String }],

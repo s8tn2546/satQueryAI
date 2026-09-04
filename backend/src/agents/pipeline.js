@@ -99,6 +99,7 @@ export async function runAgentPipeline(queryText, imageRefIds, parameters = {}) 
   }
 
   const tools = await planTools(resolvedTaskType, toolNames, trace);
+  const plan = tools.plan || null;
 
   trace.push(makeTraceEntry('parameter_extraction', `Parameters: ${JSON.stringify(mergedParams)}`));
 
@@ -116,6 +117,7 @@ export async function runAgentPipeline(queryText, imageRefIds, parameters = {}) 
       toolsInvoked: tools.map(t => t.name),
       toolResults: [],
       parameters: mergedParams,
+      plan,
       result: {},
       evidence: response.evidence,
       confidence: 0,
@@ -124,7 +126,7 @@ export async function runAgentPipeline(queryText, imageRefIds, parameters = {}) 
       status: 'failed'
     });
 
-    return { _id: queryDoc._id, toolResults: [], ...response };
+    return { _id: queryDoc._id, toolResults: [], plan, ...response };
   }
 
   const successResults = toolResults.filter(r => r.status === 'success');
@@ -142,6 +144,7 @@ export async function runAgentPipeline(queryText, imageRefIds, parameters = {}) 
       toolsInvoked: tools.map(t => t.name),
       toolResults: persistedToolResults,
       parameters: mergedParams,
+      plan,
       result: {},
       evidence: response.evidence,
       confidence: 0,
@@ -150,7 +153,7 @@ export async function runAgentPipeline(queryText, imageRefIds, parameters = {}) 
       status: 'failed'
     });
 
-    return { _id: queryDoc._id, toolResults: persistedToolResults, ...response };
+    return { _id: queryDoc._id, toolResults: persistedToolResults, plan, ...response };
   }
 
   const { score: confidence } = estimateConfidence(validationResult, toolResults);
@@ -173,6 +176,7 @@ export async function runAgentPipeline(queryText, imageRefIds, parameters = {}) 
     toolsInvoked: tools.map(t => t.name),
     toolResults: persistedToolResults,
     parameters: mergedParams,
+    plan,
     result: primaryResult.result || {},
     evidence,
     confidence,
@@ -186,6 +190,7 @@ export async function runAgentPipeline(queryText, imageRefIds, parameters = {}) 
     answerText,
     taskType: resolvedTaskType,
     result: primaryResult.result || {},
+    plan,
     toolResults: persistedToolResults,
     evidence,
     confidence,

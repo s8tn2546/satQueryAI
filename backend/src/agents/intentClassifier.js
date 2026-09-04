@@ -19,8 +19,8 @@ const TOOL_DEFINITIONS = [
         },
         toolNames: {
           type: 'array',
-          items: { type: 'string' },
-          description: 'Ordered list of tool names needed. E.g. ["vqa"], ["caption"], ["change"], ["optical_sar"], ["ndvi"], ["ndwi"], ["area"], ["trend"].'
+          items: { type: 'string', enum: ['vqa', 'caption', 'ground', 'change', 'optical_sar', 'ndvi', 'ndwi', 'area', 'trend', 'fetch-imagery'] },
+          description: 'Ordered list of tool names needed, in execution order. Combine tools requested together: ["ndvi","ndwi"] when both are requested, ["fetch-imagery","ndvi"] when imagery must be acquired before analysis, ["change","area"] when the changed area must be measured. Single-tool examples: ["vqa"], ["caption"], ["change"], ["optical_sar"], ["area"], ["trend"].'
         },
         parameters: {
           type: 'object',
@@ -55,6 +55,13 @@ Supported tasks:
 - NDWI: Calculate water index (requires optical image)
 - AREA: Calculate surface area of identified features
 - TREND: Analyze historical time-series trend for a region and metric
+- FETCH_IMAGERY: Acquire imagery for a region before running analysis tools
+
+When the user requests more than one capability, return them together in
+execution order. Examples:
+- "calculate NDVI and NDWI" -> toolNames: ["ndvi", "ndwi"]
+- "fetch imagery and calculate NDVI" -> toolNames: ["fetch-imagery", "ndvi"]
+- "compare images and calculate the changed area" -> toolNames: ["change", "area"]
 
 Context: The user has provided ${imageCount} image(s) with modalities: ${modalities.join(', ') || 'unknown'}.
 
@@ -64,6 +71,53 @@ If the query is not answerable by any supported task, use OUT_OF_SCOPE.`;
 
 function mockClassify(queryText, imageCount) {
   const q = queryText.toLowerCase();
+
+  // ---- Deterministic multi-tool detection (explicit combined intent) ----
+  const explicitFetch = /(?:^|\b)(fetch|acquire|download|pull)\b.{0,25}\bimager/i.test(q);
+  const wantsNdvI = /(^|[^a-z])ndvi([^a-z]|$)|vegetation index/i.test(q);
+  const wantsNdwI = /(^|[^a-z])ndwi([^a-z]|$)|water index/i.test(q);
+  const wantsChange = /changed|bi-temporal|between (these|the) two|built-up area|increased|decreased/.test(q);
+  const wantsOpticalSar = /optical.{0,20}sar|sar.{0,20}optical|fus(e|ion)/.test(q);
+  const wantsArea = /changed area|area\s+of\s+(the\s+)?change|(calculate|measure|compute|estimate)\b.{0,30}\b(surface\s+)?area\b/.test(q);
+  const wantsTrend = /historical trend|trend over|time series/.test(q);
+
+  const TASK_FOR_TOOL = {
+    ndvi: 'NDVI',
+    ndwi: 'NDWI',
+    optical_sar: 'OPTICAL_SAR',
+    change: 'CHANGE_ANALYSIS',
+    area: 'AREA',
+    trend: 'TREND'
+  };
+
+  // NDVI + NDWI requested together ("calculate NDVI and NDWI").
+  if (wantsNdvI && wantsNdwI) {
+    return { taskType: 'NDVI', toolNames: ['ndvi', 'ndwi'], parameters: {} };
+  }
+
+  // Acquisition explicitly requested ahead of one or more analysis tools.
+  const acquisitionTools = [];
+  if (wantsNdvI) acquisitionTools.push('ndvi');
+  if (wantsNdwI) acquisitionTools.push('ndwi');
+  if (wantsOpticalSar) acquisitionTools.push('optical_sar');
+  if (wantsChange) acquisitionTools.push('change');
+  if (wantsArea) acquisitionTools.push('area');
+  if (wantsTrend) acquisitionTools.push('trend');
+
+  if (explicitFetch && acquisitionTools.length > 0) {
+    return {
+      taskType: TASK_FOR_TOOL[acquisitionTools[0]],
+      toolNames: ['fetch-imagery', ...acquisitionTools],
+      parameters: {}
+    };
+  }
+
+  // change detection followed by area calculation ("compute the changed area").
+  if (wantsChange && wantsArea) {
+    return { taskType: 'CHANGE_ANALYSIS', toolNames: ['change', 'area'], parameters: {} };
+  }
+
+  // ---- Single-tool classification ----
   if (q.includes('caption') || q.includes('describe') || q.includes('land-cover') || q.includes('land cover') || q.includes('visible')) {
     return { taskType: 'CAPTION', toolNames: ['caption'], parameters: {} };
   }
