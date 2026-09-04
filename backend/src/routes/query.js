@@ -257,7 +257,7 @@ router.post('/trend', async (req, res) => {
     });
   } catch (error) {
     console.error('[Trend] Error processing trend query:', error);
-    return res.status(500).json(trendFailureResponse(error.message));
+    return res.status(500).json(trendFailureResponse('An internal error occurred while processing the trend query.'));
   }
 });
 
@@ -269,7 +269,8 @@ router.get('/history', async (req, res) => {
     const queries = await Query.find().sort({ createdAt: -1 }).limit(50);
     return res.status(200).json(queries);
   } catch (error) {
-    return res.status(500).json({ status: 'failed', error: error.message });
+    console.error('[History] Error listing queries:', error);
+    return res.status(500).json({ status: 'failed', error: 'An internal error occurred while listing queries.' });
   }
 });
 
@@ -301,7 +302,8 @@ router.get('/:id/report', async (req, res) => {
     };
     return res.status(200).json(report);
   } catch (error) {
-    return res.status(500).json({ status: 'failed', error: error.message });
+    console.error('[Report] Error generating report:', error);
+    return res.status(500).json({ status: 'failed', error: 'An internal error occurred while generating the report.' });
   }
 });
 
@@ -319,7 +321,8 @@ router.get('/:id', async (req, res) => {
     }
     return res.status(200).json(queryDoc);
   } catch (error) {
-    return res.status(500).json({ status: 'failed', error: error.message });
+    console.error('[Query] Error fetching query:', error);
+    return res.status(500).json({ status: 'failed', error: 'An internal error occurred while fetching the query.' });
   }
 });
 

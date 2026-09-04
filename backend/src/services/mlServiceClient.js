@@ -141,7 +141,7 @@ function getMockResult(endpoint, payload) {
         },
         evidence: { region: payload.bounding_box || {}, data_source: 'mock' },
         confidence: 0.7,
-        metadata: { data_source: 'mock', source_warning: 'Mock/fixture data. Not real GEE satellite imagery.' }
+        metadata: { mock: true, data_source: 'mock', source_warning: 'Mock/fixture data. Not real GEE satellite imagery.' }
       };
 
     case '/vqa':
@@ -154,7 +154,7 @@ function getMockResult(endpoint, payload) {
         },
         evidence: { images: payload.imageRefs || [payload.tileId], region: payload.region || {}, notes: 'VQA inference completed successfully.' },
         confidence: 0.92,
-        metadata: { timestamp: new Date().toISOString() }
+        metadata: { mock: true, timestamp: new Date().toISOString() }
       };
 
     case '/caption':
@@ -167,7 +167,7 @@ function getMockResult(endpoint, payload) {
         },
         evidence: { images: payload.imageRefs || [payload.tileId], region: payload.region || {}, notes: 'Image captioning generated.' },
         confidence: 0.89,
-        metadata: { timestamp: new Date().toISOString() }
+        metadata: { mock: true, timestamp: new Date().toISOString() }
       };
 
     case '/ground':
@@ -181,7 +181,7 @@ function getMockResult(endpoint, payload) {
         },
         evidence: { images: payload.imageRefs || [payload.tileId], region: payload.region || {}, notes: 'Feature grounding bounding box computed.' },
         confidence: 0.88,
-        metadata: { timestamp: new Date().toISOString() }
+        metadata: { mock: true, timestamp: new Date().toISOString() }
       };
 
     case '/change':
@@ -195,7 +195,7 @@ function getMockResult(endpoint, payload) {
         },
         evidence: { images: payload.imageRefs || [payload.tile_id_t1, payload.tile_id_t2], region: payload.region || {}, notes: 'Bi-temporal change detection mask generated.' },
         confidence: 0.94,
-        metadata: { timestamp: new Date().toISOString() }
+        metadata: { mock: true, timestamp: new Date().toISOString() }
       };
 
     case '/optical-sar':
@@ -213,7 +213,7 @@ function getMockResult(endpoint, payload) {
         },
         evidence: { images: payload.imageRefs || [payload.optical_tile_id, payload.sar_tile_id], region: payload.region || {}, notes: 'Cross-modal Sentinel-1 SAR + Sentinel-2 Optical fusion.' },
         confidence: 0.95,
-        metadata: { timestamp: new Date().toISOString() }
+        metadata: { mock: true, timestamp: new Date().toISOString() }
       };
 
     case '/ndvi':
@@ -227,7 +227,7 @@ function getMockResult(endpoint, payload) {
         },
         evidence: { images: payload.imageRefs || [payload.tile_id], region: payload.region || {}, notes: 'NDVI calculation from NIR and Red optical bands.' },
         confidence: 0.96,
-        metadata: { timestamp: new Date().toISOString() }
+        metadata: { mock: true, timestamp: new Date().toISOString() }
       };
 
     case '/ndwi':
@@ -241,7 +241,7 @@ function getMockResult(endpoint, payload) {
         },
         evidence: { images: payload.imageRefs || [payload.tile_id], region: payload.region || {}, notes: 'NDWI calculation from Green and NIR optical bands.' },
         confidence: 0.95,
-        metadata: { timestamp: new Date().toISOString() }
+        metadata: { mock: true, timestamp: new Date().toISOString() }
       };
 
     case '/area':
@@ -255,7 +255,7 @@ function getMockResult(endpoint, payload) {
         },
         evidence: { images: payload.imageRefs || [payload.tile_id], region: payload.region || {}, notes: 'Geospatial area measurement computed.' },
         confidence: 0.93,
-        metadata: { timestamp: new Date().toISOString() }
+        metadata: { mock: true, timestamp: new Date().toISOString() }
       };
 
     case '/trend':
@@ -277,7 +277,7 @@ function getMockResult(endpoint, payload) {
         },
         evidence: { region: payload.region || {}, notes: 'Multi-temporal time series computed.' },
         confidence: 0.91,
-        metadata: { timestamp: new Date().toISOString() }
+        metadata: { mock: true, timestamp: new Date().toISOString() }
       };
 
     default:
@@ -287,7 +287,7 @@ function getMockResult(endpoint, payload) {
         result: { message: `Executed tool at ${endpoint}` },
         evidence: { images: payload.imageRefs || [], region: payload.region || {} },
         confidence: 0.85,
-        metadata: { timestamp: new Date().toISOString() }
+        metadata: { mock: true, timestamp: new Date().toISOString() }
       };
   }
 }

@@ -41,6 +41,7 @@ resultsCacheSchema.index({ tool: 1, 'parameters.hash': 1 });
 resultsCacheSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
 resultsCacheSchema.index({ region: '2dsphere' });
 resultsCacheSchema.index({ metric: 1, 'dateRange.start': 1, 'dateRange.end': 1, regionKey: 1 });
+resultsCacheSchema.index({ metric: 1, regionKey: 1, 'dateRange.start': 1, 'dateRange.end': 1 }, { unique: true });
 
 export const ResultsCache = mongoose.model('ResultsCache', resultsCacheSchema);
 export default ResultsCache;
