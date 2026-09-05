@@ -7,7 +7,7 @@ import { planTools } from './taskPlanner.js';
 import { executeTools } from './toolExecutor.js';
 import { estimateConfidence } from './confidenceEstimator.js';
 import { composeAnswer } from './answerComposer.js';
-import { makeTraceEntry, makeRejectedResponse, makeFailedResponse, buildEvidence } from '../utils/responseBuilder.js';
+import { makeTraceEntry, makeRejectedResponse, makeFailedResponse } from '../utils/responseBuilder.js';
 
 const TASK_TYPE_ENUM = new Set(['VQA', 'CAPTION', 'GROUNDING', 'CHANGE_ANALYSIS', 'OPTICAL_SAR', 'NDVI', 'NDWI', 'AREA', 'TREND']);
 
@@ -28,6 +28,52 @@ function persistableToolResults(toolResults) {
     error: tr.error || '',
     metadata: tr.metadata || {}
   }));
+}
+
+function collectUniqueStrings(target, value) {
+  if (value == null || value === '') return;
+  const items = Array.isArray(value) ? value : [value];
+  for (const item of items) {
+    if (item == null) continue;
+    const s = String(item);
+    if (s && !target.includes(s)) target.push(s);
+  }
+}
+
+/**
+ * Aggregate evidence across every successful tool result (in execution order),
+ * plus explicit notes for failed/skipped tools so the final evidence/trace stays
+ * honest. Failed/skipped tools never contribute success evidence. The top-level
+ * `result` remains the FIRST successful tool result for backward compatibility;
+ * this helper only shapes the `evidence` object.
+ */
+function aggregateToolEvidence(imageRefs, successResults, allResults, parameters) {
+  const images = [];
+  collectUniqueStrings(images, imageRefs || []);
+
+  const notes = [];
+  for (const r of successResults) {
+    const ev = r.evidence || {};
+    collectUniqueStrings(images, ev.images);
+    if (ev.image != null) collectUniqueStrings(images, String(ev.image));
+    if (typeof ev.notes === 'string' && ev.notes) collectUniqueStrings(notes, ev.notes);
+  }
+
+  for (const r of allResults) {
+    if (r.status === 'failed') {
+      collectUniqueStrings(notes, `Tool "${r.tool}" failed: ${r.error || 'unknown error'}`);
+    } else if (r.status === 'skipped') {
+      collectUniqueStrings(notes, `Tool "${r.tool}" skipped: ${r.error || 'dependency not satisfied'}`);
+    }
+  }
+
+  const region = successResults[0]?.evidence?.region || parameters?.region || {};
+
+  return {
+    images,
+    region,
+    notes: notes.length > 0 ? notes.join(' ') : ''
+  };
 }
 
 export async function runAgentPipeline(queryText, imageRefIds, parameters = {}) {
@@ -157,11 +203,11 @@ export async function runAgentPipeline(queryText, imageRefIds, parameters = {}) 
     return { _id: queryDoc._id, toolResults: persistedToolResults, plan, ...response };
   }
 
-  const { score: confidence } = estimateConfidence(validationResult, toolResults);
+  const { score: confidence, signals: confidenceSignals } = estimateConfidence(validationResult, toolResults);
   trace.push(makeTraceEntry('confidence_estimation', `Confidence score: ${confidence}`));
 
   const primaryResult = successResults[0];
-  const evidence = buildEvidence(sanitizedRefs, primaryResult, mergedParams);
+  const evidence = aggregateToolEvidence(sanitizedRefs, successResults, toolResults, mergedParams);
 
   const answerText = await composeAnswer(queryText, resolvedTaskType, toolResults, trace);
 
@@ -181,6 +227,7 @@ export async function runAgentPipeline(queryText, imageRefIds, parameters = {}) 
     result: primaryResult.result || {},
     evidence,
     confidence,
+    confidenceSignals,
     executionTrace: trace,
     answerText,
     status: overallStatus
@@ -195,6 +242,7 @@ export async function runAgentPipeline(queryText, imageRefIds, parameters = {}) 
     toolResults: persistedToolResults,
     evidence,
     confidence,
+    confidenceSignals,
     executionTrace: trace,
     status: overallStatus
   };

@@ -306,6 +306,7 @@ router.get('/:id/report', async (req, res) => {
       taskType: queryDoc.taskType,
       status: queryDoc.status,
       confidence: queryDoc.confidence,
+      confidenceSignals: queryDoc.confidenceSignals || [],
       evidence: queryDoc.evidence,
       result: queryDoc.result,
       executionTrace: queryDoc.executionTrace,

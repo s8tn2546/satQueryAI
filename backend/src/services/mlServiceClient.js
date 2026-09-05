@@ -24,6 +24,8 @@ const FILE_ENDPOINTS = {
   '/ndvi': { sourceKeys: ['image_path'], fileFields: ['file'] },
   '/ndwi': { sourceKeys: ['image_path'], fileFields: ['file'] },
   '/area': { sourceKeys: ['image_path'], fileFields: ['file'] },
+  '/vqa': { sourceKeys: ['image_path'], fileFields: ['image'] },
+  '/caption': { sourceKeys: ['image_path'], fileFields: ['image'] },
   '/change': { sourceKeys: ['image_t1_path', 'image_t2_path'], fileFields: ['image1', 'image2'] },
   '/optical-sar': { sourceKeys: ['optical_path', 'sar_path'], fileFields: ['optical_image', 'sar_image'] },
 };

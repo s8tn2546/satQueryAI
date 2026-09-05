@@ -36,6 +36,7 @@ const querySchema = new mongoose.Schema({
     notes: { type: String, default: '' }
   },
   confidence: { type: Number, min: 0, max: 1, default: 0 },
+  confidenceSignals: { type: [{ type: String }], default: undefined },
   executionTrace: [executionTraceEntrySchema],
   answerText: { type: String, default: '' },
   status: {
