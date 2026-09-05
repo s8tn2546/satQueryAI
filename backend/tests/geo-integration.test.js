@@ -184,4 +184,136 @@ describe('§6.1a — Region-Based Image Acquisition + /validate integration', ()
       expect(tile.validationDetails.validationSource).toBe('local-fallback');
     });
   });
+
+  describe('fetch-by-region boundingBox normalization', () => {
+    function mockEcho(bbox) {
+      mockCallMlService.mockResolvedValue({
+        tool: 'fetch-imagery',
+        status: 'success',
+        result: {
+          source: 'mock',
+          images: [
+            { modality: 'optical', source: 'sentinel-2', filePath: null, downloaded: false, boundingBox: bbox },
+            { modality: 'sar', source: 'sentinel-1', filePath: null, downloaded: false, boundingBox: bbox }
+          ]
+        },
+        metadata: { data_source: 'mock', mock: true }
+      });
+    }
+
+    it('normalizes a compact [x1,y1,x2,y2] request bbox to a canonical Polygon before forwarding and persisting', async () => {
+      const compact = [77.0, 28.0, 77.1, 28.1];
+      const expectedPolygon = {
+        type: 'Polygon',
+        coordinates: [[
+          [77.0, 28.0], [77.1, 28.0], [77.1, 28.1], [77.0, 28.1], [77.0, 28.0]
+        ]]
+      };
+      mockEcho(compact);
+
+      const res = await request(app)
+        .post('/api/images/fetch-by-region')
+        .send({ boundingBox: compact });
+
+      expect(res.status).toBe(200);
+      expect(res.body.status).toBe('success');
+      expect(mockCallMlService).toHaveBeenCalledWith(
+        '/fetch-imagery',
+        expect.objectContaining({ bounding_box: expectedPolygon })
+      );
+
+      const tiles = await Tile.find({ _id: { $in: res.body.tileIds } });
+      for (const t of tiles) {
+        expect(JSON.parse(JSON.stringify(t.boundingBox))).toEqual(expectedPolygon);
+      }
+    });
+
+    it('normalizes a bounds-object ({west,south,east,north}) mock echo before persistence', async () => {
+      const bounds = { west: 77.0, south: 28.0, east: 77.1, north: 28.1 };
+      const expectedPolygon = {
+        type: 'Polygon',
+        coordinates: [[
+          [77.0, 28.0], [77.1, 28.0], [77.1, 28.1], [77.0, 28.1], [77.0, 28.0]
+        ]]
+      };
+      mockEcho(bounds);
+
+      const res = await request(app)
+        .post('/api/images/fetch-by-region')
+        .send({ boundingBox: MOCK_BBOX });
+
+      expect(res.status).toBe(200);
+      const tiles = await Tile.find({ _id: { $in: res.body.tileIds } });
+      for (const t of tiles) {
+        expect(JSON.parse(JSON.stringify(t.boundingBox))).toEqual(expectedPolygon);
+      }
+    });
+
+    it('normalizes a snake_case per-image bounding_box (real ML summary shape)', async () => {
+      const snakeBbox = { type: 'Polygon', coordinates: [[[77.0, 28.0], [77.1, 28.0], [77.1, 28.1], [77.0, 28.1], [77.0, 28.0]]] };
+      mockCallMlService.mockResolvedValue({
+        tool: 'fetch-imagery',
+        status: 'success',
+        result: {
+          source: 'gee',
+          images: [
+            { modality: 'optical', source: 'sentinel-2', filePath: '/tmp/real.tif', downloaded: true, bounding_box: snakeBbox }
+          ]
+        },
+        metadata: { data_source: 'gee' }
+      });
+
+      const res = await request(app)
+        .post('/api/images/fetch-by-region')
+        .send({ boundingBox: MOCK_BBOX });
+
+      expect(res.status).toBe(200);
+      const tiles = await Tile.find({ _id: { $in: res.body.tileIds } });
+      expect(JSON.parse(JSON.stringify(tiles[0].boundingBox))).toEqual(snakeBbox);
+      expect(tiles[0].validationDetails.downloaded).toBe(true);
+    });
+
+    it('falls back to the canonical request bbox when an image has no usable boundingBox', async () => {
+      mockCallMlService.mockResolvedValue({
+        tool: 'fetch-imagery',
+        status: 'success',
+        result: {
+          source: 'mock',
+          images: [{ modality: 'optical', filePath: null, bands: [] }]
+        },
+        metadata: { data_source: 'mock', mock: true }
+      });
+
+      const res = await request(app)
+        .post('/api/images/fetch-by-region')
+        .send({ boundingBox: MOCK_BBOX });
+
+      expect(res.status).toBe(200);
+      const tiles = await Tile.find({ _id: { $in: res.body.tileIds } });
+      expect(JSON.parse(JSON.stringify(tiles[0].boundingBox))).toEqual(MOCK_BBOX);
+    });
+
+    it.each([
+      ['Point geometry', { type: 'Point', coordinates: [77.0, 28.0] }],
+      ['string', '77.0,28.0,77.1,28.1'],
+      ['too-short array', [77.0, 28.0]],
+      ['empty polygon', { type: 'Polygon', coordinates: [] }],
+      ['non-finite coordinates', [77.0, 'x', 77.1, 28.1]]
+    ])('rejects invalid boundingBox: %s (no 500, nothing persisted)', async (_label, bad) => {
+      mockCallMlService.mockResolvedValue({
+        tool: 'fetch-imagery',
+        status: 'success',
+        result: { images: [] }
+      });
+
+      const res = await request(app)
+        .post('/api/images/fetch-by-region')
+        .send({ boundingBox: bad });
+
+      expect(res.status).toBe(400);
+      expect(res.body.status).toBe('rejected');
+      expect(mockCallMlService).not.toHaveBeenCalled();
+      expect(await Tile.countDocuments()).toBe(0);
+    });
+  });
 });

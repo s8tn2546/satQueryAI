@@ -32,13 +32,7 @@ function formatNumber(v) {
   return Math.round(v * 100) / 100;
 }
 
-function buildFallbackAnswer(queryText, taskType, toolResults) {
-  const successful = toolResults.filter(r => r.status === 'success');
-  if (successful.length === 0) {
-    return `The analysis for your query could not be completed. The image processing service returned no results. Please check your uploaded images and try again.`;
-  }
-
-  const r = successful[0];
+function formatToolResult(r) {
   const result = r.result || {};
 
   if (typeof result.answer === 'string' && result.answer) return result.answer;
@@ -74,6 +68,15 @@ function buildFallbackAnswer(queryText, taskType, toolResults) {
   if (result.boundingBox) return `Feature located at bounding box: ${JSON.stringify(result.boundingBox)}.`;
 
   return `Analysis complete. Result: ${JSON.stringify(result)}`;
+}
+
+function buildFallbackAnswer(queryText, taskType, toolResults) {
+  const successful = toolResults.filter(r => r.status === 'success');
+  if (successful.length === 0) {
+    return `The analysis for your query could not be completed. The image processing service returned no results. Please check your uploaded images and try again.`;
+  }
+
+  return successful.map(formatToolResult).filter(Boolean).join(' ');
 }
 
 export async function composeAnswer(queryText, taskType, toolResults, trace) {

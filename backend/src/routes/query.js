@@ -50,6 +50,7 @@ function validateTrendRequest(body) {
 }
 
 const TREND_TASK_TYPE = 'TREND';
+const CACHE_TTL_DAYS = 7;
 
 function trendFailureResponse(reason, trace = []) {
   return {
@@ -212,23 +213,35 @@ router.post('/trend', async (req, res) => {
     const confidence = mlResult.confidence || 0;
     const evidence = mlResult.evidence || { images: [], region: {}, notes: '' };
 
-    trace.push(makeTraceEntry('trend_ml_call', `ML /trend returned ${(result.series || []).length} data point(s)`));
+    // A labeled mock/fallback result (ML unreachable, timed out, or GEE-unavailable
+    // fixtures) is served to the client but must never be cached as a real result.
+    const isMockTrendResult = Boolean(
+      mlResult?.metadata?.mock === true ||
+      mlResult?.metadata?.data_source === 'mock' ||
+      mlResult?.result?.source === 'mock'
+    );
 
-    // Only cache successful results (BACKEND.md §10). Guard against inserting a
-    // duplicate where an existing exact/superset entry already covers the request.
+    trace.push(makeTraceEntry('trend_ml_call', `ML /trend returned ${(result.series || []).length} data point(s)${isMockTrendResult ? ' (labeled mock/fallback — not cached as real data)' : ''}`));
+
+    // Only cache successful (non-mock) results (BACKEND.md §10). Guard against
+    // inserting a duplicate where an existing exact/superset entry already
+    // covers the request.
     const existing = await findCoveringCacheEntry({ region, metric: metricLower, startDate, endDate, interval });
-    if (!existing) {
+    if (!existing && !isMockTrendResult) {
       try {
         await ResultsCache.create({
+          tool: 'trend',
           metric: metricLower,
           region,
           regionKey: regionKey(region),
           dateRange: { start: new Date(startDate), end: new Date(endDate) },
           series: (result.series || []).map(p => ({ date: p.date, value: p.value ?? null })),
           interval,
+          parameters: { region, metric: metricLower, startDate, endDate, interval },
           confidence,
           evidence,
           result,
+          expiresAt: new Date(Date.now() + CACHE_TTL_DAYS * 24 * 60 * 60 * 1000),
           computedAt: new Date()
         });
         trace.push(makeTraceEntry('trend_cache_store', `Stored result in results_cache for ${metricLower}`));
