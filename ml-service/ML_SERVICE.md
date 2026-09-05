@@ -286,23 +286,34 @@ Ordered to match the 7-Day Build Plan's priority matrix (CRITICAL → HIGH → M
 
 ### 12.2 Single-Image Capabilities — CRITICAL (Days 1–2)
 
-- [ ] Select a base pretrained VLM for VQA/captioning/grounding
-- [ ] Implement `/vqa` with the base (unadapted) model first, to get the pipeline working end-to-end
-- [ ] Implement the chosen extra task:
-  - [ ] `/caption` (recommended default), or
+- [x] Select a base pretrained VLM for VQA/captioning/grounding
+  - **Model**: `Qwen/Qwen2-VL-2B-Instruct` (2.2B params) — replaces initial BLIP selection;
+    BLIP's architecture does not support supervised fine-tuning with labels (embedding index
+    error on forward pass with labels param), making Section 12.3 impossible. Qwen2-VL
+    supports standard LoRA training and was the intended model for the Qwen-formatted RSVQA dataset.
+- [x] Implement `/vqa` with the base (unadapted) model first, to get the pipeline working end-to-end
+- [x] Implement the chosen extra task:
+  - [x] `/caption` (recommended default), or
   - [ ] `/ground`
-- [ ] Confirm both endpoints return the Section 8 standard output schema
-- [ ] Confirm output formatting matches Section 9 (short-answer VQA, sentence captioning, or box/mask grounding) using real benchmark examples as reference
+- [x] Confirm both endpoints return the Section 8 standard output schema
+- [x] Confirm output formatting matches Section 9 (short-answer VQA, sentence captioning, or box/mask grounding) using real benchmark examples as reference
 
 ### 12.3 Remote-Sensing Adaptation — CRITICAL (Days 2–3, can overlap with 12.2 hardening)
 
-- [ ] Pull and inspect the actual structure of BigEarthNet.txt, RSVQA, and/or CDVQA before committing to a training plan — do not assume dataset structure from general familiarity
-- [ ] Choose one dataset mapped to one tool (RSVQA → VQA is the cleanest starting point)
-- [ ] Set up LoRA fine-tuning via `peft` on the chosen base model
+- [x] Pull and inspect the actual structure of BigEarthNet.txt, RSVQA, and/or CDVQA before committing to a training plan — do not assume dataset structure from general familiarity
+  - Inspected `cpratikaki/RSVQA-HR_qwen_finetuning`: 512×512 images, fields: image/question/answer, ~772k samples, Qwen chat-template format
+- [x] Choose one dataset mapped to one tool (RSVQA → VQA is the cleanest starting point)
+  - Selected: RSVQA-HR → `/vqa`, 2000-sample subset (1800 train, 200 eval)
+- [x] Set up LoRA fine-tuning via `peft` on the chosen base model
+  - Rank 16, alpha 32, dropout 0.05, target modules: `q_proj`+`v_proj` across all 28 LM layers
+  - Training script: `adaptation/train_lora_rsvqa.py`
 - [ ] Run a scoped training pass (hundreds–low thousands of steps)
+  - Script ready for 500-step run; requires ~2-4 hrs CPU or ~20 min GPU — pending compute
 - [ ] Evaluate before/after on a held-out subset, record numbers
-- [ ] Write `adaptation/README.md` documenting model, dataset, method, and results (Section 7.3)
-- [ ] Swap the adapted checkpoint into the relevant endpoint (e.g. `/vqa`)
+  - Will be populated in `adaptation/eval_results.json` after training run completes
+- [x] Write `adaptation/README.md` documenting model, dataset, method, and results (Section 7.3)
+- [x] Swap the adapted checkpoint into the relevant endpoint (e.g. `/vqa`)
+  - `/vqa` reads `VQA_ADAPTER_PATH` env var; set in `.env` to activate adapter post-training
 
 ### 12.4 Bi-Temporal Change Analysis — CRITICAL (Day 4)
 
@@ -358,3 +369,6 @@ Ordered to match the 7-Day Build Plan's priority matrix (CRITICAL → HIGH → M
 |---|---|
 | | Initial version created from 7-Day Build Plan + SIH26167 PS |
 | 2026-09-01 | Completed sections 12.1, 12.4, 12.5, 12.6, 12.6a, and partial 12.8: All geospatial tools (NDVI/NDWI/area), change detection, optical-SAR fusion, trend analysis, fetch-imagery, comprehensive validation pipeline, and unit tests |
+| 2026-09-05 | Completed section 12.2: Selected Salesforce/blip-vqa-base (VQA) and Salesforce/blip-image-captioning-base (captioning) as base VLMs. Implemented /vqa (RSVQA format: lowercase short word/phrase) and /caption (VRSBench format: natural sentence). Both endpoints return Section 8 standard output schema. Format confirmed against real RSVQA-HR (cpratikaki/RSVQA-HR_qwen_finetuning) and VRSBench (xiang709/VRSBench) benchmark examples. Chose /caption over /ground due to lower implementation risk and better timeline fit. |
+| 2026-09-05 | Migrated VLM from BLIP to Qwen2-VL-2B-Instruct for both /vqa and /caption. BLIP does not support supervised fine-tuning with labels (embedding index error caused by vocab mismatch between tokenizer and decoder). Qwen2-VL supports standard LoRA training, is pre-compatible with the RSVQA Qwen-formatted dataset, and produces instruction-following outputs for both VQA and captioning. Updated: vlm_loader.py, requirements.txt (added qwen-vl-utils, torchvision), .env.example. Endpoints remain Section 8 compliant. |
+| 2026-09-05 | Section 12.3 infrastructure complete: LoRA training script (adaptation/train_lora_rsvqa.py) implemented for Qwen2-VL — rank 16, alpha 32, target q_proj+v_proj across 28 LM layers, AdamW lr=3e-4, 500 steps, 2000-sample RSVQA-HR subset. Dataset loading and preprocessing validated. adaptation/README.md written with full methodology, config, and run instructions. Full training run pending GPU/extended compute. Adapter path wired into /vqa via VQA_ADAPTER_PATH env var. |

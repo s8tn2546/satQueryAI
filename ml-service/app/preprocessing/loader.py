@@ -122,10 +122,77 @@ def _pillow_mode_to_bands(mode: str) -> list[str]:
         "LA": ["grayscale", "alpha"],
         "RGB": ["red", "green", "blue"],
         "RGBA": ["red", "green", "blue", "alpha"],
-        "L": ["grayscale"],
         "P": ["palette"],
         "1": ["binary"],
         "I": ["int32"],
         "F": ["float32"],
     }
     return mapping.get(mode, [f"channel_{i}" for i in range(len(mode))])
+
+
+def load_image_as_pil(path: str | Path) -> Image.Image:
+    """Load an image as a PIL Image, handling both rasters and regular images.
+    
+    For rasters (GeoTIFF/TIFF), reads the first 3 bands as RGB or converts
+    grayscale to RGB. For regular images (PNG/JPEG), loads directly.
+    
+    Args:
+        path: Path to the image file
+        
+    Returns:
+        PIL Image in RGB mode
+        
+    Raises:
+        ImageLoadError: If the image cannot be loaded
+    """
+    import numpy as np
+    import rasterio
+    
+    path = Path(path)
+    if not path.exists():
+        raise ImageLoadError(f"File not found: {path}")
+    
+    if can_read_as_raster(path):
+        try:
+            with rasterio.open(str(path)) as src:
+                if src.count >= 3:
+                    r = src.read(1)
+                    g = src.read(2)
+                    b = src.read(3)
+                    
+                    def normalize_band(band):
+                        band = band.astype(np.float32)
+                        valid = np.isfinite(band)
+                        if not valid.any():
+                            return np.zeros_like(band, dtype=np.uint8)
+                        vmin, vmax = np.percentile(band[valid], [2, 98])
+                        band = np.clip((band - vmin) / (vmax - vmin + 1e-8) * 255, 0, 255)
+                        return band.astype(np.uint8)
+                    
+                    r = normalize_band(r)
+                    g = normalize_band(g)
+                    b = normalize_band(b)
+                    
+                    rgb = np.stack([r, g, b], axis=-1)
+                    return Image.fromarray(rgb, mode="RGB")
+                else:
+                    band = src.read(1).astype(np.float32)
+                    valid = np.isfinite(band)
+                    if not valid.any():
+                        band = np.zeros_like(band, dtype=np.uint8)
+                    else:
+                        vmin, vmax = np.percentile(band[valid], [2, 98])
+                        band = np.clip((band - vmin) / (vmax - vmin + 1e-8) * 255, 0, 255)
+                        band = band.astype(np.uint8)
+                    gray = Image.fromarray(band, mode="L")
+                    return gray.convert("RGB")
+        except Exception as exc:
+            raise ImageLoadError(f"Failed to load raster as PIL: {exc}") from exc
+    
+    try:
+        img = Image.open(path)
+        if img.mode != "RGB":
+            img = img.convert("RGB")
+        return img
+    except Exception as exc:
+        raise ImageLoadError(f"Failed to load image as PIL: {exc}") from exc

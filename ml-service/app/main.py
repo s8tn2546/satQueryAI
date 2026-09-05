@@ -15,6 +15,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.area import router as area_router
+from app.api.caption import router as caption_router
 from app.api.change import router as change_router
 from app.api.fetch_imagery import router as fetch_imagery_router
 from app.api.ndvi import router as ndvi_router
@@ -22,6 +23,7 @@ from app.api.ndwi import router as ndwi_router
 from app.api.optical_sar import router as optical_sar_router
 from app.api.trend import router as trend_router
 from app.api.validate import router as validate_router
+from app.api.vqa import router as vqa_router
 
 # Load environment variables from .env if present
 env_path = Path(__file__).resolve().parent.parent / ".env"
@@ -53,6 +55,8 @@ app.add_middleware(
 )
 
 app.include_router(validate_router, tags=["validation"])
+app.include_router(vqa_router, tags=["vlm"])
+app.include_router(caption_router, tags=["vlm"])
 app.include_router(ndvi_router, tags=["spectral-index"])
 app.include_router(ndwi_router, tags=["spectral-index"])
 app.include_router(area_router, tags=["geospatial"])
