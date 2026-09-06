@@ -64,6 +64,11 @@ _check_required_deps()
 import torch  # noqa: E402  (after dependency guard)
 from PIL import Image  # noqa: E402
 
+# Module-level import required by _infer() and RSVQADataset.__getitem__ (both
+# run outside main()'s local scope). Safe here because the dependency guard
+# above already verified qwen_vl_utils is installed.
+from qwen_vl_utils import process_vision_info  # noqa: E402
+
 # Ensure ``ml-service`` is on sys.path so this script runs from any CWD and the
 # torch-free helper module (adaptation/_train_helpers.py) stays importable.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -488,7 +493,6 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 
     from datasets import load_dataset
-    from qwen_vl_utils import process_vision_info
     from transformers import AutoProcessor, Qwen2VLForConditionalGeneration
     from peft import LoraConfig, PeftModel, get_peft_model
 

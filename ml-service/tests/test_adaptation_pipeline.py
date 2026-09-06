@@ -1,6 +1,6 @@
 """Focused tests for the LoRA training pipeline helpers (adaptation/).
 
-These tests target the two defects found in the Colab smoke test:
+These tests target the defects found in the Colab smoke test:
 
 1. Qwen2-VL multimodal token/label ALIGNMENT — the previous code used
    truncation/padding='max_length' on the multimodal processor call, which can
@@ -12,11 +12,17 @@ These tests target the two defects found in the Colab smoke test:
    eval size larger than the available samples. The fix guarantees a non-negative
    train size and that n_eval never exceeds available samples.
 
+3. process_vision_info AVAILABILITY in the training script — the symbol was
+   previously imported only inside main()'s local scope, causing a NameError in
+   the module-level _infer() helper. It must be a module-level import.
+
 These tests are deliberately dependency-free (no torch / transformers / peft),
 so they run in environments where the heavy training stack is not installed.
 """
 
 from __future__ import annotations
+
+from pathlib import Path
 
 import pytest
 
@@ -25,6 +31,8 @@ from adaptation._train_helpers import (
     build_masked_labels,
     split_train_eval,
 )
+
+TRAIN_SCRIPT = Path(__file__).resolve().parents[1] / "adaptation" / "train_lora_rsvqa.py"
 
 # ---------------------------------------------------------------------------
 # Small-subset split
@@ -157,3 +165,44 @@ def test_image_token_expansion_offset_is_exact():
         assert labels[n_image:n_image + 4] == [7, 8, 9, 10]
         non_masked = [t for t in labels if t != IGNORE_INDEX]
         assert non_masked == [7, 8, 9, 10]
+
+
+# ---------------------------------------------------------------------------
+# process_vision_info import availability in the training script
+# ---------------------------------------------------------------------------
+
+
+def test_process_vision_info_is_module_level():
+    """qwen-vl-utils' process_vision_info must be imported at module scope.
+
+    _infer() and RSVQADataset.__getitem__ run outside main(); the previous code
+    imported process_vision_info only inside main(), causing a NameError during
+    BASE model evaluation. Both call sites and a module-level import must exist,
+    and there must be no import nested inside main().
+    """
+    assert TRAIN_SCRIPT.exists(), f"training script not found: {TRAIN_SCRIPT}"
+    src = TRAIN_SCRIPT.read_text()
+    lines = src.splitlines()
+
+    assert "from qwen_vl_utils import process_vision_info" in src
+
+    def line_index(predicate):
+        for i, line in enumerate(lines):
+            if predicate(line):
+                return i
+        return -1
+
+    import_idx = line_index(
+        lambda l: "from qwen_vl_utils import process_vision_info" in l
+    )
+    main_idx = line_index(lambda l: l.startswith("def main("))
+    assert import_idx != -1, "module-level import missing"
+    assert main_idx != -1
+    assert import_idx < main_idx, (
+        "process_vision_info import must be at module level (before main), "
+        "not nested in main()'s local scope"
+    )
+
+    # The two call sites that previously NameError'd still reference the symbol.
+    assert "process_vision_info([user_msg])" in src       # RSVQADataset.__getitem__
+    assert "process_vision_info(messages)" in src         # _infer()
