@@ -6,6 +6,7 @@ import mlServiceClient from '../services/mlServiceClient.js';
 import { runAgentPipeline } from '../agents/pipeline.js';
 import { composeAnswer } from '../agents/answerComposer.js';
 import { makeTraceEntry } from '../utils/responseBuilder.js';
+import { isDemoRegion, isMockTrendResult, findDemoTrendFallback } from '../services/demoTrendService.js';
 
 const router = express.Router();
 
@@ -179,6 +180,10 @@ router.post('/trend', async (req, res) => {
         makeTraceEntry('trend_cache_hit', `Using cached result computed ${cached.computedAt.toISOString()}`)
       ];
       const answerText = await composeTrendAnswer(cached.result, cached.confidence, trace);
+      const cache = { hit: true, computedAt: cached.computedAt };
+      if (cached.metadata?.demoPrecomputed === true) {
+        cache.source = 'demo-precompute';
+      }
       return res.status(200).json({
         answerText,
         taskType: TREND_TASK_TYPE,
@@ -187,7 +192,7 @@ router.post('/trend', async (req, res) => {
         confidence: cached.confidence || 0,
         executionTrace: trace,
         status: 'success',
-        cache: { hit: true, computedAt: cached.computedAt }
+        cache
       });
     }
 
@@ -204,6 +209,44 @@ router.post('/trend', async (req, res) => {
     });
 
     if (!mlResult || !['success', 'partial'].includes(mlResult.status)) {
+      // Precomputed demo-region fallback (BACKEND.md §15.5): only for the exact
+      // configured demo region, only when the live ML/GEE request failed, and
+      // only when a valid precomputed demo entry exists. Region mismatch or no
+      // demo cache preserve the honest failure below.
+      const fallback = await findDemoTrendFallback({
+        metric: metricLower,
+        interval,
+        regionKey: regionKey(region)
+      });
+      if (fallback) {
+        const reason = mlResult?.result?.error || mlResult?.error || `ML service returned ${mlResult?.status || 'no status'} for /trend`;
+        trace.push(makeTraceEntry('trend_ml_failed', reason));
+        trace.push(makeTraceEntry(
+          'trend_demo_fallback',
+          `Serving precomputed demo-region fallback computed ${fallback.computedAt.toISOString()} covering ${fallback.dateRange?.start?.toISOString().slice(0, 10)}..${fallback.dateRange?.end?.toISOString().slice(0, 10)}`
+        ));
+        const answerText = await composeTrendAnswer(fallback.result, fallback.confidence, trace);
+        const evidence = { ...(fallback.evidence || {}), isDemoPrecompute: true, data_source: 'demo-precompute' };
+        return res.status(200).json({
+          answerText,
+          taskType: TREND_TASK_TYPE,
+          result: fallback.result || {},
+          evidence,
+          confidence: fallback.confidence || 0,
+          executionTrace: trace,
+          status: 'success',
+          cache: { hit: true, source: 'demo-precompute', computedAt: fallback.computedAt },
+          fallback: {
+            source: 'demo-precompute',
+            computedAt: fallback.computedAt.toISOString(),
+            dateRange: {
+              start: fallback.dateRange?.start?.toISOString().slice(0, 10),
+              end: fallback.dateRange?.end?.toISOString().slice(0, 10)
+            },
+            note: `Live ML /trend failed (${reason}). Serving the precomputed demo-region result.`
+          }
+        });
+      }
       const reason = mlResult?.result?.error || mlResult?.error || `ML service returned ${mlResult?.status || 'no status'} for /trend`;
       trace.push(makeTraceEntry('trend_ml_failed', reason));
       return res.status(200).json(trendFailureResponse(reason, trace));
@@ -215,19 +258,54 @@ router.post('/trend', async (req, res) => {
 
     // A labeled mock/fallback result (ML unreachable, timed out, or GEE-unavailable
     // fixtures) is served to the client but must never be cached as a real result.
-    const isMockTrendResult = Boolean(
-      mlResult?.metadata?.mock === true ||
-      mlResult?.metadata?.data_source === 'mock' ||
-      mlResult?.result?.source === 'mock'
-    );
+    // Shared guard lives in the demo-trend service; mock-labeled results are never
+    // treated as real data by either the cache or the demo fallback.
+    if (isMockTrendResult(mlResult)) {
+      // Prefer the precomputed demo-region fallback over serving a mock-labeled
+      // result, but only for the configured demo region with a valid entry.
+      const fallback = await findDemoTrendFallback({
+        metric: metricLower,
+        interval,
+        regionKey: regionKey(region)
+      });
+      if (fallback) {
+        const reason = 'ML /trend returned a labeled mock/fallback result';
+        trace.push(makeTraceEntry('trend_ml_call', reason));
+        trace.push(makeTraceEntry(
+          'trend_demo_fallback',
+          `Serving precomputed demo-region fallback computed ${fallback.computedAt.toISOString()} covering ${fallback.dateRange?.start?.toISOString().slice(0, 10)}..${fallback.dateRange?.end?.toISOString().slice(0, 10)}`
+        ));
+        const answerText = await composeTrendAnswer(fallback.result, fallback.confidence, trace);
+        const evidence = { ...(fallback.evidence || {}), isDemoPrecompute: true, data_source: 'demo-precompute' };
+        return res.status(200).json({
+          answerText,
+          taskType: TREND_TASK_TYPE,
+          result: fallback.result || {},
+          evidence,
+          confidence: fallback.confidence || 0,
+          executionTrace: trace,
+          status: 'success',
+          cache: { hit: true, source: 'demo-precompute', computedAt: fallback.computedAt },
+          fallback: {
+            source: 'demo-precompute',
+            computedAt: fallback.computedAt.toISOString(),
+            dateRange: {
+              start: fallback.dateRange?.start?.toISOString().slice(0, 10),
+              end: fallback.dateRange?.end?.toISOString().slice(0, 10)
+            },
+            note: `Live ML /trend returned a labeled mock/fallback result. Serving the precomputed demo-region result.`
+          }
+        });
+      }
+    }
 
-    trace.push(makeTraceEntry('trend_ml_call', `ML /trend returned ${(result.series || []).length} data point(s)${isMockTrendResult ? ' (labeled mock/fallback — not cached as real data)' : ''}`));
+    trace.push(makeTraceEntry('trend_ml_call', `ML /trend returned ${(result.series || []).length} data point(s)${isMockTrendResult(mlResult) ? ' (labeled mock/fallback — not cached as real data)' : ''}`));
 
     // Only cache successful (non-mock) results (BACKEND.md §10). Guard against
     // inserting a duplicate where an existing exact/superset entry already
     // covers the request.
     const existing = await findCoveringCacheEntry({ region, metric: metricLower, startDate, endDate, interval });
-    if (!existing && !isMockTrendResult) {
+    if (!existing && !isMockTrendResult(mlResult)) {
       try {
         await ResultsCache.create({
           tool: 'trend',

@@ -400,6 +400,9 @@ Use this as a running task list. Work top to bottom within each section; section
 - [x] Wire `area` tool end-to-end (MEDIUM)
 - [x] Implement `POST /api/query/trend` with two-phase cache resolution (Section 10) (MEDIUM — only if ahead of schedule)
 - [ ] Precompute and cache the chosen demo region's trend result as a fallback
+  - [x] Config-driven precompute mechanism implemented (`DEMO_TREND_*` env config, `npm run precompute:demo-trend`, `src/services/demoTrendService.js`); real ML `/trend` success cached long-lived and labeled `demoPrecomputed`; labeled mock/fallback results are never cached
+  - [x] Region-gated fallback in `POST /api/query/trend`: only when the request region matches the configured demo region AND live ML/GEE fails AND a valid precomputed entry exists; region mismatch / missing entry / mock-labeled entry preserve the honest failure; served result is transparently labeled (`cache.source: "demo-precompute"`, `fallback` field, `trend_demo_fallback` trace, `evidence.isDemoPrecompute`)
+  - [ ] Populating the cache requires a demo region — the repository defines NO such region (this is a required configuration input via `DEMO_TREND_REGION`; it must not be invented)
 
 ### 15.5a Region-Based Image Acquisition — STRETCH (Day 6, only if 15.2–15.4 are fully stable)
 
@@ -409,6 +412,8 @@ Use this as a running task list. Work top to bottom within each section; section
 - [x] Confirm the response shape exactly matches `/api/images/upload`'s response
 - [x] Confirm no downstream code (agent pipeline, tools) branches on how an image was acquired
 - [ ] Manual test: fetch a region, then run a full query against it end-to-end through the normal pipeline
+  - [x] E2E integration coverage added (fetch-by-region → tile persistence → full `/api/query` → history/report) in `tests/m5-demo-trend.test.js`; exercises the normal agent pipeline with scripted ML responses
+  - [ ] Live GEE verification pending — requires GEE credentials (`GEE_*` env) which are not configured in this repo; no live GEE claim is made
 
 ### 15.6 Auth — LOW (only if time remains)
 
