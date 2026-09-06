@@ -31,8 +31,10 @@ when a real run is executed.
 
 **Training Parameters** (defaults):
 - Learning rate: 3e-4 with 50-step warmup
-- Batch size: 4
-- Training steps: 500
+- Physical batch size: 1 (per forward/backward pass)
+- Gradient accumulation: 4 steps → effective batch size 4
+- Gradient checkpointing: enabled (cuts activation memory)
+- Training steps: 500 (optimizer updates)
 - Subset: 2000 samples (holdout 200 for eval)
 - Max sequence length: 1024 (image tokens + text)
 
@@ -78,8 +80,9 @@ cd ml-service
 python3 adaptation/train_lora_rsvqa.py
 ```
 
-Runs the default configuration (500 steps, 2000 samples, batch 4). **Do not run
-this unsupervised** — it requires several GB of VRAM/disk and takes
+Runs the default configuration (500 steps, 2000 samples, physical batch 1 with
+gradient accumulation → effective batch 4, gradient checkpointing on). **Do not
+run this unsupervised** — it requires several GB of VRAM/disk and takes
 significant time on CPU. It should be a separately authorized operation.
 
 Common options (all configurable via CLI):
@@ -90,8 +93,10 @@ Common options (all configurable via CLI):
 | `--dataset` | `cpratikaki/RSVQA-HR_qwen_finetuning` | Dataset id |
 | `--subset` | 2000 | Total samples (train + eval) |
 | `--holdout` | 200 | Samples held out for eval |
-| `--batch-size` | 4 | Training batch size |
-| `--steps` | 500 | Training steps |
+| `--batch-size` | 1 | Physical micro-batch size per forward/backward pass |
+| `--grad-accum` | 4 | Gradient accumulation steps (effective batch = `batch-size` × `grad-accum`) |
+| `--gradient-checkpointing` | on | Grad checkpointing (use `--no-gradient-checkpointing` to disable) |
+| `--steps` | 500 | Training steps (one optimizer update each) |
 | `--learning-rate` | 3e-4 | AdamW LR |
 | `--warmup-steps` | 50 | Linear warmup steps |
 | `--max-length` | 1024 | Max sequence tokens (image + text) |
@@ -137,9 +142,13 @@ The script selects precision automatically (safe, no mixed-precision magic):
 
 Startup logs print the device, dtype, GPU name and available VRAM (when CUDA).
 
-**Memory:** FP32 was too heavy for many GPUs, hence bf16/fp16 on CUDA. No exact
-VRAM requirement is claimed without measurement — reduce `--batch-size` /
-`--max-length` if you hit OOM.
+**Memory:** FP32 was too heavy for many GPUs, hence bf16/fp16 on CUDA. To fit a
+14-16 GB GPU (e.g. Tesla T4 — 14.6 GB), the defaults now use physical batch 1,
+**gradient checkpointing on**, and **gradient accumulation** to keep the
+effective batch configurable. Baking in a larger effective batch: raise
+`--grad-accum` (e.g. `--batch-size 1 --grad-accum 8` → effective 8). If you hit
+OOM, reduce `--max-length`; never truncate the multimodal region (the pipeline
+refuses to silently cut image tokens).
 
 ## Reproducibility
 
@@ -164,7 +173,10 @@ hardware/CPU/CUDA kernels (this is documented, not guaranteed).
   `-100`; if a full sequence exceeds `--max-length`, the answer tail may be
   truncated (raise `--max-length` to avoid).
 - Evaluation is lightweight exact-match, not a benchmark.
-- No gradient accumulation / distributed training (single-device only).
+- Single-device training only (no distributed / DeepSpeed). Gradient
+  accumulation is supported via `--grad-accum`; gradients from partial
+  accumulation groups at the very end of a run are discarded so the step count
+  stays exact.
 
 ## Configuring the Adapted Adapter for VQA
 

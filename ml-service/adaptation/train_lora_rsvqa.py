@@ -74,6 +74,7 @@ from qwen_vl_utils import process_vision_info  # noqa: E402
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from adaptation._train_helpers import (  # noqa: E402
     build_masked_labels,
+    effective_batch_size,
     pad_token_type_ids,
     split_train_eval,
 )
@@ -482,7 +483,16 @@ def main() -> None:
     parser.add_argument("--dataset", type=str, default=DATASET_ID, help="HF dataset id")
     parser.add_argument("--subset", type=int, default=2000, help="Total subset size (train+eval)")
     parser.add_argument("--holdout", type=int, default=200, help="Number of samples held out for eval")
-    parser.add_argument("--batch-size", type=int, default=4, help="Training batch size")
+    parser.add_argument("--batch-size", type=int, default=1,
+                        help="Physical micro-batch size per forward/backward pass "
+                             "(default 1 to fit small 14-16 GB GPUs)")
+    parser.add_argument("--grad-accum", type=int, default=4,
+                        help="Gradient accumulation steps: effective batch = "
+                             "--batch-size × --grad-accum")
+    parser.add_argument("--gradient-checkpointing", dest="gradient_checkpointing",
+                        action=argparse.BooleanOptionalAction, default=True,
+                        help="Enable gradient checkpointing to cut activation memory "
+                             "(default: enabled; use --no-gradient-checkpointing to disable)")
     parser.add_argument("--steps", type=int, default=500, help="Number of training steps")
     parser.add_argument("--learning-rate", type=float, default=LR, help="AdamW learning rate")
     parser.add_argument("--warmup-steps", type=int, default=WARMUP, help="Linear warmup steps")
@@ -505,6 +515,11 @@ def main() -> None:
                         default=",".join(TARGET_MODULES),
                         help="Comma-separated target module names")
     args = parser.parse_args()
+
+    if args.batch_size < 1:
+        parser.error("--batch-size must be >= 1")
+    if args.grad_accum < 1:
+        parser.error("--grad-accum must be >= 1")
 
     logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 
@@ -530,6 +545,16 @@ def main() -> None:
     )
     if device.type != "cuda":
         model.to(device)
+
+    # ---- Gradient checkpointing: trade a little compute for a lot of memory.
+    # Reduces activation memory enough to fit batch-size=1 + bf16 on 14-16 GB
+    # GPUs while training. Must be enabled on the base model before PEFT wrap.
+    if args.gradient_checkpointing:
+        logger.info("Gradient checkpointing: ON (reduced activation memory)")
+        model.enable_input_require_grads()
+        model.gradient_checkpointing_enable()
+    else:
+        logger.info("Gradient checkpointing: OFF")
 
     # ---- Load / build dataset ----
     logger.info("Loading %s (streaming %d samples...)", args.dataset, args.subset)
@@ -599,13 +624,19 @@ def main() -> None:
     )
 
     model.train()
-    step = loss_sum = 0
+    step = 0
+    loss_sum = 0.0
+    micro_step = 0
+    accum_steps = args.grad_accum
+    effective_batch = effective_batch_size(args.batch_size, args.grad_accum)
     final_dir = args.output_dir
     checkpoints_saved: list[str] = []
 
     logger.info(
-        "=== Training for %d steps (batch=%d lr=%.0e max_len=%d) ===",
-        args.steps, args.batch_size, args.learning_rate, args.max_length,
+        "=== Training for %d steps (physical batch=%d grad_accum=%d effective_batch=%d "
+        "lr=%.0e max_len=%d) ===",
+        args.steps, args.batch_size, accum_steps, effective_batch,
+        args.learning_rate, args.max_length,
     )
 
     while step < args.steps:
@@ -641,27 +672,35 @@ def main() -> None:
                 mm_token_type_ids=mm_tids,
                 labels=labels,
             )
-            loss = outputs.loss
+            # Scale by 1/grad_accum so that accumulated gradients match a single
+            # forward pass with the effective batch size.
+            loss = outputs.loss / accum_steps
             loss.backward()
-            loss_sum += loss.item()
+            # Track the per-step mean loss (not the raw per-micro-batch sum).
+            loss_sum += outputs.loss.item() / accum_steps
+            micro_step += 1
 
-            optimizer.step()
-            scheduler.step()
-            optimizer.zero_grad()
-            step += 1
+            # One optimizer step per grad_accum micro-batches.
+            if micro_step == accum_steps:
+                optimizer.step()
+                scheduler.step()
+                optimizer.zero_grad()
+                micro_step = 0
+                step += 1
 
-            if args.save_every > 0 and step % args.save_every == 0:
-                ckpt = args.output_dir / f"step-{step}"
-                save_adapter(model, ckpt)
-                checkpoints_saved.append(str(ckpt))
-                logger.info("  saved checkpoint → %s", ckpt)
+                if args.save_every > 0 and step % args.save_every == 0:
+                    ckpt = args.output_dir / f"step-{step}"
+                    save_adapter(model, ckpt)
+                    checkpoints_saved.append(str(ckpt))
+                    logger.info("  saved checkpoint → %s", ckpt)
 
-            if step % 50 == 0:
-                logger.info(
-                    "  step %4d/%d  loss=%.4f  lr=%.2e",
-                    step, args.steps, loss_sum / 50, optimizer.param_groups[0]["lr"],
-                )
-                loss_sum = 0.0
+                if step % 50 == 0:
+                    logger.info(
+                        "  step %4d/%d  loss=%.4f  lr=%.2e",
+                        step, args.steps, loss_sum / 50,
+                        optimizer.param_groups[0]["lr"],
+                    )
+                    loss_sum = 0.0
 
     logger.info("Training complete (%d steps)", step)
     if step == 0:
@@ -701,6 +740,9 @@ def main() -> None:
         "learning_rate": args.learning_rate,
         "warmup_steps": args.warmup_steps,
         "batch_size": args.batch_size,
+        "gradient_accumulation_steps": args.grad_accum,
+        "effective_batch_size": effective_batch,
+        "gradient_checkpointing": args.gradient_checkpointing,
         "max_length": args.max_length,
         "seed": args.seed,
         "training_dtype": str(dtype),

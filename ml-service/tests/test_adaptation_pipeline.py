@@ -22,12 +22,19 @@ These tests target the defects found in the Colab smoke test:
    to model(). Otherwise the model raises a ValueError about missing
    mm_token_type_ids when multimodal inputs are supplied.
 
+5. MEMORY-SAFE TRAINING CONFIG for 14-16 GB GPUs — the 500-step Qwen2-VL LoRA
+   run OOM'd on a 14.6 GB Tesla T4. The fix defaults to physical batch size 1,
+   gradient checkpointing on, and gradient accumulation (effective batch =
+   batch-size × grad-accum) so the effective batch stays configurable without
+   blowing up activations.
+
 These tests are deliberately dependency-free (no torch / transformers / peft),
 so they run in environments where the heavy training stack is not installed.
 """
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -37,6 +44,7 @@ from adaptation._train_helpers import (
     IMAGE_TOKEN_TYPE,
     TEXT_TOKEN_TYPE,
     build_masked_labels,
+    effective_batch_size,
     pad_token_type_ids,
     split_train_eval,
 )
@@ -302,3 +310,92 @@ def test_mm_token_type_ids_no_fake_default():
     # The only manufacture of values for these ids must be the pad helper, never
     # a raw torch.zeros(...) default tensor standing in for the processor.
     assert "mm_token_type_ids = torch.zeros(" not in src
+
+
+# ---------------------------------------------------------------------------
+# Memory-safe training configuration (14-16 GB GPU / Tesla T4 defaults)
+# ---------------------------------------------------------------------------
+
+
+def _arg_default(src, arg_name, option="default"):
+    """Parse ``default=<x>`` from an argparse add_argument call for ``arg_name``."""
+    m = re.search(
+        rf"{re.escape(arg_name)}.*?{re.escape(option)}\s*=\s*([^,\s\]]+)",
+        src,
+        flags=re.DOTALL,
+    )
+    assert m, f"could not find default for {arg_name}"
+    return m.group(1).strip()
+
+
+def test_default_physical_batch_size_is_one():
+    """--batch-size must default to 1 so training fits small (14-16 GB) GPUs."""
+    src = TRAIN_SCRIPT.read_text()
+    default = _arg_default(src, '"--batch-size"')
+    int_val = int(re.search(r"[-0-9]+", default).group())
+    assert int_val == 1
+
+
+def test_default_grad_accum_is_four():
+    """--grad-accum defaults to 4, matching the prior effective batch of 4."""
+    src = TRAIN_SCRIPT.read_text()
+    default = _arg_default(src, '"--grad-accum"')
+    int_val = int(re.search(r"[-0-9]+", default).group())
+    assert int_val == 4
+
+
+def test_gradient_checkpointing_defaults_to_enabled():
+    """Gradient checkpointing must default ON to cut activation memory."""
+    src = TRAIN_SCRIPT.read_text()
+    default = _arg_default(src, '"--gradient-checkpointing"')
+    assert default == "True", f"expected gradient checkpointing default True, got {default}"
+    assert 'action=argparse.BooleanOptionalAction' in src
+
+
+def test_memory_cli_options_present():
+    """The memory knobs (and their inverses) must exist as CLI options."""
+    src = TRAIN_SCRIPT.read_text()
+    assert '"--grad-accum"' in src
+    assert '"--gradient-checkpointing"' in src
+    assert '"--no-gradient-checkpointing"' in src or (
+        "BooleanOptionalAction" in src
+    )
+    # Guards against nonsensical values.
+    assert "if args.batch_size < 1" in src
+    assert "if args.grad_accum < 1" in src
+
+
+def test_effective_batch_size_matches_prior_config():
+    """Default physical batch 1 × grad-accum 4 == old effective batch 4."""
+    assert effective_batch_size(1, 4) == 4
+
+
+@pytest.mark.parametrize(
+    "physical, accum, expected",
+    [
+        (1, 1, 1),
+        (1, 4, 4),
+        (1, 8, 8),
+        (2, 4, 8),
+        (4, 8, 32),
+        (0, 4, 0),
+        (1, 0, 1),
+    ],
+)
+def test_effective_batch_size_combinations(physical, accum, expected):
+    assert effective_batch_size(physical, accum) == expected
+
+
+def test_training_loop_uses_accumulated_step():
+    """The loop must scale loss and step the optimizer once per grad-accum group,
+    never per micro-batch (keeps the 500-step target as optimizer updates)."""
+    src = TRAIN_SCRIPT.read_text()
+    loop = src.split("for batch in train_loader:")[1]
+    assert "loss = outputs.loss / accum_steps" in loop
+    assert "if micro_step == accum_steps:" in loop
+    assert loop.count("optimizer.step()") == 1
+    assert loop.count("optimizer.zero_grad()") == 1
+    # The 500-step target is preserved as the number of optimizer updates.
+    assert "--steps\", type=int, default=500" in src or re.search(
+        r'"--steps"[^)]*default=500', src
+    )

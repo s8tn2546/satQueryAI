@@ -18,6 +18,10 @@ Three functions are covered here:
 3. ``pad_token_type_ids`` — right-pad the processor-returned ``mm_token_type_ids``
    to a target length so it stays exactly aligned with the manually right-padded
    ``input_ids``/``attention_mask``, without altering the multimodal region.
+
+4. ``effective_batch_size`` — physical batch size times gradient-accumulation
+   steps. Used so a memory-tight configuration (physical batch 1 on small GPUs)
+   can still train with a larger effective batch per optimizer step.
 """
 
 from __future__ import annotations
@@ -122,3 +126,20 @@ def pad_token_type_ids(
     if len(padded) < max_length:
         padded += [TEXT_TOKEN_TYPE] * (max_length - len(padded))
     return padded
+
+
+def effective_batch_size(physical_batch_size: int, grad_accum_steps: int) -> int:
+    """Effective samples per optimizer step = physical batch × accumulation.
+
+    Gradient accumulation lets a small physical batch (e.g. 1 on a 14-16 GB
+    GPU) simulate a larger batch across multiple forward/backward passes, with
+    one optimizer step after ``grad_accum_steps`` micro-batches.
+
+    Args:
+        physical_batch_size: micro-batch size fed to the model in one pass.
+        grad_accum_steps:    number of micro-batches per optimizer step.
+
+    Returns:
+        The effective number of samples contributing to each optimizer step.
+    """
+    return abs(physical_batch_size) * max(grad_accum_steps, 1)
