@@ -45,6 +45,65 @@ function inferFormat(ext) {
   return 'png';
 }
 
+/**
+ * Normalize a bounding box into the canonical GeoJSON Polygon the Tile schema
+ * expects ({ type: 'Polygon', coordinates: [[[lon, lat], ...]] }).
+ *
+ * Accepts the shapes produced by the current implementation:
+ *   - already-canonical GeoJSON Polygon
+ *   - compact array [minLon, minLat, maxLon, maxLat]
+ *   - bounds object { west, south, east, north } (ML /fetch-imagery shape)
+ * Corner coordinates produced by the fetch implementation are preserved; no
+ * coordinates are invented. Returns null for anything unrecognized so callers
+ * can reject cleanly instead of persisting malformed geometry.
+ */
+function normalizeBoundingBox(value) {
+  if (!value || typeof value !== 'object') return null;
+
+  const isNum = n => typeof n === 'number' && Number.isFinite(n);
+  const toRing = coords => {
+    if (!Array.isArray(coords) || coords.length < 4) return null;
+    const ring = coords.filter(p => Array.isArray(p) && p.length >= 2 && isNum(p[0]) && isNum(p[1]));
+    return ring.length >= 4 ? ring : null;
+  };
+
+  if (value.type === 'Polygon' && Array.isArray(value.coordinates)) {
+    const ring = toRing(value.coordinates[0]);
+    if (ring) return { type: 'Polygon', coordinates: [ring] };
+    return null;
+  }
+
+  if (value.type === 'MultiPolygon' && Array.isArray(value.coordinates)) {
+    // Tile schema stores a single polygon; promote the first ring of the
+    // first polygon using the coordinates as supplied.
+    const ring = toRing(value.coordinates?.[0]?.[0]);
+    if (ring) return { type: 'Polygon', coordinates: [ring] };
+    return null;
+  }
+
+  if (Array.isArray(value) && value.length === 4 && value.every(isNum)) {
+    const [minLon, minLat, maxLon, maxLat] = value;
+    return {
+      type: 'Polygon',
+      coordinates: [[
+        [minLon, minLat], [maxLon, minLat], [maxLon, maxLat], [minLon, maxLat], [minLon, minLat]
+      ]]
+    };
+  }
+
+  const { west, south, east, north } = value;
+  if (isNum(west) && isNum(south) && isNum(east) && isNum(north)) {
+    return {
+      type: 'Polygon',
+      coordinates: [[
+        [west, south], [east, south], [east, north], [west, north], [west, south]
+      ]]
+    };
+  }
+
+  return null;
+}
+
 function cleanupStoredFiles(files) {
   for (const f of files || []) {
     try {
@@ -222,7 +281,8 @@ router.post('/fetch-by-region', async (req, res) => {
   try {
     const { boundingBox, startDate, endDate } = req.body || {};
 
-    if (!boundingBox || typeof boundingBox !== 'object') {
+    const canonicalBbox = normalizeBoundingBox(boundingBox);
+    if (!canonicalBbox) {
       return res.status(400).json({
         status: 'rejected',
         error: 'boundingBox (GeoJSON) is required for fetch-by-region.'
@@ -230,7 +290,7 @@ router.post('/fetch-by-region', async (req, res) => {
     }
 
     const mlResult = await mlServiceClient.callMlService('/fetch-imagery', {
-      bounding_box: boundingBox,
+      bounding_box: canonicalBbox,
       start_date: startDate || undefined,
       end_date: endDate || undefined
     });
@@ -254,13 +314,17 @@ router.post('/fetch-by-region', async (req, res) => {
     for (const img of images) {
       const filePath = img.filePath || null;
       const format = filePath && /\.(tif|tiff|gtiff)$/i.test(filePath) ? 'geotiff' : 'png';
+      // Normalize whatever shape the fetch implementation returned (mock echo,
+      // real GEE, or bounds metadata) into the canonical Polygon before
+      // persisting; fall back to the canonical request bbox, never raw data.
+      const imageBbox = normalizeBoundingBox(img.boundingBox ?? img.bounding_box) || canonicalBbox;
 
       const tile = await Tile.create({
         source: 'gee-fetch',
         modality: img.modality || 'optical',
         format,
         captureDate: img.captureDate ? new Date(img.captureDate) : null,
-        boundingBox: img.boundingBox || boundingBox,
+        boundingBox: imageBbox,
         crs: img.crs || null,
         resolution: img.resolution ?? null,
         bands: img.bands || [],
@@ -275,7 +339,7 @@ router.post('/fetch-by-region', async (req, res) => {
           source: 'gee-fetch',
           dataSource: mlResult.result?.source || mlResult.metadata?.data_source || null,
           downloaded: Boolean(img.downloaded),
-          geometryFollows: img.boundingBox ? true : false
+          geometryFollows: Boolean(imageBbox)
         }
       });
 

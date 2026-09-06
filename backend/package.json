@@ -7,6 +7,7 @@
   "scripts": {
     "start": "node src/index.js",
     "dev": "nodemon src/index.js",
+    "precompute:demo-trend": "node scripts/precompute-demo-trend.js",
     "test": "node --experimental-vm-modules node_modules/.bin/jest --runInBand"
   },
   "dependencies": {

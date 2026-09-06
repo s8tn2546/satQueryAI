@@ -12,7 +12,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from app.models.vlm_loader import DEFAULT_CAPTION_MODEL, run_caption
+from app.models.vlm_loader import DEFAULT_CAPTION_MODEL, VLMUnavailableError, run_caption
 from app.preprocessing.loader import ImageLoadError, load_image_as_pil
 
 logger = logging.getLogger(__name__)
@@ -32,7 +32,8 @@ def compute_caption(
 
     Args:
         image_path:  Path to the input image (GeoTIFF, TIFF, PNG, or JPEG)
-        model_name:  HuggingFace model ID; defaults to blip-image-captioning-base
+        model_name:  HuggingFace model ID; defaults to the configured caption
+            model (Qwen/Qwen2-VL-2B-Instruct via DEFAULT_CAPTION_MODEL)
         adapter_path: Optional path to LoRA adapter checkpoint
 
     Returns:
@@ -43,6 +44,9 @@ def compute_caption(
 
     Raises:
         CaptionError: On image load failure or inference failure
+        VLMUnavailableError: When real VLM inference is unavailable
+            (missing dependencies/weights); callers should use the labeled
+            offline placeholder instead of treating this as a real caption.
     """
     try:
         pil_image = load_image_as_pil(Path(image_path))
@@ -56,6 +60,8 @@ def compute_caption(
 
     try:
         caption, confidence = run_caption(pil_image, model_name=model_name, adapter_path=adapter_path)
+    except VLMUnavailableError:
+        raise
     except Exception as exc:
         raise CaptionError(f"Caption generation failed: {exc}") from exc
 

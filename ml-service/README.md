@@ -48,10 +48,16 @@ via Google Earth Engine)**:
 | Unit tests using synthetic rasters (no live GEE required) | ✅ Done |
 | Dockerfile | ✅ (not built in this environment) |
 
-**Not yet implemented** (later milestones / other members): VQA, captioning,
-grounding, model training, LoRA adaptation, `/fetch`, and any semantic
-interpretation of the imagery/trend evidence. Semantic interpretation is the
-Agent / VLM / ML layer's job (Member 5), **not** this service.
+**Implemented in this service (ML/VLM layer):** `/vqa` and `/caption` run
+real Qwen2-VL-2B-Instruct inference when PyTorch + `transformers` + model
+weights are installed. When the heavy VLM stack is unavailable, both endpoints
+still respond — with a clearly-labelled offline placeholder
+(`metadata.mock=true`) rather than a fabricated visual answer.
+
+**Not yet implemented** (later milestones / other members): grounding,
+model training, LoRA adaptation, and any further semantic interpretation of the
+imagery/trend evidence. Semantic interpretation is the Agent / VLM / ML layer's
+job (Member 5), **not** this service.
 
 ---
 
@@ -976,7 +982,11 @@ integration milestone, when the Node backend and ML service are orchestrated tog
   (non-geographic) CRS; they are `null` otherwise (never `deg × deg`).
 - No change mask / fusion GeoTIFF/GeoJSON is emitted yet — the response returns summary
   statistics only (lightweight, no huge pixel arrays).
-- No VQA / training / `/fetch-imagery` yet; those come in later milestones.
+- No model **training / LoRA adaptation** yet (the training script exists in
+  `adaptation/` but no trained adapter weights are produced without GPU time);
+  `/vqa` and `/caption` run real Qwen2-VL inference when the VLM stack is
+  installed, and otherwise return a labeled offline placeholder
+  (`metadata.mock=true`).
 - The endpoints do **not** store the uploaded file permanently; each writes to a
   temp file, computes, then deletes it.
 

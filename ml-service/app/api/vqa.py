@@ -31,7 +31,7 @@ from app.common.http_utils import (
     save_to_temp,
     validate_upload_ext,
 )
-from app.models.vlm_loader import DEFAULT_VQA_MODEL
+from app.models.vlm_loader import DEFAULT_VQA_MODEL, VLMUnavailableError
 from app.schemas.common import ToolOutput
 from app.tools.vqa import VQAError, compute_vqa
 
@@ -40,6 +40,49 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 VQA_ADAPTER_PATH = os.environ.get("VQA_ADAPTER_PATH")
+
+
+def _offline_vqa_output(
+    question: str,
+    filename: str,
+    size_bytes: int,
+    exc: VLMUnavailableError,
+) -> ToolOutput:
+    """Clearly-labeled offline placeholder when real VLM inference is unavailable.
+
+    No visual analysis is performed and none is implied: this is an honest
+    mock, not a model answer, so confidence is 0.0 and no image facts are
+    invented. The question is still echoed for request/response traceability.
+    """
+    note = (
+        "Real VLM inference is unavailable in this environment (missing "
+        "dependencies or model weights). No visual analysis was performed; "
+        "this is a labeled offline placeholder, not a model result."
+    )
+    return ToolOutput(
+        tool="vqa",
+        status="success",
+        result={
+            "answer": "offline-placeholder",
+            "question": question,
+            "note": note,
+        },
+        evidence={
+            "image": {"filename": filename},
+            "question": question,
+        },
+        confidence=0.0,
+        metadata={
+            "filename": filename,
+            "size_bytes": size_bytes,
+            "model": DEFAULT_VQA_MODEL,
+            "adapter_used": VQA_ADAPTER_PATH is not None,
+            "mock": True,
+            "offline": True,
+            "reason": str(exc),
+            "note": note,
+        },
+    )
 
 
 @router.post("/vqa")
@@ -84,6 +127,10 @@ async def vqa_endpoint(
             tmp_path,
             question.strip(),
             adapter_path=VQA_ADAPTER_PATH,
+        )
+    except VLMUnavailableError as exc:
+        return _offline_vqa_output(
+            question.strip(), filename, len(content), exc
         )
     except VQAError as exc:
         return error_output("vqa", str(exc), confidence=0.0)

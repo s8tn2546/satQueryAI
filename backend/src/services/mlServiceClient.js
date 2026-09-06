@@ -5,7 +5,11 @@ import path from 'path';
 dotenv.config();
 
 const ML_SERVICE_BASE_URL = process.env.ML_SERVICE_BASE_URL || 'http://localhost:8000';
-const DEFAULT_TIMEOUT = 5000;
+// Per-call timeout in ms. Env-tunable (ML_SERVICE_TIMEOUT_MS) without code
+// changes; the 5000ms default is unchanged. A timed-out call falls back to a
+// clearly-labeled mock result — callers must treat metadata.mock results as
+// labeled data, never real (the trend route never caches them).
+const DEFAULT_TIMEOUT = Number(process.env.ML_SERVICE_TIMEOUT_MS) || 5000;
 
 /**
  * Multipart (file-stream) transport definition for Geo/RS endpoints that accept
@@ -20,6 +24,8 @@ const FILE_ENDPOINTS = {
   '/ndvi': { sourceKeys: ['image_path'], fileFields: ['file'] },
   '/ndwi': { sourceKeys: ['image_path'], fileFields: ['file'] },
   '/area': { sourceKeys: ['image_path'], fileFields: ['file'] },
+  '/vqa': { sourceKeys: ['image_path'], fileFields: ['image'] },
+  '/caption': { sourceKeys: ['image_path'], fileFields: ['image'] },
   '/change': { sourceKeys: ['image_t1_path', 'image_t2_path'], fileFields: ['image1', 'image2'] },
   '/optical-sar': { sourceKeys: ['optical_path', 'sar_path'], fileFields: ['optical_image', 'sar_image'] },
 };

@@ -18,6 +18,7 @@ const toolResultSchema = new mongoose.Schema({
 
 const querySchema = new mongoose.Schema({
   userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+  sessionId: { type: String, default: null, index: { sparse: true } },
   queryText: { type: String, required: true },
   inputRefs: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Tile' }],
   taskType: {
@@ -36,6 +37,7 @@ const querySchema = new mongoose.Schema({
     notes: { type: String, default: '' }
   },
   confidence: { type: Number, min: 0, max: 1, default: 0 },
+  confidenceSignals: { type: [{ type: String }], default: undefined },
   executionTrace: [executionTraceEntrySchema],
   answerText: { type: String, default: '' },
   status: {
