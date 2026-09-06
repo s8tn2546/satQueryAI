@@ -211,7 +211,10 @@ export default function SearchBar({ onSubmit, onClear }) {
           <PlusIcon />
         </button>
 
-        <div className={`new-composer ${focused ? 'focused' : ''}`}>
+        <div
+          className={`new-composer ${focused ? 'focused' : ''}`}
+          onClick={() => { if (inputRef.current) inputRef.current.focus(); }}
+        >
           <SearchIcon />
           {query && (
             <button

@@ -156,7 +156,6 @@ export default function GlobeView() {
   return (
     <div ref={containerRef} className="absolute inset-0 w-full h-full">
       <div id="cesiumContainer" className="w-full h-full" />
-      <div className="starfield" aria-hidden="true" />
 
       {isLoading && (
         <div className="globe-loader">
