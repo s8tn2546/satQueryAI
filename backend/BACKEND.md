@@ -430,6 +430,19 @@ Use this as a running task list. Work top to bottom within each section; section
 - [x] Confirm every error path returns a valid, frontend-safe response shape
 - [x] Final review: does every mandatory PS capability have a working, demoable path through this backend?
 
+### 15.8 Integration & Session History (M6)
+
+- [x] Session-scoped query history (FRONTEND.md §5.2 / BACKEND.md §6 contract):
+  - [x] Optional `sessionId` accepted on `POST /api/query` — validated as a string (non-string → 400 `rejected`), trimmed/normalized, capped at 128 chars, stored on the `queries` document (`sessionId` field, sparse index)
+  - [x] `sessionId` threaded through the agent pipeline and persisted on every `queries` document (success, partial, failed, and rejected paths)
+  - [x] `GET /api/query/history` supports `?sessionId=` grouping and `?limit=` (1–500, default 50); absent `sessionId` keeps the prior unscoped behavior (anonymous queries remain listed — backward compatible)
+  - [x] Tests in `tests/m6-session-history.test.js` (5 passing): per-session grouping, anonymous-query exclusion, non-string rejection, normalization, limit
+- [x] Orchestrated integration milestone (ml-service/README.md "final integration milestone"):
+  - [x] `backend/Dockerfile` + `.dockerignore` (node:20-alpine, `npm ci --omit=dev`, exposes 5000)
+  - [x] Root `docker-compose.yml` (`satquery` stack): `mongodb` (mongo:7, persisted volume), `ml` (existing Dockerfile), `backend` — each with a healthcheck; backend waits on mongodb + ml via `depends_on.condition: service_healthy`; secrets wired through compose interpolation (`LLM_API_KEY`, `JWT_SECRET`, `GEE_*`)
+  - [x] Root `scripts/docker-smoke.sh` — builds the stack, waits for health, verifies `/health` on both services, and runs an optional live `/api/query` round-trip when `LLM_API_KEY` is set
+  - [ ] Live compose execution pending — NOT run in the dev environment (no Docker engine available); requires a Docker-enabled host
+
 ---
 
 ## Change Log
@@ -440,3 +453,4 @@ Update this section whenever a decision in this document changes, so the team (a
 |---|---|
 | 2026-09-01 | Initial version created from 7-Day Build Plan + SIH26167 PS |
 | 2026-09-01 | Completed sections 15.1-15.7: Full agent pipeline, auth, geospatial tools, trend caching, fetch-imagery, and comprehensive test suite |
+| 2026-09-06 | M6 (§15.8): session-scoped query history (`sessionId` on `POST /api/query` + `GET /api/query/history?sessionId=`) and orchestrated integration milestone (`backend/Dockerfile`, root `docker-compose.yml`, `scripts/docker-smoke.sh`). Live compose execution pending Docker engine. |

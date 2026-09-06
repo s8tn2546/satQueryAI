@@ -1,0 +1,80 @@
+# SatQuery AI — orchestrated stack (Agent M6 integration milestone).
+# Services: mongodb (state), ml (FastAPI raster/VLM service), backend (Node orchestrator).
+#
+# Usage:
+#   docker compose up -d --build --wait
+#   ./scripts/docker-smoke.sh
+#
+# Secrets (LLM_API_KEY, JWT_SECRET, GEE_*) may be supplied via a root .env file
+# (compose interpolation) or the environment. Without LLM_API_KEY the stack
+# starts and stays healthy, but full /api/query inference requires a key.
+
+name: satquery
+
+services:
+  mongodb:
+    image: mongo:7
+    restart: unless-stopped
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongodb-data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+  ml:
+    build: ./ml-service
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      PORT: 8000
+      HOST: 0.0.0.0
+      NODE_ENV: ${NODE_ENV:-development}
+      VLM_MODEL: ${VLM_MODEL:-Qwen/Qwen2-VL-2B-Instruct}
+      # Optional LoRA adapter mounts; uncomment to enable fine-tuned inference.
+      # VQA_ADAPTER_PATH: /app/adaptation/checkpoint
+      # CAPTION_ADAPTER_PATH: /app/adaptation/checkpoint
+      # Google Earth Engine (leave empty for labeled mock/dev mode).
+      GEE_MODE: ${GEE_MODE:-}
+      GEE_PROJECT_ID: ${GEE_PROJECT_ID:-}
+      GEE_SERVICE_ACCOUNT: ${GEE_SERVICE_ACCOUNT:-}
+      GEE_SERVICE_ACCOUNT_KEY_PATH: ${GEE_SERVICE_ACCOUNT_KEY_PATH:-}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+  backend:
+    build: ./backend
+    restart: unless-stopped
+    ports:
+      - "5000:5000"
+    environment:
+      PORT: 5000
+      MONGODB_URI: mongodb://mongodb:27017/satquery
+      ML_SERVICE_BASE_URL: http://ml:8000
+      JWT_SECRET: ${JWT_SECRET:-satquery-dev-secret}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_PROVIDER: ${LLM_PROVIDER:-openai}
+      NODE_ENV: production
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      ml:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://localhost:5000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
+
+volumes:
+  mongodb-data:

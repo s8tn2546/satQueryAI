@@ -101,7 +101,7 @@ async function findCoveringCacheEntry({ region, metric, startDate, endDate, inte
  */
 router.post('/', async (req, res) => {
   try {
-    const { queryText, imageRefs = [], parameters = {} } = req.body;
+    const { queryText, imageRefs = [], parameters = {}, sessionId } = req.body;
 
     if (!queryText || typeof queryText !== 'string' || queryText.trim() === '') {
       return res.status(400).json({
@@ -111,6 +111,18 @@ router.post('/', async (req, res) => {
         evidence: { images: [], region: {}, notes: 'Validation failure: empty queryText' },
         confidence: 0,
         executionTrace: [{ step: 'input_validation', detail: 'Query text was missing or empty', timestamp: new Date().toISOString() }],
+        status: 'rejected'
+      });
+    }
+
+    if (sessionId !== undefined && typeof sessionId !== 'string') {
+      return res.status(400).json({
+        answerText: 'sessionId must be a string.',
+        taskType: 'VQA',
+        result: {},
+        evidence: { images: [], region: {}, notes: 'Validation failure: sessionId is not a string' },
+        confidence: 0,
+        executionTrace: [{ step: 'input_validation', detail: 'sessionId was not a string', timestamp: new Date().toISOString() }],
         status: 'rejected'
       });
     }
@@ -140,7 +152,7 @@ router.post('/', async (req, res) => {
       });
     }
 
-    const response = await runAgentPipeline(queryText.trim(), imageRefs, parameters);
+    const response = await runAgentPipeline(queryText.trim(), imageRefs, parameters, { sessionId });
     return res.status(200).json(response);
   } catch (error) {
     console.error('[Query] Pipeline error:', error);
@@ -357,7 +369,11 @@ router.post('/trend', async (req, res) => {
  */
 router.get('/history', async (req, res) => {
   try {
-    const queries = await Query.find().sort({ createdAt: -1 }).limit(50);
+    const sessionId = typeof req.query.sessionId === 'string' ? req.query.sessionId.trim().slice(0, 128) : '';
+    const limitRaw = Number.parseInt(req.query.limit, 10);
+    const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(limitRaw, 1), 500) : 50;
+    const filter = sessionId ? { sessionId } : {};
+    const queries = await Query.find(filter).sort({ createdAt: -1 }).limit(limit);
     return res.status(200).json(queries);
   } catch (error) {
     console.error('[History] Error listing queries:', error);

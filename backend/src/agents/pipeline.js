@@ -18,6 +18,12 @@ function sanitizeImageRefs(refs) {
   return refs.filter(ref => mongoose.Types.ObjectId.isValid(ref));
 }
 
+function normalizeSessionId(value) {
+  if (value == null) return null;
+  const s = String(value).trim();
+  return s ? s.slice(0, 128) : null;
+}
+
 function persistableToolResults(toolResults) {
   return toolResults.map(tr => ({
     tool: tr.tool,
@@ -76,7 +82,8 @@ function aggregateToolEvidence(imageRefs, successResults, allResults, parameters
   };
 }
 
-export async function runAgentPipeline(queryText, imageRefIds, parameters = {}) {
+export async function runAgentPipeline(queryText, imageRefIds, parameters = {}, options = {}) {
+  const sessionId = normalizeSessionId(options?.sessionId);
   const trace = [];
   
   const sanitizedRefs = sanitizeImageRefs(imageRefIds);
@@ -106,6 +113,7 @@ export async function runAgentPipeline(queryText, imageRefIds, parameters = {}) 
     const queryDoc = await Query.create({
       queryText,
       inputRefs: sanitizedRefs,
+      sessionId,
       taskType: 'VQA',
       toolsInvoked: [],
       toolResults: [],
@@ -130,6 +138,7 @@ export async function runAgentPipeline(queryText, imageRefIds, parameters = {}) 
     const queryDoc = await Query.create({
       queryText,
       inputRefs: sanitizedRefs,
+      sessionId,
       taskType: resolvedTaskType,
       toolsInvoked: [],
       toolResults: [],
@@ -160,6 +169,7 @@ export async function runAgentPipeline(queryText, imageRefIds, parameters = {}) 
     const queryDoc = await Query.create({
       queryText,
       inputRefs: sanitizedRefs,
+      sessionId,
       taskType: resolvedTaskType,
       toolsInvoked: tools.map(t => t.name),
       toolResults: [],
@@ -187,6 +197,7 @@ export async function runAgentPipeline(queryText, imageRefIds, parameters = {}) 
     const queryDoc = await Query.create({
       queryText,
       inputRefs: sanitizedRefs,
+      sessionId,
       taskType: resolvedTaskType,
       toolsInvoked: tools.map(t => t.name),
       toolResults: persistedToolResults,
@@ -219,6 +230,7 @@ export async function runAgentPipeline(queryText, imageRefIds, parameters = {}) 
   const queryDoc = await Query.create({
     queryText,
     inputRefs: sanitizedRefs,
+      sessionId,
     taskType: resolvedTaskType,
     toolsInvoked: tools.map(t => t.name),
     toolResults: persistedToolResults,

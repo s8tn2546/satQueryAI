@@ -18,6 +18,7 @@ const toolResultSchema = new mongoose.Schema({
 
 const querySchema = new mongoose.Schema({
   userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+  sessionId: { type: String, default: null, index: { sparse: true } },
   queryText: { type: String, required: true },
   inputRefs: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Tile' }],
   taskType: {
