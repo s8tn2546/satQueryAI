@@ -1,272 +1,196 @@
 # LoRA Fine-Tuning for Remote Sensing VQA
 
-This directory contains the infrastructure for adapting the base VLM (Qwen2-VL-2B-Instruct) to remote sensing imagery via LoRA fine-tuning on the RSVQA-HR dataset.
-
-## Overview
-
-**Base Model**: `Qwen/Qwen2-VL-2B-Instruct` (2.2B parameters, ~4.2GB)
-
-**Dataset**: `cpratikaki/RSVQA-HR_qwen_finetuning`
-- Remote sensing visual question answering dataset
-- High-resolution satellite imagery (512×512)
-- Question types: yes/no, counting, area estimation, object presence
-- Pre-formatted for Qwen2-VL chat template
-
-**LoRA Configuration**:
-- Rank: 16
-- Alpha: 32
-- Dropout: 0.05
-- Target modules: `q_proj`, `v_proj` (self-attention in all 28 language model layers)
-- Trainable parameters: ~8.4M (~0.4% of base model)
-
-**Training Parameters**:
-- Learning rate: 3e-4 with 50-step warmup
-- Batch size: 4
-- Training steps: 500
-- Subset size: 2000 samples (1800 train, 200 eval)
-
-## Model Architecture Choice
-
-**Why Qwen2-VL over BLIP?**
-
-The original ML_SERVICE.md specification suggested BLIP models (`Salesforce/blip-vqa-base`). During implementation, we discovered that BLIP's architecture does not support standard supervised fine-tuning with the `labels` parameter:
-
-- BLIP uses an extended vocabulary (30524 tokens) with special tokens outside the tokenizer range (30522)
-- The `forward()` method with `labels` causes embedding index errors
-- BLIP is designed for generative inference via `.generate()`, not label-based training
-
-**Qwen2-VL advantages**:
-- ✅ Proper supervised fine-tuning support with labels
-- ✅ Standard LoRA training workflow (target LLM decoder layers)
-- ✅ Handles both VQA and captioning with a single model (instruction-following)
-- ✅ Better baseline performance on remote sensing tasks
-- ✅ The RSVQA dataset is pre-formatted for Qwen (`cpratikaki/RSVQA-HR_qwen_finetuning`)
-- ✅ 2.2B parameters provide good quality while remaining trainable on consumer hardware
-
-**Tradeoff**: Larger model size (4.2GB vs BLIP's 385MB), but the quality and trainability gains justify this.
-
-## Running the Training
-
-### Prerequisites
-
-```bash
-# Install dependencies (already in requirements.txt)
-pip install torch torchvision transformers peft accelerate qwen-vl-utils
-
-# Ensure sufficient disk space for model cache (~4.5GB)
-# Qwen2-VL will be downloaded to ~/.cache/huggingface/hub/
-```
-
-### Basic Training Run
-
-```bash
-cd /path/to/ml-service
-python3 adaptation/train_lora_rsvqa.py
-```
-
-This runs the default configuration (500 steps, 2000 samples, batch size 4).
-
-### Custom Configuration
-
-```bash
-# Quick test run (10 steps, 50 samples)
-python3 adaptation/train_lora_rsvqa.py --steps 10 --subset 50 --batch 2
-
-# Full training run with larger subset
-python3 adaptation/train_lora_rsvqa.py --steps 1000 --subset 5000 --batch 8
-```
-
-### Expected Runtime
-
-- **CPU (8-core)**: ~2-4 hours for 500 steps
-- **GPU (RTX 3090)**: ~15-30 minutes for 500 steps
-- **GPU (A100)**: ~10-15 minutes for 500 steps
-
-The training script uses CPU by default. For GPU training, ensure CUDA is available — the script will automatically detect and use it.
-
-## Output Files
-
-After training completes:
-
-**`adaptation/checkpoint/`**
-- LoRA adapter weights (adapter_model.safetensors)
-- LoRA configuration (adapter_config.json)
-- Load via `PeftModel.from_pretrained(base_model, "adaptation/checkpoint")`
-
-**`adaptation/eval_results.json`**
-- Training configuration
-- Base model accuracy (before adaptation)
-- Adapted model accuracy (after training)
-- Accuracy delta
-
-Example `eval_results.json`:
-
-```json
-{
-  "base_model": "Qwen/Qwen2-VL-2B-Instruct",
-  "dataset": "cpratikaki/RSVQA-HR_qwen_finetuning",
-  "subset_total": 2000,
-  "train_size": 1800,
-  "eval_size": 200,
-  "eval_sample_size": 20,
-  "lora_rank": 16,
-  "lora_alpha": 32,
-  "lora_dropout": 0.05,
-  "target_modules": ["q_proj", "v_proj"],
-  "training_steps": 500,
-  "learning_rate": 0.0003,
-  "batch_size": 4,
-  "base_accuracy": 0.31,
-  "adapted_accuracy": 0.58,
-  "delta": 0.27
-}
-```
-
-## Using the Adapted Model
-
-### Option 1: Environment Variable (Recommended)
-
-Set the adapter path in `.env`:
-
-```bash
-VQA_ADAPTER_PATH=./adaptation/checkpoint
-```
-
-Restart the ML service. The `/vqa` endpoint will automatically load the LoRA adapter.
-
-### Option 2: Direct Loading in Code
-
-```python
-from transformers import Qwen2VLForConditionalGeneration, AutoProcessor
-from peft import PeftModel
-
-# Load base model
-base_model = Qwen2VLForConditionalGeneration.from_pretrained(
-    "Qwen/Qwen2-VL-2B-Instruct"
-)
-
-# Apply LoRA adapter
-model = PeftModel.from_pretrained(base_model, "adaptation/checkpoint")
-
-# Use as normal
-processor = AutoProcessor.from_pretrained("Qwen/Qwen2-VL-2B-Instruct")
-# ... inference code ...
-```
-
-## Dataset Details
-
-**RSVQA-HR** (High Resolution Remote Sensing Visual Question Answering):
-- Source: Sentinel-2 and Landsat-8 imagery
-- Image size: 512×512 pixels
-- Total samples: ~772,000 (we use a 2000-sample subset for scoped training)
-- Question types:
-  - **Yes/No**: "Is there water?", "Are there buildings?"
-  - **Counting**: "How many ships?", "How many fields?"
-  - **Area**: "What is the area of forest?" (in m²)
-  - **Presence**: "What is in the center?", "What color is the roof?"
-
-**Answer Format**:
-- Lowercase, short answers (matches RSVQA benchmark format)
-- Examples: "yes", "no", "3", "10614m2", "farmland"
-
-## Training Loop Details
-
-The script implements standard supervised fine-tuning:
-
-1. **Preprocessing**: Images and questions formatted as Qwen2-VL chat messages
-2. **Tokenization**: Chat template applied, vision info processed
-3. **Forward Pass**: Model computes loss on answer tokens
-4. **Optimization**: AdamW with linear warmup (50 steps)
-5. **Evaluation**: Exact-match accuracy on held-out set (first 20 samples for speed)
-
-**Label Handling**:
-- Answer text tokenized and truncated to 20 tokens
-- Padding positions masked with -100 (ignored in loss)
-- Loss computed only on actual answer tokens
-
-## Monitoring Training
-
-The script logs:
-- Base model accuracy (before training)
-- Training progress every 50 steps (loss, learning rate)
-- Adapted model accuracy (after training)
-- Delta (improvement from base to adapted)
-
-Example output:
-
-```
-[INFO] Device: cpu
-[INFO] Loading base model: Qwen/Qwen2-VL-2B-Instruct
-[INFO] Loaded 2000 samples
-[INFO] Train: 1800  Eval: 200
-[INFO] === Evaluating BASE model (sample: first 20 from eval set) ===
-[INFO] Base accuracy: 0.3100 (6/20)
-[INFO] === Applying LoRA (rank=16, target: language_model q_proj+v_proj) ===
-trainable params: 8,388,608 || all params: 2,218,166,272 || trainable%: 0.3781
-[INFO] === Training for 500 steps (batch=4 lr=3e-04) ===
-[INFO]   step   50/500  loss=1.2341  lr=3.00e-04
-[INFO]   step  100/500  loss=0.9876  lr=3.00e-04
-[INFO]   step  150/500  loss=0.8234  lr=3.00e-04
-...
-[INFO] Training complete (500 steps)
-[INFO] === Evaluating ADAPTED model (sample: first 20 from eval set) ===
-[INFO] Adapted accuracy: 0.5800 (12/20)
-[INFO] === SUMMARY ===
-[INFO]   Base accuracy:    0.3100
-[INFO]   Adapted accuracy: 0.5800
-[INFO]   Delta:            +0.2700
-```
-
-## Extending the Training
-
-**To improve accuracy further**:
-
-1. **Increase training steps**: `--steps 1000` or `--steps 2000`
-2. **Use larger subset**: `--subset 5000` or `--subset 10000`
-3. **Increase LoRA rank**: Edit script to set `LORA_RANK = 32` or `64`
-4. **Add more target modules**: Include `k_proj`, `o_proj`, `gate_proj`, `up_proj`, `down_proj`
-5. **Learning rate scheduling**: Add cosine annealing or reduce LR on plateau
-
-**To evaluate on full eval set**:
-- The script currently evaluates on first 20 samples for speed
-- Modify line 197 in `train_lora_rsvqa.py`: change `eval_samples[:20]` to `eval_samples`
-- Full eval will take longer but gives more accurate metrics
-
-## Troubleshooting
-
-**Out of Memory (OOM)**:
-- Reduce batch size: `--batch 1` or `--batch 2`
-- Use gradient accumulation (requires code modification)
-- Switch to CPU if on GPU with limited memory
-
-**Slow Training on CPU**:
-- Expected: 2-4 hours for 500 steps
-- Consider using GPU or cloud instance (Colab, AWS, etc.)
-- Reduce subset size for faster experimentation: `--subset 200`
-
-**Dataset Download Timeout**:
-- The dataset streams from HuggingFace Hub
-- If connection is slow, download manually and load from disk:
-  ```python
-  from datasets import load_dataset
-  ds = load_dataset("cpratikaki/RSVQA-HR_qwen_finetuning", split="train")
-  ds.save_to_disk("./rsvqa_cache")
-  # Then modify script to load_from_disk("./rsvqa_cache")
-  ```
-
-## References
-
-- **Qwen2-VL Paper**: https://arxiv.org/abs/2409.12191
-- **RSVQA Dataset**: https://rsvqa.sylvainlobry.com/
-- **LoRA Paper**: https://arxiv.org/abs/2106.09685
-- **PEFT Library**: https://github.com/huggingface/peft
+This directory contains the infrastructure for adapting the base VLM
+(Qwen2-VL-2B-Instruct) to remote sensing imagery via LoRA fine-tuning on the
+RSVQA-HR dataset. **No training has been completed yet** — this is a hardened,
+ready-to-run pipeline. Checkpoints and evaluation results are produced only
+when a real run is executed.
 
 ## Status
 
-✅ Base model (Qwen2-VL-2B-Instruct) integrated and tested  
-✅ VQA and caption endpoints working  
-✅ LoRA training script implemented and validated  
-✅ Dataset loading and preprocessing working  
-🔄 Full 500-step training run pending (requires 2-4 hours on CPU or GPU access)
+- ✅ Training pipeline implemented and repaired (dependency handling, label
+  construction, precision, reproducibility, checkpoints, eval)
+- ✅ Requirements file (`requirements-training.txt`) defined
+- 🟡 Real training **not yet executed** (requires heavy dependencies + GPU)
+- ⚠️ Smoke test **blocked by environment** in the current local setup (heavy
+  stack not installed) — see [Smoke Test](#smoke-test)
 
-The infrastructure is complete and ready. Run `python3 adaptation/train_lora_rsvqa.py` to execute the full training when compute resources are available.
+## Overview
+
+**Base Model**: `Qwen/Qwen2-VL-2B-Instruct` (2.2B parameters)
+
+**Dataset**: `cpratikaki/RSVQA-HR_qwen_finetuning` (train split, streamed)
+- Remote sensing visual question answering (RSVQA-HR)
+- Question types: yes/no, counting, area estimation, object presence
+- Answers are short lowercase strings (e.g. `yes`, `no`, `3`, `farmland`)
+
+**LoRA Configuration** (defaults):
+- Rank: 16, Alpha: 32, Dropout: 0.05
+- Target modules: `q_proj`, `v_proj` (self-attention in the LLM decoder)
+- Trainable parameters: ~8.4M (~0.4% of base)
+
+**Training Parameters** (defaults):
+- Learning rate: 3e-4 with 50-step warmup
+- Batch size: 4
+- Training steps: 500
+- Subset: 2000 samples (holdout 200 for eval)
+- Max sequence length: 1024 (image tokens + text)
+
+## Training Dependencies
+
+The training pipeline depends on the heavy deep-learning stack. These are
+**separate from the runtime service** (`requirements.txt`) so the serving image
+stays lean.
+
+```bash
+cd ml-service
+pip install -r requirements-training.txt
+```
+
+contents: `torch`, `torchvision`, `transformers`, `peft`, `accelerate`,
+`qwen-vl-utils`, `datasets`, `Pillow`.
+
+**Note:** `torch` must be a build matching your compute (e.g. the CUDA wheel on
+Linux with an NVIDIA GPU). The current local environment (Python 3.14) does not
+have these installed.
+
+## Smoke Test
+
+A tiny smoke run exercises the REAL pipeline (dataset loading, image
+preprocessing, model loading, LoRA attachment, forward/backward, optimizer
+step) to catch label-shape, processor, image-tensor, LoRA, dtype, and dataset
+errors — without launching a 500-step run.
+
+```bash
+cd ml-service
+python3 adaptation/train_lora_rsvqa.py --steps 2 --subset 8 --batch-size 1
+```
+
+**Environment status:** this currently fails before model load because the
+heavy training stack is not installed (`torch`/`transformers`/`peft`/
+`datasets`/`qwen-vl-utils`). The script exits with a clear message. Install
+`requirements-training.txt` and retry to get a genuine PASS.
+
+## Real Training
+
+```bash
+cd ml-service
+python3 adaptation/train_lora_rsvqa.py
+```
+
+Runs the default configuration (500 steps, 2000 samples, batch 4). **Do not run
+this unsupervised** — it requires several GB of VRAM/disk and takes
+significant time on CPU. It should be a separately authorized operation.
+
+Common options (all configurable via CLI):
+
+| Flag | Default | Purpose |
+|------|---------|---------|
+| `--model` | `Qwen/Qwen2-VL-2B-Instruct` | Base model id |
+| `--dataset` | `cpratikaki/RSVQA-HR_qwen_finetuning` | Dataset id |
+| `--subset` | 2000 | Total samples (train + eval) |
+| `--holdout` | 200 | Samples held out for eval |
+| `--batch-size` | 4 | Training batch size |
+| `--steps` | 500 | Training steps |
+| `--learning-rate` | 3e-4 | AdamW LR |
+| `--warmup-steps` | 50 | Linear warmup steps |
+| `--max-length` | 1024 | Max sequence tokens (image + text) |
+| `--output-dir` | `adaptation/checkpoint` | Adapter output dir |
+| `--seed` | 42 | Random seed |
+| `--eval-samples` | 20 | Eval sample count (exact match) |
+| `--save-every` | 100 | Save an adapter every N steps (0 = off) |
+| `--resume-from-checkpoint` | — | Resume adapter weights from a saved dir |
+| `--device` | auto | `cuda` / `cpu` / `mps` override |
+| `--lora-rank/alpha/dropout` | 16/32/0.05 | LoRA hyperparameters |
+| `--target-modules` | `q_proj,v_proj` | LoRA target modules |
+
+## Output Checkpoints
+
+PEFT-compatible LoRA adapters (loadable via `PeftModel.from_pretrained`):
+
+- `adaptation/checkpoint/` — final adapter
+- `adaptation/checkpoint/step-<N>/` — periodic adapters (every `--save-every` steps)
+
+Each adapter dir contains `adapter_config.json` + `adapter_model.safetensors`
+(or `.bin`), plus a small `TRAINING_NOTE.json`.
+
+The script runs a structural validation after saving to confirm the directory
+contains what inference expects.
+
+## Evaluation Output
+
+`adaptation/eval_results.json` records (when a run completes):
+- Base vs adapted accuracy, and delta (repo's **lightweight exact-match,
+  lowercased** metric — not benchmark-grade)
+- Sample count, model name, adapter path, LR, batch, max length, seed, dtype,
+  device, timestamp, checkpoints saved, and adapter validation info
+
+No evaluation numbers are fabricated: they appear only after a real run.
+
+## GPU / Precision Expectations
+
+The script selects precision automatically (safe, no mixed-precision magic):
+
+- **CUDA + bf16** if the GPU supports it, else **CUDA + fp16**
+- **MPS** (Apple Silicon) detected explicitly, runs in float32
+- **CPU** runs in float32
+
+Startup logs print the device, dtype, GPU name and available VRAM (when CUDA).
+
+**Memory:** FP32 was too heavy for many GPUs, hence bf16/fp16 on CUDA. No exact
+VRAM requirement is claimed without measurement — reduce `--batch-size` /
+`--max-length` if you hit OOM.
+
+## Reproducibility
+
+`--seed` (default 42) seeds Python `random`, NumPy, torch, CUDA, and cuDNN
+deterministic modes. The eval sample selection is seeded and deterministic per
+seed. Note that full bit-for-bit reproducibility can still vary across
+hardware/CPU/CUDA kernels (this is documented, not guaranteed).
+
+## Resume Behavior
+
+- `--resume-from-checkpoint <dir>` loads the LoRA adapter weights from a saved
+  directory and continues training.
+- **Optimizer / scheduler state is NOT preserved** — warmup restarts. This is
+  documented and by design (adapter-only resume).
+- Intermediate checkpoints use separate `step-<N>` directories so a prior
+  checkpoint is not corrupted.
+
+## Current Limitations
+
+- No training has been run yet; no checkpoint or eval results exist yet.
+- Label construction aligns to the full sequence and masks prompt/padding with
+  `-100`; if a full sequence exceeds `--max-length`, the answer tail may be
+  truncated (raise `--max-length` to avoid).
+- Evaluation is lightweight exact-match, not a benchmark.
+- No gradient accumulation / distributed training (single-device only).
+
+## Configuring the Adapted Adapter for VQA
+
+After a successful training run, point the VQA loader at the final adapter:
+
+1. Set `.env` (or environment):
+   ```bash
+   VQA_ADAPTER_PATH=./adaptation/checkpoint
+   ```
+2. Restart the ML service. The `/vqa` endpoint (`app/models/vlm_loader.py`)
+   loads the adapter via `PeftModel.from_pretrained(base_model, adapter_path)`.
+
+**Compatibility requirements verified by the pipeline:**
+- The trained base model must be the SAME as the inference base model
+  (`Qwen/Qwen2-VL-2B-Instruct` by default).
+- The adapter is saved in PEFT format (`adapter_config.json` +
+  `adapter_model.safetensors`), which is what the loader expects.
+- Dtype differences are handled by loading the base model in bf16 on CUDA /
+  fp32 on CPU, matching the training precision on each device.
+
+If the adapter path does not exist, the endpoint keeps the existing offline
+VQA fallback (no behavior change).
+
+## References
+
+- Qwen2-VL: https://arxiv.org/abs/2409.12191
+- RSVQA: https://rsvqa.sylvainlobry.com/
+- LoRA: https://arxiv.org/abs/2106.09685
+- PEFT: https://github.com/huggingface/peft
