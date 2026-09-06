@@ -1,6 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
 import { gsap } from 'gsap';
-import { useGSAP } from '@gsap/react';
 import { Input } from './ui/Input';
 
 const suggestions = [
@@ -27,7 +26,7 @@ const modes = [
 ];
 
 const SearchIcon = () => (
-  <svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ color: 'var(--muted)', flexShrink: 0 }}>
+  <svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ color: 'var(--glass-muted-text)', flexShrink: 0 }}>
     <circle cx="11" cy="11" r="8" />
     <line x1="21" y1="21" x2="16.65" y2="16.65" />
   </svg>
@@ -74,6 +73,55 @@ const CheckIcon = ({ size = 14 }) => (
   </svg>
 );
 
+const useControlGlow = () => {
+  const controlRef = useRef(null);
+  const glowRef = useRef(null);
+  const [glowPos, setGlowPos] = useState({ x: 20, y: 20 });
+
+  const setGlow = (x, y, radius) => {
+    if (!glowRef.current) return;
+    gsap.to(glowRef.current, {
+      background: `radial-gradient(${radius}px circle at ${x}px ${y}px, rgba(var(--accent-rgb), 0.5), transparent 80%)`,
+      duration: 0.1,
+    });
+  };
+
+  const onGlowMove = (e) => {
+    if (!controlRef.current) return;
+    const { left, top } = controlRef.current.getBoundingClientRect();
+    const x = e.clientX - left;
+    const y = e.clientY - top;
+    setGlowPos({ x, y });
+    setGlow(x, y, 40);
+  };
+
+  const onGlowEnter = (e) => {
+    if (!controlRef.current) return;
+    const { left, top } = controlRef.current.getBoundingClientRect();
+    const x = e.clientX - left;
+    const y = e.clientY - top;
+    setGlowPos({ x, y });
+    if (!glowRef.current) return;
+    gsap.set(glowRef.current, {
+      background: `radial-gradient(0px circle at ${x}px ${y}px, rgba(var(--accent-rgb), 0.5), transparent 80%)`,
+    });
+    gsap.to(glowRef.current, {
+      background: `radial-gradient(40px circle at ${x}px ${y}px, rgba(var(--accent-rgb), 0.5), transparent 80%)`,
+      duration: 0.3,
+    });
+  };
+
+  const onGlowLeave = () => {
+    if (!glowRef.current) return;
+    gsap.to(glowRef.current, {
+      background: `radial-gradient(0px circle at ${glowPos.x}px ${glowPos.y}px, rgba(var(--accent-rgb), 0.5), transparent 80%)`,
+      duration: 0.3,
+    });
+  };
+
+  return { controlRef, glowRef, onGlowMove, onGlowEnter, onGlowLeave };
+};
+
 export default function SearchBar({ onSubmit, onClear }) {
   const [query, setQuery] = useState('');
   const [focused, setFocused] = useState(false);
@@ -82,11 +130,10 @@ export default function SearchBar({ onSubmit, onClear }) {
   const [pos, setPos] = useState(0);
   const prevPos = useRef(0);
   const inputRef = useRef(null);
-  const composerRef = useRef(null);
-  const beamRef = useRef(null);
   const popoverRef = useRef(null);
   const plusHandled = useRef(false);
-  const [beamPos, setBeamPos] = useState({ x: 0, y: 0 });
+  const plusGlow = useControlGlow();
+  const submitGlow = useControlGlow();
 
   const tickerRows = suggestions.concat(suggestions);
   const ROW_STEP = 48;
@@ -125,46 +172,6 @@ export default function SearchBar({ onSubmit, onClear }) {
 
   const noAnim = prevPos.current > pos;
 
-  useGSAP(() => {
-    gsap.set(beamRef.current, {
-      background: `radial-gradient(0px circle at ${beamPos.x}px ${beamPos.y}px, rgba(var(--accent-rgb), 0.55), transparent 80%)`,
-    });
-  }, { scope: composerRef });
-
-  const handleComposerMove = (e) => {
-    if (!composerRef.current) return;
-    const { left, top } = composerRef.current.getBoundingClientRect();
-    const x = e.clientX - left;
-    const y = e.clientY - top;
-    setBeamPos({ x, y });
-    gsap.to(beamRef.current, {
-      background: `radial-gradient(100px circle at ${x}px ${y}px, rgba(var(--accent-rgb), 0.55), transparent 80%)`,
-      duration: 0.1,
-    });
-  };
-
-  const handleComposerEnter = (e) => {
-    if (!composerRef.current) return;
-    const { left, top } = composerRef.current.getBoundingClientRect();
-    const x = e.clientX - left;
-    const y = e.clientY - top;
-    setBeamPos({ x, y });
-    gsap.set(beamRef.current, {
-      background: `radial-gradient(0px circle at ${x}px ${y}px, rgba(var(--accent-rgb), 0.55), transparent 80%)`,
-    });
-    gsap.to(beamRef.current, {
-      background: `radial-gradient(100px circle at ${x}px ${y}px, rgba(var(--accent-rgb), 0.55), transparent 80%)`,
-      duration: 0.3,
-    });
-  };
-
-  const handleComposerLeave = () => {
-    gsap.to(beamRef.current, {
-      background: `radial-gradient(0px circle at ${beamPos.x}px ${beamPos.y}px, rgba(var(--accent-rgb), 0.55), transparent 80%)`,
-      duration: 0.3,
-    });
-  };
-
   const handleSearch = () => {
     const submittedQuery = query.trim();
     if (!submittedQuery) return;
@@ -177,17 +184,14 @@ export default function SearchBar({ onSubmit, onClear }) {
 
   return (
     <div className="composer-wrap">
-      <div
-        ref={composerRef}
-        className="composer-row"
-        onMouseMove={handleComposerMove}
-        onMouseEnter={handleComposerEnter}
-        onMouseLeave={handleComposerLeave}
-      >
-        <div ref={beamRef} className="composer-beam" />
+      <div className="composer-row">
         <button
           type="button"
-          className="theme-toggle-btn composer-plus"
+          ref={plusGlow.controlRef}
+          className="composer-plus"
+          onMouseMove={plusGlow.onGlowMove}
+          onMouseEnter={plusGlow.onGlowEnter}
+          onMouseLeave={plusGlow.onGlowLeave}
           onMouseDown={(e) => { e.preventDefault(); plusHandled.current = true; setShowModes(v => !v); }}
           onClick={() => {
             if (plusHandled.current) { plusHandled.current = false; return; }
@@ -203,6 +207,7 @@ export default function SearchBar({ onSubmit, onClear }) {
           title="Analysis type"
           aria-expanded={showModes}
         >
+          <span ref={plusGlow.glowRef} className="composer-btn-glow" />
           <PlusIcon />
         </button>
 
@@ -232,10 +237,15 @@ export default function SearchBar({ onSubmit, onClear }) {
         </div>
 
         <button
-          className="theme-toggle-btn composer-submit"
+          ref={submitGlow.controlRef}
+          className="composer-submit"
+          onMouseMove={submitGlow.onGlowMove}
+          onMouseEnter={submitGlow.onGlowEnter}
+          onMouseLeave={submitGlow.onGlowLeave}
           onMouseDown={(e) => { e.preventDefault(); handleSearch(); }}
           title="Search"
         >
+          <span ref={submitGlow.glowRef} className="composer-btn-glow" />
           <ArrowUpIcon />
         </button>
       </div>

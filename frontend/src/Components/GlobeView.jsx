@@ -36,7 +36,7 @@ export default function GlobeView() {
 
     const applySceneTheme = () => {
       const isLight = document.documentElement.classList.contains('light');
-      viewer.scene.backgroundColor = Cesium.Color.fromCssColorString(isLight ? '#dbe9f8' : '#020617');
+      viewer.scene.backgroundColor = Cesium.Color.fromCssColorString(isLight ? '#cbd5e1' : '#020617');
       if (viewer.scene.requestRenderMode) viewer.scene.requestRender();
     };
     applySceneTheme();
