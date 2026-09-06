@@ -32,7 +32,7 @@ from app.common.http_utils import (
     save_to_temp,
     validate_upload_ext,
 )
-from app.models.vlm_loader import DEFAULT_CAPTION_MODEL
+from app.models.vlm_loader import DEFAULT_CAPTION_MODEL, VLMUnavailableError
 from app.schemas.common import ToolOutput
 from app.tools.caption import CaptionError, compute_caption
 
@@ -41,6 +41,46 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 CAPTION_ADAPTER_PATH = os.environ.get("CAPTION_ADAPTER_PATH")
+
+
+def _offline_caption_output(
+    filename: str,
+    size_bytes: int,
+    exc: VLMUnavailableError,
+) -> ToolOutput:
+    """Clearly-labeled offline placeholder when real VLM inference is unavailable.
+
+    No visual analysis is performed and none is implied: this is an honest
+    mock, not a model result, so confidence is 0.0 and no image content is
+    invented (a truthful caption cannot be produced offline).
+    """
+    note = (
+        "Real VLM inference is unavailable in this environment (missing "
+        "dependencies or model weights). No visual analysis was performed; "
+        "this is a labeled offline placeholder, not a model result."
+    )
+    return ToolOutput(
+        tool="caption",
+        status="success",
+        result={
+            "caption": "offline-placeholder",
+            "note": note,
+        },
+        evidence={
+            "image": {"filename": filename},
+        },
+        confidence=0.0,
+        metadata={
+            "filename": filename,
+            "size_bytes": size_bytes,
+            "model": DEFAULT_CAPTION_MODEL,
+            "adapter_used": CAPTION_ADAPTER_PATH is not None,
+            "mock": True,
+            "offline": True,
+            "reason": str(exc),
+            "note": note,
+        },
+    )
 
 
 @router.post("/caption")
@@ -76,6 +116,10 @@ async def caption_endpoint(
         result = compute_caption(
             tmp_path,
             adapter_path=CAPTION_ADAPTER_PATH,
+        )
+    except VLMUnavailableError as exc:
+        return _offline_caption_output(
+            filename, len(content), exc
         )
     except CaptionError as exc:
         return error_output("caption", str(exc), confidence=0.0)

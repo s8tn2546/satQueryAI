@@ -22,56 +22,116 @@ import os
 from pathlib import Path
 from typing import Any
 
-import torch
 from PIL import Image
-from qwen_vl_utils import process_vision_info
 
 logger = logging.getLogger(__name__)
 
 _MODEL_CACHE: dict[str, Any] = {}
 
+# Centralized VLM configuration. Real inference uses one Qwen2-VL model by
+# default; individual tools can be pointed at different model IDs via
+# VQA_MODEL / CAPTION_MODEL without changing code.
 DEFAULT_MODEL = os.environ.get("VLM_MODEL", "Qwen/Qwen2-VL-2B-Instruct")
+DEFAULT_VQA_MODEL = os.environ.get("VQA_MODEL", DEFAULT_MODEL)
+DEFAULT_CAPTION_MODEL = os.environ.get("CAPTION_MODEL", DEFAULT_MODEL)
 
 
-def _device() -> torch.device:
+class VLMUnavailableError(RuntimeError):
+    """Real VLM inference is unavailable (dependencies or model weights missing).
+
+    API endpoints translate this into a clearly-labeled offline placeholder so
+    the service stays bootable — and honest — when PyTorch / model weights are
+    not installed. It must never be treated as a real model result.
+    """
+
+
+def _import_torch():
+    try:
+        import torch
+        return torch
+    except ImportError as exc:
+        raise VLMUnavailableError(
+            "Real VLM inference unavailable: PyTorch is not installed."
+        ) from exc
+
+
+def _import_vision_utils():
+    try:
+        from qwen_vl_utils import process_vision_info
+        return process_vision_info
+    except ImportError as exc:
+        raise VLMUnavailableError(
+            "Real VLM inference unavailable: qwen-vl-utils is not installed."
+        ) from exc
+
+
+def _device() -> Any:
+    torch = _import_torch()
     return torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
-def _dtype_for(device: torch.device) -> torch.dtype:
+def _dtype_for(device: Any) -> Any:
+    torch = _import_torch()
     return torch.bfloat16 if device.type == "cuda" else torch.float32
 
 
 def load_qwen_model(model_name: str = DEFAULT_MODEL, adapter_path: str | None = None) -> tuple[Any, Any]:
     """Load (and cache) the Qwen2-VL model + processor.
-    
+
     Returns (model, processor) tuple. If adapter_path is provided,
     loads LoRA weights on top of the base model.
+
+    Raises:
+        VLMUnavailableError: when PyTorch/transformers/peft or the model weights
+            are unavailable, so callers can fall back to a labeled offline path.
     """
     cache_key = f"qwen:{model_name}:{adapter_path or 'base'}"
     if cache_key in _MODEL_CACHE:
         return _MODEL_CACHE[cache_key]
 
-    from transformers import Qwen2VLForConditionalGeneration, AutoProcessor
+    _import_torch()
+    try:
+        from transformers import Qwen2VLForConditionalGeneration, AutoProcessor
+    except ImportError as exc:
+        raise VLMUnavailableError(
+            "Real VLM inference unavailable: transformers is not installed."
+        ) from exc
 
-    logger.info("Loading Qwen2-VL model: %s", model_name)
-    device = _device()
-    dtype = _dtype_for(device)
+    try:
+        logger.info("Loading Qwen2-VL model: %s", model_name)
+        device = _device()
+        dtype = _dtype_for(device)
 
-    processor = AutoProcessor.from_pretrained(model_name)
-    model = Qwen2VLForConditionalGeneration.from_pretrained(
-        model_name,
-        torch_dtype=dtype,
-        device_map="auto" if device.type == "cuda" else None,
-    )
+        processor = AutoProcessor.from_pretrained(model_name)
+        model = Qwen2VLForConditionalGeneration.from_pretrained(
+            model_name,
+            torch_dtype=dtype,
+            device_map="auto" if device.type == "cuda" else None,
+        )
+    except VLMUnavailableError:
+        raise
+    except Exception as exc:
+        raise VLMUnavailableError(
+            f"Real VLM inference unavailable: could not load model/weights for '{model_name}': {exc}"
+        ) from exc
 
     if adapter_path and Path(adapter_path).exists():
         logger.info("Applying LoRA adapter from: %s", adapter_path)
-        from peft import PeftModel
-        model = PeftModel.from_pretrained(model, adapter_path)
+        try:
+            from peft import PeftModel
+            model = PeftModel.from_pretrained(model, adapter_path)
+        except ImportError as exc:
+            raise VLMUnavailableError(
+                "Real VLM inference unavailable: peft is required to load a LoRA adapter but is not installed."
+            ) from exc
+        except Exception as exc:
+            raise VLMUnavailableError(
+                f"Real VLM inference unavailable: failed to apply LoRA adapter '{adapter_path}': {exc}"
+            ) from exc
 
     if device.type == "cpu":
         model.to(device)
-    
+
     model.eval()
     _MODEL_CACHE[cache_key] = (model, processor)
     logger.info("Qwen2-VL model ready on %s (dtype=%s)", device, dtype)
@@ -81,7 +141,7 @@ def load_qwen_model(model_name: str = DEFAULT_MODEL, adapter_path: str | None = 
 def run_vqa(
     image: Image.Image,
     question: str,
-    model_name: str = DEFAULT_MODEL,
+    model_name: str = DEFAULT_VQA_MODEL,
     adapter_path: str | None = None,
 ) -> tuple[str, float]:
     """Run VQA inference using Qwen2-VL.
@@ -89,7 +149,12 @@ def run_vqa(
     Returns (answer, confidence) tuple. Answer is lowercase, trimmed,
     matching RSVQA expected format (single word or short phrase like
     "yes", "no", "3", "farmland").
+
+    Raises:
+        VLMUnavailableError: when PyTorch / model weights are unavailable.
     """
+    process_vision_info = _import_vision_utils()
+    torch = _import_torch()
     model, processor = load_qwen_model(model_name, adapter_path)
     device = next(model.parameters()).device
 
@@ -130,14 +195,19 @@ def run_vqa(
 
 def run_caption(
     image: Image.Image,
-    model_name: str = DEFAULT_MODEL,
+    model_name: str = DEFAULT_CAPTION_MODEL,
     adapter_path: str | None = None,
 ) -> tuple[str, float]:
     """Run image captioning inference using Qwen2-VL.
 
     Returns (caption, confidence) tuple. Caption is a natural English
     sentence as required by VRSBench BLEU/CIDEr evaluation.
+
+    Raises:
+        VLMUnavailableError: when PyTorch / model weights are unavailable.
     """
+    process_vision_info = _import_vision_utils()
+    torch = _import_torch()
     model, processor = load_qwen_model(model_name, adapter_path)
     device = next(model.parameters()).device
 

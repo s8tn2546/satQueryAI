@@ -13,7 +13,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from app.models.vlm_loader import DEFAULT_VQA_MODEL, run_vqa
+from app.models.vlm_loader import DEFAULT_VQA_MODEL, VLMUnavailableError, run_vqa
 from app.preprocessing.loader import ImageLoadError, load_image_as_pil
 
 logger = logging.getLogger(__name__)
@@ -35,7 +35,8 @@ def compute_vqa(
     Args:
         image_path: Path to the input image (GeoTIFF, TIFF, PNG, or JPEG)
         question:   Question text (plain English)
-        model_name: HuggingFace model ID; defaults to blip-vqa-base
+        model_name: HuggingFace model ID; defaults to the configured VQA model
+            (Qwen/Qwen2-VL-2B-Instruct via DEFAULT_VQA_MODEL)
         adapter_path: Optional path to LoRA adapter checkpoint
 
     Returns:
@@ -47,6 +48,9 @@ def compute_vqa(
 
     Raises:
         VQAError: On image load failure or inference failure
+        VLMUnavailableError: When real VLM inference is unavailable
+            (missing dependencies/weights); callers should use the labeled
+            offline placeholder instead of treating this as a model answer.
     """
     try:
         pil_image = load_image_as_pil(Path(image_path))
@@ -60,6 +64,8 @@ def compute_vqa(
 
     try:
         answer, confidence = run_vqa(pil_image, question, model_name=model_name, adapter_path=adapter_path)
+    except VLMUnavailableError:
+        raise
     except Exception as exc:
         raise VQAError(f"VQA inference failed: {exc}") from exc
 
