@@ -3,23 +3,30 @@ import * as Cesium from 'cesium';
 
 export default function GlobeView() {
   const [isLoading, setIsLoading] = useState(true);
+  const [locationLabel, setLocationLabel] = useState(null);
   const containerRef = useRef(null);
   const viewerRef = useRef(null);
   const lastTouchDist = useRef(null);
 
   useEffect(() => {
+    const googleSatellite = new Cesium.UrlTemplateImageryProvider({
+      url: 'https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}',
+      credit: 'Google Maps',
+    });
+
     const viewer = new Cesium.Viewer('cesiumContainer', {
       animation: false,
-      baseLayerPicker: false,
-      fullscreenButton: false,
+      baseLayerPicker: true,
+      fullscreenButton: true,
       vrButton: false,
-      geocoder: false,
-      homeButton: false,
-      infoBox: false,
-      sceneModePicker: false,
-      selectionIndicator: false,
+      geocoder: true,
+      homeButton: true,
+      infoBox: true,
+      sceneModePicker: true,
+      selectionIndicator: true,
       timeline: false,
-      navigationHelpButton: false,
+      navigationHelpButton: true,
+      baseLayer: Cesium.ImageryLayer.fromProviderAsync(Promise.resolve(googleSatellite)),
     });
     viewerRef.current = viewer;
 
@@ -31,7 +38,7 @@ export default function GlobeView() {
     if (ionCredit) ionCredit.style.display = 'none';
 
     viewer.scene.skyBox.show = true;
-    viewer.scene.skyAtmosphere.show = false;
+    viewer.scene.skyAtmosphere.show = true;
     viewer.scene.globe.show = true;
 
     const applySceneTheme = () => {
@@ -61,28 +68,80 @@ export default function GlobeView() {
     viewer.resolutionScale = window.devicePixelRatio;
     viewer.scene.globe.maximumScreenSpaceError = 1.2;
 
-    const raiseEarth = () => {
-      if (viewer.isDestroyed()) return;
-      const camera = viewer.camera;
-      const shift = Cesium.Cartesian3.multiplyByScalar(camera.up, -6.0e5, new Cesium.Cartesian3());
-      camera.position = Cesium.Cartesian3.add(camera.position, shift, new Cesium.Cartesian3());
-      if (viewer.scene.requestRenderMode) viewer.scene.requestRender();
+    const reverseGeocode = async (lat, lon) => {
+      try {
+        const res = await fetch(
+          `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lon}&format=json`,
+          { headers: { 'Accept-Language': 'en' } }
+        );
+        const data = await res.json();
+        const a = data.address || {};
+        return a.city || a.town || a.village || a.county || a.state || data.display_name || null;
+      } catch {
+        return null;
+      }
     };
 
-    const flight = viewer.camera.flyTo({
+    const flyToLocation = (lon, lat, label) => {
+      if (viewer.isDestroyed()) return;
+      if (label) setLocationLabel(label);
+
+      viewer.camera.flyTo({
+        destination: Cesium.Cartesian3.fromDegrees(lon, lat, 28000000),
+        orientation: {
+          heading: Cesium.Math.toRadians(0.0),
+          pitch: Cesium.Math.toRadians(-90.0),
+          roll: 0.0,
+        },
+        duration: 1.2,
+        complete: () => {
+          if (viewer.isDestroyed()) return;
+          const camera = viewer.camera;
+          const shift = Cesium.Cartesian3.multiplyByScalar(camera.up, -6.0e5, new Cesium.Cartesian3());
+          camera.position = Cesium.Cartesian3.add(camera.position, shift, new Cesium.Cartesian3());
+
+          viewer.camera.flyTo({
+            destination: Cesium.Cartesian3.fromDegrees(lon, lat, 180000),
+            orientation: {
+              heading: Cesium.Math.toRadians(0.0),
+              pitch: Cesium.Math.toRadians(-55.0),
+              roll: 0.0,
+            },
+            duration: 2.2,
+            easingFunction: Cesium.EasingFunction.QUADRATIC_IN_OUT,
+            complete: () => {
+              if (viewer.scene.requestRenderMode) viewer.scene.requestRender();
+              setTimeout(() => setLocationLabel(null), 3000);
+            },
+          });
+        },
+      });
+    };
+
+    const geoAndFly = async () => {
+      navigator.geolocation.getCurrentPosition(
+        async (pos) => {
+          const { latitude: lat, longitude: lon } = pos.coords;
+          const label = await reverseGeocode(lat, lon);
+          flyToLocation(lon, lat, label);
+        },
+        () => flyToLocation(78.9629, 20.5937, null)
+      );
+    };
+
+    viewer.camera.setView({
       destination: Cesium.Cartesian3.fromDegrees(78.9629, 20.5937, 28000000),
       orientation: {
         heading: Cesium.Math.toRadians(0.0),
         pitch: Cesium.Math.toRadians(-90.0),
-        roll: 0.0
+        roll: 0.0,
       },
-      duration: 1.5
     });
-    if (flight && typeof flight.then === 'function') {
-      flight.then(raiseEarth);
-    } else {
-      setTimeout(raiseEarth, 1600);
-    }
+
+    viewer.homeButton.viewModel.command.beforeExecute.addEventListener((e) => {
+      e.cancel = true;
+      geoAndFly();
+    });
 
     const removeListener = viewer.scene.globe.tileLoadProgressEvent.addEventListener((queueLength) => {
       if (queueLength === 0) {
@@ -161,6 +220,16 @@ export default function GlobeView() {
         <div className="globe-loader">
           <div className="globe-loader-spinner" />
           <p className="globe-loader-text">Loading Globe...</p>
+        </div>
+      )}
+
+      {locationLabel && (
+        <div className="globe-location-toast">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M20 10c0 6-8 12-8 12S4 16 4 10a8 8 0 0 1 16 0Z" />
+            <circle cx="12" cy="10" r="3" />
+          </svg>
+          {locationLabel}
         </div>
       )}
     </div>

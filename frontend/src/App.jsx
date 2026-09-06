@@ -1,7 +1,6 @@
 import { useState } from 'react';
 import GlobeView from './Components/GlobeView';
 import SearchBar from './Components/SearchBar';
-import ThemeToggle from './Components/ThemeToggle';
 import Sidebar from './Components/Sidebar';
 
 const MenuIcon = ({ size = 18 }) => (
@@ -40,10 +39,6 @@ export default function App() {
             >
               {sidebarOpen ? <PanelRightIcon /> : <MenuIcon />}
             </button>
-          </div>
-
-          <div className="globe-controls-right">
-            <ThemeToggle />
           </div>
 
           <div className="globe-search">

@@ -1,3 +1,5 @@
+import ThemeToggle from './ThemeToggle';
+
 const historyItems = [];
 
 export default function Sidebar({ open, onClose }) {
@@ -42,6 +44,17 @@ export default function Sidebar({ open, onClose }) {
             </ul>
           )}
         </nav>
+      </div>
+
+      <div className="sidebar-footer">
+        <div className="sidebar-user">
+          <div className="sidebar-user-avatar">AK</div>
+          <div className="sidebar-user-info">
+            <span className="sidebar-user-name">Aryan Kumar</span>
+            <span className="sidebar-user-email">aryan@satquery.ai</span>
+          </div>
+        </div>
+        <ThemeToggle />
       </div>
     </aside>
   );
