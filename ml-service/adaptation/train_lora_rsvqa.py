@@ -72,7 +72,11 @@ from qwen_vl_utils import process_vision_info  # noqa: E402
 # Ensure ``ml-service`` is on sys.path so this script runs from any CWD and the
 # torch-free helper module (adaptation/_train_helpers.py) stays importable.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from adaptation._train_helpers import build_masked_labels, split_train_eval  # noqa: E402
+from adaptation._train_helpers import (  # noqa: E402
+    build_masked_labels,
+    pad_token_type_ids,
+    split_train_eval,
+)
 
 BASE_MODEL  = "Qwen/Qwen2-VL-2B-Instruct"
 DATASET_ID  = "cpratikaki/RSVQA-HR_qwen_finetuning"
@@ -241,6 +245,9 @@ class RSVQADataset(torch.utils.data.Dataset):
         attention_mask = full_inputs["attention_mask"].squeeze(0)
         pixel_values = full_inputs["pixel_values"].squeeze(0)
         image_grid_thw = full_inputs["image_grid_thw"].squeeze(0)
+        # Preserve the processor-returned per-token modality ids (0=text, 1=image).
+        # Required by Qwen2-VL for multimodal RoPE when multimodal inputs are passed.
+        mm_token_type_ids = full_inputs["mm_token_type_ids"].squeeze(0)
 
         seq = input_ids.numel()
         if seq > self.max_length:
@@ -282,12 +289,19 @@ class RSVQADataset(torch.utils.data.Dataset):
                     torch.zeros((pads,), dtype=attention_mask.dtype),
                 ]
             )
+            # Pad mm_token_type_ids to the EXACT same length (0 = no modality),
+            # matching the manual input_ids/attention_mask padding.
+            mm_token_type_ids = torch.tensor(
+                pad_token_type_ids(mm_token_type_ids.tolist(), self.max_length),
+                dtype=torch.long,
+            )
 
         return {
             "input_ids": input_ids,
             "attention_mask": attention_mask,
             "pixel_values": pixel_values,
             "image_grid_thw": image_grid_thw,
+            "mm_token_type_ids": mm_token_type_ids,
             "labels": torch.tensor(labels, dtype=torch.long),
         }
 
@@ -309,6 +323,8 @@ def validate_first_sample(ds: RSVQADataset, device: torch.device, dtype: torch.d
     logger.info("  non-masked label tokens: %d", non_masked)
     logger.info("  pixel_values : shape=%s", tuple(item["pixel_values"].shape))
     logger.info("  image_grid_thw: shape=%s", tuple(item["image_grid_thw"].shape))
+    logger.info("  mm_token_type_ids: shape=%s dtype=%s",
+                tuple(item["mm_token_type_ids"].shape), item["mm_token_type_ids"].dtype)
     logger.info("  device       : %s  dtype=%s", device, dtype)
     if non_masked == 0:
         raise RuntimeError(
@@ -602,6 +618,7 @@ def main() -> None:
             pixel_vals = batch["pixel_values"].to(device)
             grid_thw = batch["image_grid_thw"].to(device)
             labels = batch["labels"].to(device)
+            mm_tids = batch["mm_token_type_ids"].to(device)
 
             if input_ids.shape[-1] != labels.shape[-1]:
                 raise RuntimeError(
@@ -609,12 +626,19 @@ def main() -> None:
                     f"labels {tuple(labels.shape)}. Labels must be aligned to the "
                     f"full input sequence."
                 )
+            if input_ids.shape[-1] != mm_tids.shape[-1]:
+                raise RuntimeError(
+                    f"Shape mismatch: input_ids {tuple(input_ids.shape)} vs "
+                    f"mm_token_type_ids {tuple(mm_tids.shape)}. mm_token_type_ids "
+                    f"must be aligned to the full input sequence."
+                )
 
             outputs = model(
                 input_ids=input_ids,
                 attention_mask=attn_mask,
                 pixel_values=pixel_vals,
                 image_grid_thw=grid_thw,
+                mm_token_type_ids=mm_tids,
                 labels=labels,
             )
             loss = outputs.loss

@@ -4,7 +4,7 @@ Kept dependency-free (no torch / transformers / datasets) so they can be unit
 tested in lightweight CI environments where the heavy training stack is not
 installed.
 
-Two functions are covered here:
+Three functions are covered here:
 
 1. ``split_train_eval`` — safe training/eval split that can never produce a
    negative training size or an eval size larger than the available samples
@@ -14,6 +14,10 @@ Two functions are covered here:
    full input_id sequence (prompt + answer) where everything before the answer
    start and all padding/``pad_token_id`` positions are masked with ``-100``.
    Only the assistant/answer tokens contribute to the supervised loss.
+
+3. ``pad_token_type_ids`` — right-pad the processor-returned ``mm_token_type_ids``
+   to a target length so it stays exactly aligned with the manually right-padded
+   ``input_ids``/``attention_mask``, without altering the multimodal region.
 """
 
 from __future__ import annotations
@@ -22,6 +26,10 @@ from typing import List, Sequence, Tuple
 
 # Sentinel used by HF for "ignore this position in the loss".
 IGNORE_INDEX = -100
+
+# Qwen2-VL mm_token_type_ids convention: 0 = text/no modality, 1 = image.
+TEXT_TOKEN_TYPE = 0
+IMAGE_TOKEN_TYPE = 1
 
 
 def split_train_eval(
@@ -85,3 +93,32 @@ def build_masked_labels(
     if len(labels) < max_length:
         labels += [IGNORE_INDEX] * (max_length - len(labels))
     return labels
+
+
+def pad_token_type_ids(
+    token_type_ids: Sequence[int],
+    max_length: int,
+) -> List[int]:
+    """Right-pad ``mm_token_type_ids`` to ``max_length`` without touching the
+    multimodal region.
+
+    Qwen2-VL needs ``mm_token_type_ids`` (per-token 0=text, 1=image) aligned to
+    ``input_ids`` so multimodal RoPE (M-RoPE) is computed correctly. Because the
+    dataset manually right-pads ``input_ids``/``attention_mask`` (never truncating
+    the image region), the token-type ids must be padded to exactly the same
+    length using the "text/no modality" value (0), preserving the image region
+    (1) at the front.
+
+    Args:
+        token_type_ids: processor-returned mm_token_type_ids (integer sequence).
+        max_length:     target sequence length.
+
+    Returns:
+        Padded list of length ``max_length``. If ``token_type_ids`` is already
+        longer than ``max_length`` it is returned unchanged (the caller refuses
+        to truncate the multimodal region before this point).
+    """
+    padded = [int(t) for t in token_type_ids]
+    if len(padded) < max_length:
+        padded += [TEXT_TOKEN_TYPE] * (max_length - len(padded))
+    return padded

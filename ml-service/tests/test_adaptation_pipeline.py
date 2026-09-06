@@ -16,6 +16,12 @@ These tests target the defects found in the Colab smoke test:
    previously imported only inside main()'s local scope, causing a NameError in
    the module-level _infer() helper. It must be a module-level import.
 
+4. mm_token_type_ids ALIGNMENT for Qwen2-VL multimodal RoPE (M-RoPE) — the
+   processor-returned per-token modality ids must be preserved, right-padded to
+   exactly the same sequence length as the manually padded input_ids, and passed
+   to model(). Otherwise the model raises a ValueError about missing
+   mm_token_type_ids when multimodal inputs are supplied.
+
 These tests are deliberately dependency-free (no torch / transformers / peft),
 so they run in environments where the heavy training stack is not installed.
 """
@@ -28,7 +34,10 @@ import pytest
 
 from adaptation._train_helpers import (
     IGNORE_INDEX,
+    IMAGE_TOKEN_TYPE,
+    TEXT_TOKEN_TYPE,
     build_masked_labels,
+    pad_token_type_ids,
     split_train_eval,
 )
 
@@ -206,3 +215,90 @@ def test_process_vision_info_is_module_level():
     # The two call sites that previously NameError'd still reference the symbol.
     assert "process_vision_info([user_msg])" in src       # RSVQADataset.__getitem__
     assert "process_vision_info(messages)" in src         # _infer()
+
+
+# ---------------------------------------------------------------------------
+# mm_token_type_ids alignment (Qwen2-VL multimodal RoPE / M-RoPE)
+# ---------------------------------------------------------------------------
+
+
+def test_pad_token_type_ids_matches_input_ids_length():
+    """Padded mm_token_type_ids must match the manually padded input sequence.
+
+    The dataset manual-pads input_ids/attention_mask to max_length; token-type
+    ids must be padded to exactly the same length so M-RoPE stays aligned.
+    """
+    seq = 7
+    max_length = 16
+    token_type_ids = [IMAGE_TOKEN_TYPE] * 4 + [TEXT_TOKEN_TYPE] * (seq - 4)
+    padded = pad_token_type_ids(token_type_ids, max_length)
+    assert len(padded) == max_length
+    assert len(padded) == max_length  # == padded input_ids length
+
+
+def test_pad_token_type_ids_preserves_multimodal_region():
+    """Image tokens (value 1) at the front must be untouched by padding."""
+    image_tokens = 5
+    total_seq = 12
+    token_type_ids = [IMAGE_TOKEN_TYPE] * image_tokens + [TEXT_TOKEN_TYPE] * (
+        total_seq - image_tokens
+    )
+    padded = pad_token_type_ids(token_type_ids, max_length=20)
+    assert padded[:image_tokens] == [IMAGE_TOKEN_TYPE] * image_tokens
+    assert padded[image_tokens:total_seq] == [TEXT_TOKEN_TYPE] * (
+        total_seq - image_tokens
+    )
+    # Everything beyond the original sequence is the "no modality" pad value.
+    assert padded[total_seq:] == [TEXT_TOKEN_TYPE] * (20 - total_seq)
+
+
+def test_pad_token_type_ids_does_not_alter_original_values():
+    """Padding must not rewrite any value inside the original region."""
+    token_type_ids = [1, 1, 0, 0, 1, 0, 1, 1, 0, 0]
+    original = list(token_type_ids)
+    padded = pad_token_type_ids(token_type_ids, max_length=25)
+    assert padded[: len(original)] == original
+    assert len(padded) == 25
+    assert all(v in (TEXT_TOKEN_TYPE, IMAGE_TOKEN_TYPE) for v in padded)
+
+
+def test_pad_token_type_ids_no_padding_when_already_long():
+    """If the sequence already fits, it must be returned unchanged."""
+    token_type_ids = [IMAGE_TOKEN_TYPE, TEXT_TOKEN_TYPE, TEXT_TOKEN_TYPE]
+    assert pad_token_type_ids(token_type_ids, max_length=3) == token_type_ids
+    assert pad_token_type_ids(token_type_ids, max_length=2) == token_type_ids
+
+
+def test_mm_token_type_ids_is_returned_by_dataset_and_forwarded():
+    """The dataset must return mm_token_type_ids and training must forward it.
+
+    Dependency-free source check: __getitem__'s return dict must include
+    mm_token_type_ids, and the model(...) call in the training loop must pass
+    mm_token_type_ids=... so Qwen2-VL M-RoPE receives real processor values.
+    """
+    src = TRAIN_SCRIPT.read_text()
+
+    # 1. __getitem__ reads it from the processor output and returns it.
+    assert '"mm_token_type_ids": mm_token_type_ids' in src or (
+        "'mm_token_type_ids': mm_token_type_ids" in src
+    )
+    assert '"mm_token_type_ids"][0]' in src or "full_inputs[\"mm_token_type_ids\"]" in src
+
+    # 2. The training loop pulls it from the batch and forwards it to model().
+    loop = src.split("for batch in train_loader:")[1]
+    assert "mm_token_type_ids=mm_tids" in loop
+    assert 'batch["mm_token_type_ids"]' in loop
+
+
+def test_mm_token_type_ids_no_fake_default():
+    """The real processor output (full_inputs["mm_token_type_ids"]) is used.
+
+    Requirement: never fabricate a default tensor when the processor provides
+    the real values. The dataset must source token-type ids from the processor
+    output dict, not from a hardcoded zeros factory.
+    """
+    src = TRAIN_SCRIPT.read_text()
+    assert 'full_inputs["mm_token_type_ids"]' in src
+    # The only manufacture of values for these ids must be the pad helper, never
+    # a raw torch.zeros(...) default tensor standing in for the processor.
+    assert "mm_token_type_ids = torch.zeros(" not in src
