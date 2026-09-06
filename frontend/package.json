@@ -11,6 +11,7 @@
   },
   "dependencies": {
     "@gsap/react": "^2.1.2",
+    "@paper-design/shaders-react": "^0.0.80",
     "autoprefixer": "^10.5.4",
     "cesium": "^1.144.0",
     "framer-motion": "^13.2.0",
