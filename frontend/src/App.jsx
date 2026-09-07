@@ -5,7 +5,7 @@ import Sidebar from './Components/Sidebar';
 import TopBar from './Components/TopBar';
 import ResultsPanel from './Components/ResultsPanel';
 import ResultPanel from './Components/ResultPanel';
-import { MenuToggleIcon } from './Components/ui/MenuToggleIcon';
+import SidebarIcon from './Components/SidebarIcon';
 import { submitQuery, fetchQueryHistory } from './services/api';
 
 const SESSION_KEY = 'satquery.sessionId';
@@ -31,6 +31,7 @@ export default function App() {
   const [sessionId] = useState(getSessionId);
   const [submitted, setSubmitted] = useState(null);
   const [activeMode, setActiveMode] = useState('single');
+  const [attachedImages, setAttachedImages] = useState([]);
   const [coords, setCoords] = useState(null);
   const [tileIds, setTileIds] = useState([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -72,9 +73,10 @@ export default function App() {
     }
   };
 
-  const handleSubmit = async (queryText, mode) => {
+  const handleSubmit = async (queryText, mode, imgs = []) => {
     if (isLoading || !queryText || !queryText.trim()) return;
     if (mode) setActiveMode(mode);
+    setAttachedImages(imgs);
     setError(null);
     setSubmitted(queryText);
     setIsLoading(true);
@@ -94,26 +96,36 @@ export default function App() {
     }
   };
 
+  const handleClear = () => {
+    setSubmitted(null);
+    setAttachedImages([]);
+    setResponse(null);
+    setError(null);
+    setActiveHistoryId(null);
+  };
+
   const handleSelectHistory = (item) => {
     if (!item) return;
-    setSubmitted(item.queryText || '');
+    setSubmitted(item.queryText || item.query || '');
     setError(null);
-    setActiveHistoryId(item._id || null);
-    const { result, answerText, taskType, status, plan, toolResults, evidence, confidence,
-      confidenceSignals, executionTrace, parameters } = item;
-    setResponse({
-      result,
-      answerText,
-      taskType,
-      status,
-      plan,
-      toolResults,
-      evidence,
-      confidence,
-      confidenceSignals,
-      executionTrace,
-      parameters,
-    });
+    setActiveHistoryId(item._id || item.id || null);
+    if (item.result || item.answerText) {
+      const { result, answerText, taskType, status, plan, toolResults, evidence, confidence,
+        confidenceSignals, executionTrace, parameters } = item;
+      setResponse({
+        result,
+        answerText,
+        taskType,
+        status,
+        plan,
+        toolResults,
+        evidence,
+        confidence,
+        confidenceSignals,
+        executionTrace,
+        parameters,
+      });
+    }
   };
 
   return (
@@ -126,19 +138,19 @@ export default function App() {
 
           <div className="globe-controls-left">
             <button
-              className="sidebar-launch theme-toggle-btn"
+              className="sidebar-launch sidebar-launch-btn"
               onClick={() => setSidebarOpen(v => !v)}
               title={sidebarOpen ? 'Close menu' : 'Open menu'}
               aria-expanded={sidebarOpen}
             >
-              <MenuToggleIcon open={sidebarOpen} style={{ width: 20, height: 20 }} duration={500} />
+              <SidebarIcon size={26} />
             </button>
           </div>
 
           <div className="globe-search">
             <SearchBar
               onSubmit={handleSubmit}
-              onClear={() => setSubmitted(null)}
+              onClear={handleClear}
               onModeChange={setActiveMode}
               disabled={isLoading}
               onTilesChange={setTileIds}
@@ -160,10 +172,6 @@ export default function App() {
               </div>
             )}
 
-            {isLoading && response && (
-              <div className="search-result-loading-slim">Analyzing "{submitted}"...</div>
-            )}
-
             {error && (
               <div className="search-result search-result-error">
                 <div className="search-result-header">
@@ -181,7 +189,13 @@ export default function App() {
             {response && !error && <ResultPanel response={response} />}
           </div>
 
-          <ResultsPanel query={submitted} onClose={() => setSubmitted(null)} />
+          {submitted && !response && (
+            <ResultsPanel 
+              query={submitted} 
+              resultData={attachedImages.length > 0 ? { uploadedImages: attachedImages } : null}
+              onClose={handleClear} 
+            />
+          )}
         </div>
       </main>
 
@@ -194,6 +208,7 @@ export default function App() {
         historyLoading={historyLoading}
         historyError={historyError}
         activeHistoryId={activeHistoryId}
+        onNewAnalysis={handleClear}
         onSelectHistory={handleSelectHistory}
       />
     </div>

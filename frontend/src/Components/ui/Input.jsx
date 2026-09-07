@@ -13,7 +13,7 @@ const Input = React.forwardRef(
     useGSAP(
       () => {
         gsap.set(gradientRef.current, {
-          background: `radial-gradient(0px circle at ${mousePosition.x}px ${mousePosition.y}px, rgba(var(--accent-rgb), 0.5), transparent 80%)`,
+          background: `radial-gradient(0px circle at ${mousePosition.x}px ${mousePosition.y}px, rgba(var(--accent-rgb), 0.3), transparent 80%)`,
         });
       },
       { scope: containerRef },
@@ -29,7 +29,7 @@ const Input = React.forwardRef(
       setMousePosition({ x, y });
 
       gsap.to(gradientRef.current, {
-        background: `radial-gradient(${radius}px circle at ${x}px ${y}px, rgba(var(--accent-rgb), 0.5), transparent 80%)`,
+        background: `radial-gradient(${radius}px circle at ${x}px ${y}px, rgba(var(--accent-rgb), 0.3), transparent 80%)`,
         duration: 0.1,
       });
     }
@@ -43,18 +43,18 @@ const Input = React.forwardRef(
 
       setMousePosition({ x, y });
       gsap.set(gradientRef.current, {
-        background: `radial-gradient(0px circle at ${x}px ${y}px, rgba(var(--accent-rgb), 0.5), transparent 80%)`,
+        background: `radial-gradient(0px circle at ${x}px ${y}px, rgba(var(--accent-rgb), 0.3), transparent 80%)`,
       });
 
       gsap.to(gradientRef.current, {
-        background: `radial-gradient(${radius}px circle at ${x}px ${y}px, rgba(var(--accent-rgb), 0.5), transparent 80%)`,
+        background: `radial-gradient(${radius}px circle at ${x}px ${y}px, rgba(var(--accent-rgb), 0.3), transparent 80%)`,
         duration: 0.3,
       });
     }
 
     function handleMouseLeave() {
       gsap.to(gradientRef.current, {
-        background: `radial-gradient(0px circle at ${mousePosition.x}px ${mousePosition.y}px, rgba(var(--accent-rgb), 0.5), transparent 80%)`,
+        background: `radial-gradient(0px circle at ${mousePosition.x}px ${mousePosition.y}px, rgba(var(--accent-rgb), 0.3), transparent 80%)`,
         duration: 0.3,
       });
     }

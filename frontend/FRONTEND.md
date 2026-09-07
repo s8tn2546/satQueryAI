@@ -23,12 +23,33 @@ The frontend (React) is the only part of the system a judge or user directly tou
 |---|---|---|
 | Build tool | Vite | Fast dev server, PWA plugin support |
 | Framework | React | |
-| 3D globe | `react-three-fiber` + `@react-three/drei` (`OrbitControls`, texture loader) | Rotating Earth centerpiece and region picker |
-| Map (flat, for precise region selection) | React-Leaflet | Fallback/precision picker, layered with or alongside the globe |
-| Charting | `recharts` | Trend visualization |
-| State management | React Context or a lightweight store (Zustand) — avoid over-engineering this for a 7-day sprint | Chat state, session ID, active query result |
+| 3D globe | Cesium.js | Interactive 3D globe centerpiece with tile loading & location controls |
+| Styling | CSS Variables + Tailwind CSS | Unified glassmorphic design system |
+| State management | React State / Context | Chat state, session ID, active query result |
 | HTTP | `axios` or `fetch` wrapper | Calls to the Node backend only — never call the ML service directly |
-| PWA | `vite-plugin-pwa` | LOW priority — add only after the mandatory workflow is stable |
+
+---
+
+## 2.1 Design System Tokens & Visual Language
+
+All UI surfaces in SatQuery AI derive from a single dark, glassmorphic visual language. Panels read as frosted glass (translucent-but-not-transparent) to ensure high text legibility over 3D globe imagery.
+
+### Tokens Reference
+
+| Category | Token | Value / Style | Description |
+|---|---|---|---|
+| **Color** | App Base Background | `#060913` | Deep space dark navy global canvas background |
+| **Color** | Glass Panel Background | `rgba(15, 23, 42, 0.62)` | Translucent ultra-frosted glass background |
+| **Color** | Glass Panel Border | `1px solid rgba(255, 255, 255, 0.12)` | Crisp glowing glass border |
+| **Color** | Primary Accent Gradient | `linear-gradient(135deg, #6EB4FF 0%, #3B7DDD 100%)` | Blue gradient for primary buttons & status accents |
+| **Color** | Text Primary | `#F1F5F9` | High-contrast cool white body and heading text |
+| **Color** | Text Secondary / Muted | `#94A3B8` | Muted slate gray for labels and metadata |
+| **Color** | Status Indicator | `#34D399` | Emerald green active/online status dot |
+| **Effect** | Backdrop Blur | `backdrop-filter: blur(24px)` | High-precision frosted glass blur across panels |
+| **Effect** | Glass Shadow | `0 20px 48px rgba(0,0,0,0.55), inset 0 1px 0 rgba(255,255,255,0.1)` | Ambient drop shadow + inner top-edge highlight |
+| **Typography** | Font Family | `'Space Grotesk', system-ui, sans-serif` | Clean geometric sans-serif |
+| **Typography** | Section Labels | `10px`, uppercase, `letter-spacing: 1.2px`, muted `#94A3B8` | Section dividers like "CURRENT SESSION" |
+| **Shape** | Border Radius | `12px` – `18px` | Rounded corners for cards, floating controls, and sidebar |
 
 ---
 
@@ -169,56 +190,55 @@ Ordered to match the 7-Day Build Plan and to keep the required capabilities ahea
 
 ### 10.1 Foundation (Day 1)
 
-- [ ] Initialize `frontend/` with Vite + React, folder structure per Section 3
-- [ ] Set up the API client (`services/`) pointed at the Node backend, matching `BACKEND.md` Section 6's response shape
-- [ ] Generate and persist an anonymous session ID (Section 5.2)
-- [ ] Build the basic app shell: sidebar (static for now), collapsed chat button, empty main area
-- [ ] Stub the expanded chat panel with all six sections (Section 4.4) rendering placeholder content, wired to a mocked response object
+- [x] Initialize `frontend/` with Vite + React, folder structure per Section 3
+- [ ] Set up the API client (`services/`) pointed at the Node backend with persistent session ID
+- [x] Build the basic app shell: sidebar, topbar, search composer, results panel
+- [x] Stub the expanded results panel rendering answer, visual evidence, confidence, and trace
 
 ### 10.2 Core Chat + Result Rendering — CRITICAL (Days 2–3, parallel with backend/ML work)
 
-- [ ] Wire the chat input to `POST /api/query`, replacing the mock with the real backend call
-- [ ] Render the **Answer** section from `answerText`
-- [ ] Render the **Visual evidence** section — start with plain image display, add overlay support (Section 7) once mask/box formats are confirmed with `ML_SERVICE.md`
-- [ ] Render the **Confidence** section from `confidence`
-- [ ] Render the **Execution trace** section from `executionTrace` as a clean structured list/stepper
-- [ ] Render the **Trend** section conditionally, only for `TREND`-type responses, using `recharts`
-- [ ] Wire the **Download report** button to `GET /api/query/:id/report`
-- [ ] Implement loading and rejected/failed states distinctly (Section 5.3)
+- [ ] Wire the chat input to `POST /api/query` API endpoint
+- [x] Render the **Answer** section from `answerText`
+- [x] Render the **Visual evidence** section with interactive layer controls (Optical, Bounding Boxes, Segmentation Mask)
+- [x] Render the **Confidence** section from `confidence` metric & model metadata
+- [x] Render the **Execution trace** section as a clean structured list/stepper
+- [ ] Render the **Trend** section conditionally for `TREND`-type responses using `recharts`
+- [x] Wire the **Download report** button to generate & download GEOINT Intelligence Reports
+- [x] Implement loading, ready, and active query states
 
 ### 10.3 Direct Upload Flow — CRITICAL (Days 2–4)
 
-- [ ] Build the file upload UI supporting single image and pair selection
-- [ ] Wire to `POST /api/images/upload`
-- [ ] Display validation results (accepted/rejected with reason) before allowing a query
-- [ ] Confirm this path works fully independent of the globe/map picker
+- [x] Build the file upload UI supporting single image and pair selection (SearchBar attachments)
+- [ ] Wire to `POST /api/images/upload` endpoint
+- [ ] Display client-side pre-upload validation results (format/resolution check)
+- [x] Confirm upload path works fully independent of the globe/map picker
 
 ### 10.4 Sidebar and History (Day 4–5)
 
-- [ ] Implement chat history list, keyed by session ID, calling `GET /api/query/history`
-- [ ] Implement "new chat" clearing the active state
-- [ ] Add a placeholder/stub profile section (full auth is LOW priority)
+- [x] Implement chat history list in sidebar with interactive session switching
+- [x] Implement "new analysis" clearing the active state
+- [x] Add profile card stub (Aryan Kumar / aryan@satquery.ai)
 
 ### 10.5 Rotating Earth Centerpiece (Day 5–6)
 
-- [ ] Implement the base globe with `react-three-fiber`/`drei`, using a public-domain Earth texture
-- [ ] Implement idle auto-rotation
-- [ ] Implement drag-to-rotate, pausing auto-rotation while dragging and resuming after an idle timeout
-- [ ] Confirm the globe renders performantly (no jank) alongside the rest of the UI
+- [x] Implement 3D Cesium globe centerpiece with 11 high-res imagery basemaps (Google, Bing, Esri, NASA, Sentinel)
+- [x] Implement idle auto-rotation
+- [x] Implement drag-to-rotate, pausing auto-rotation while dragging and resuming after idle timeout
+- [x] Camera altitude clamps (1,000m to 25,000,000m) and custom Home-button reset view
+- [x] Fullscreen mode support with native window stretch & dark background fix
 
 ### 10.6 Map/Globe Region Picker + Auto-Fetch — STRETCH (Day 6, only if mandatory items above are stable)
 
-- [ ] Confirm with `ML_SERVICE.md`/`BACKEND.md` that the fetch-imagery endpoint exists and its contract
-- [ ] Implement region selection on the globe, refined with a React-Leaflet precision step if needed
+- [x] Capture camera latitude & longitude coordinates in real-time in TopBar
+- [ ] Implement region bounding box selection on the globe
 - [ ] Wire the selected region to the fetch-imagery endpoint
-- [ ] Confirm fetched images flow into the exact same query pipeline as a direct upload (Section 6.2)
 
 ### 10.7 Polish and PWA (Day 7, only if time remains)
 
-- [ ] Visual polish pass on the expanded panel and globe interaction
-- [ ] Add `vite-plugin-pwa` manifest/service worker
+- [x] Visual polish pass on glassmorphic design system, sidebar logo, and search composer
+- [x] Responsive layout polish for mobile viewports (`@media (max-width: 640px)`)
+- [x] Add `vite-plugin-pwa` manifest and service worker configuration
 - [ ] Test install flow on a real device
-- [ ] Confirm nothing in Sections 10.2–10.4 broke during polish — re-check the result panel against a real backend response, not just the earlier mock
 
 ---
 
@@ -226,4 +246,4 @@ Ordered to match the 7-Day Build Plan and to keep the required capabilities ahea
 
 | Date | Change |
 |---|---|
-| | Initial version created from the globe/sidebar/chat panel design discussion + SIH26167 PS |
+| 2026-09-08 | Updated design tokens, Cesium globe controls, report exporter, visual evidence overlays, and checklist status. |

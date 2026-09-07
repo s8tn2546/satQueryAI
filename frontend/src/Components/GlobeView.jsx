@@ -11,15 +11,108 @@ export default function GlobeView({ onCoordsChange, activeQuery }) {
   const markerRef = useRef(null);
 
   useEffect(() => {
-    const googleSatellite = new Cesium.UrlTemplateImageryProvider({
-      url: 'https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}',
-      credit: 'Google Maps',
-    });
+    const baseLayers = [
+      new Cesium.ProviderViewModel({
+        name: 'Google Satellite (Hybrid)',
+        tooltip: 'Latest Google Maps satellite imagery with roads and labels',
+        iconUrl: 'https://mt1.google.com/vt/lyrs=y&x=2&y=1&z=2',
+        creationFunction: () =>
+          new Cesium.UrlTemplateImageryProvider({
+            url: 'https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}',
+            credit: 'Google Maps',
+          }),
+      }),
+      new Cesium.ProviderViewModel({
+        name: 'Google Satellite (Clean)',
+        tooltip: 'Latest Google Maps high-resolution imagery without labels',
+        iconUrl: 'https://mt1.google.com/vt/lyrs=s&x=2&y=1&z=2',
+        creationFunction: () =>
+          new Cesium.UrlTemplateImageryProvider({
+            url: 'https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}',
+            credit: 'Google Maps',
+          }),
+      }),
+      new Cesium.ProviderViewModel({
+        name: 'Bing Maps Aerial',
+        tooltip: 'Latest Microsoft Bing Maps high-resolution aerial imagery',
+        iconUrl: 'https://t0.tiles.virtualearth.net/tiles/a03.jpeg?g=1',
+        creationFunction: () =>
+          new Cesium.UrlTemplateImageryProvider({
+            url: 'https://ecn.t{s}.tiles.virtualearth.net/tiles/a{quadkey}.jpeg?g=1',
+            subdomains: ['0', '1', '2', '3'],
+            credit: 'Microsoft Bing Maps',
+          }),
+      }),
+      new Cesium.ProviderViewModel({
+        name: 'Bing Maps Hybrid',
+        tooltip: 'Latest Microsoft Bing Maps aerial imagery with roads and labels',
+        iconUrl: 'https://t1.tiles.virtualearth.net/tiles/h03.jpeg?g=1',
+        creationFunction: () =>
+          new Cesium.UrlTemplateImageryProvider({
+            url: 'https://ecn.t{s}.tiles.virtualearth.net/tiles/h{quadkey}.jpeg?g=1',
+            subdomains: ['0', '1', '2', '3'],
+            credit: 'Microsoft Bing Maps',
+          }),
+      }),
+      new Cesium.ProviderViewModel({
+        name: 'Esri World Imagery',
+        tooltip: 'Latest Esri high-resolution global satellite imagery',
+        iconUrl:
+          'https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/2/1/1',
+        creationFunction: () =>
+          new Cesium.UrlTemplateImageryProvider({
+            url: 'https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+            credit: 'Esri, Maxar, Earthstar Geographics',
+          }),
+      }),
+      new Cesium.ProviderViewModel({
+        name: 'Sentinel-2 Cloudless',
+        tooltip: 'Latest Sentinel-2 cloud-free global satellite mosaic',
+        iconUrl:
+          'https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless-2020_3857/default/g/2/1/1.jpg',
+        creationFunction: () =>
+          new Cesium.UrlTemplateImageryProvider({
+            url: 'https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless-2020_3857/default/g/{z}/{y}/{x}.jpg',
+            credit: 'Sentinel-2 Cloudless - EOX IT Services GmbH',
+          }),
+      }),
+      new Cesium.ProviderViewModel({
+        name: 'Google Terrain',
+        tooltip: 'Latest Google Maps physical terrain and elevation contours',
+        iconUrl: 'https://mt1.google.com/vt/lyrs=p&x=2&y=1&z=2',
+        creationFunction: () =>
+          new Cesium.UrlTemplateImageryProvider({
+            url: 'https://mt1.google.com/vt/lyrs=p&x={x}&y={y}&z={z}',
+            credit: 'Google Maps',
+          }),
+      }),
+      new Cesium.ProviderViewModel({
+        name: 'CartoDB Dark Matter',
+        tooltip: 'Subtle dark canvas basemap for mission control',
+        iconUrl: 'https://a.basemaps.cartocdn.com/dark_all/2/1/1.png',
+        creationFunction: () =>
+          new Cesium.UrlTemplateImageryProvider({
+            url: 'https://a.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png',
+            credit: '© CARTO, © OpenStreetMap',
+          }),
+      }),
+      new Cesium.ProviderViewModel({
+        name: 'OpenStreetMap Standard',
+        tooltip: 'OpenStreetMap standard global vector tiles',
+        iconUrl: 'https://tile.openstreetmap.org/2/1/1.png',
+        creationFunction: () =>
+          new Cesium.UrlTemplateImageryProvider({
+            url: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+            credit: '© OpenStreetMap contributors',
+          }),
+      }),
+    ];
 
     const viewer = new Cesium.Viewer('cesiumContainer', {
       animation: false,
       baseLayerPicker: true,
       fullscreenButton: true,
+      fullscreenElement: document.documentElement,
       vrButton: false,
       geocoder: true,
       homeButton: true,
@@ -28,9 +121,19 @@ export default function GlobeView({ onCoordsChange, activeQuery }) {
       selectionIndicator: true,
       timeline: false,
       navigationHelpButton: true,
-      baseLayer: Cesium.ImageryLayer.fromProviderAsync(Promise.resolve(googleSatellite)),
+      imageryProviderViewModels: baseLayers,
+      selectedImageryProviderViewModel: baseLayers[0],
     });
     viewerRef.current = viewer;
+
+    const handleResize = () => {
+      if (viewerRef.current && !viewerRef.current.isDestroyed()) {
+        viewerRef.current.resize();
+      }
+    };
+    document.addEventListener('fullscreenchange', handleResize);
+    document.addEventListener('webkitfullscreenchange', handleResize);
+    document.addEventListener('mozfullscreenchange', handleResize);
 
     const creditContainers = document.querySelectorAll('.cesium-viewer-credits, .cesium-widget-credits, .cesium-credit-expander');
     creditContainers.forEach((el) => {
@@ -43,14 +146,7 @@ export default function GlobeView({ onCoordsChange, activeQuery }) {
     viewer.scene.skyAtmosphere.show = true;
     viewer.scene.globe.show = true;
 
-    const applySceneTheme = () => {
-      const isLight = document.documentElement.classList.contains('light');
-      viewer.scene.backgroundColor = Cesium.Color.fromCssColorString(isLight ? '#cbd5e1' : '#020617');
-      if (viewer.scene.requestRenderMode) viewer.scene.requestRender();
-    };
-    applySceneTheme();
-    const themeObserver = new MutationObserver(applySceneTheme);
-    themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] });
+    viewer.scene.backgroundColor = Cesium.Color.fromCssColorString('#0A0E16');
 
     viewer.scene.requestRenderMode = true;
     viewer.scene.maximumRenderTimeChange = Infinity;
@@ -66,6 +162,8 @@ export default function GlobeView({ onCoordsChange, activeQuery }) {
     controller.enableRotate = true;
     controller.enableTilt = true;
     controller.enableZoom = true;
+    controller.minimumZoomDistance = 1000.0;
+    controller.maximumZoomDistance = 25000000.0;
 
     viewer.resolutionScale = window.devicePixelRatio;
     viewer.scene.globe.maximumScreenSpaceError = 1.2;
@@ -132,7 +230,7 @@ export default function GlobeView({ onCoordsChange, activeQuery }) {
     };
 
     viewer.camera.setView({
-      destination: Cesium.Cartesian3.fromDegrees(78.9629, 20.5937, 28000000),
+      destination: Cesium.Cartesian3.fromDegrees(78.9629, 20.5937, 24000000),
       orientation: {
         heading: Cesium.Math.toRadians(0.0),
         pitch: Cesium.Math.toRadians(-90.0),
@@ -140,9 +238,23 @@ export default function GlobeView({ onCoordsChange, activeQuery }) {
       },
     });
 
+    const resetToHomeView = () => {
+      if (viewer.isDestroyed()) return;
+      setLocationLabel(null);
+      viewer.camera.flyTo({
+        destination: Cesium.Cartesian3.fromDegrees(78.9629, 20.5937, 24000000),
+        orientation: {
+          heading: Cesium.Math.toRadians(0.0),
+          pitch: Cesium.Math.toRadians(-90.0),
+          roll: 0.0,
+        },
+        duration: 1.4,
+      });
+    };
+
     viewer.homeButton.viewModel.command.beforeExecute.addEventListener((e) => {
       e.cancel = true;
-      geoAndFly();
+      resetToHomeView();
     });
 
     const removeCoordListener = viewer.scene.postRender.addEventListener(() => {
@@ -189,10 +301,12 @@ export default function GlobeView({ onCoordsChange, activeQuery }) {
     const timer = setTimeout(() => setIsLoading(false), 1500);
 
     return () => {
-      themeObserver.disconnect();
       clearTimeout(timer);
       stopRotation();
       removeCoordListener();
+      document.removeEventListener('fullscreenchange', handleResize);
+      document.removeEventListener('webkitfullscreenchange', handleResize);
+      document.removeEventListener('mozfullscreenchange', handleResize);
       if (removeListener) removeListener();
       if (!viewer.isDestroyed()) viewer.destroy();
     };

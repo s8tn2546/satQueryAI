@@ -1,35 +1,13 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef } from 'react';
 import { gsap } from 'gsap';
-import { Input } from './ui/Input';
 import { ShaderSearchIcon } from './ui/ShaderSearchIcon';
 import { uploadImages } from '../services/api';
-
-const suggestions = [
-  'Describe this satellite image',
-  'Is there a water body?',
-  'What changed between these dates?',
-  'Where did the change occur?',
-  'Has vegetation decreased?',
-  'Compare optical and SAR imagery',
-  'Show the vegetation trend',
-  'Any cloud cover in this scene?',
-  'How much urban expansion has occurred?',
-  'Estimate the average elevation here',
-  'Classify the land use in this area',
-  'Detect possible flood inundation',
-  'Measure the surface temperature trend',
-  'Has agricultural land been lost?',
-];
 
 const modes = [
   ['single', 'Single scene'],
   ['temporal', 'T1 + T2'],
   ['sar', 'Optical + SAR'],
 ];
-
-const SearchIcon = () => (
-  <ShaderSearchIcon size={28} />
-);
 
 const ArrowUpIcon = ({ size = 17 }) => (
   <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -38,24 +16,17 @@ const ArrowUpIcon = ({ size = 17 }) => (
   </svg>
 );
 
-const ImageIcon = ({ size = 16 }) => (
+const PlusIcon = ({ size = 17 }) => (
   <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
-    <circle cx="8.5" cy="8.5" r="1.5" />
-    <polyline points="21 15 16 10 5 21" />
+    <line x1="12" y1="5" x2="12" y2="19" />
+    <line x1="5" y1="12" x2="19" y2="12" />
   </svg>
 );
 
-const XIcon = ({ size = 14 }) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+const XIcon = ({ size = 12 }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
     <line x1="18" y1="6" x2="6" y2="18" />
     <line x1="6" y1="6" x2="18" y2="18" />
-  </svg>
-);
-
-const ChevronRightIcon = ({ size = 13 }) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <polyline points="9 18 15 12 9 6" />
   </svg>
 );
 
@@ -67,7 +38,7 @@ const useControlGlow = () => {
   const setGlow = (x, y, radius) => {
     if (!glowRef.current) return;
     gsap.to(glowRef.current, {
-      background: `radial-gradient(${radius}px circle at ${x}px ${y}px, rgba(var(--accent-rgb), 0.5), transparent 80%)`,
+      background: `radial-gradient(${radius}px circle at ${x}px ${y}px, rgba(var(--accent-rgb), 0.3), transparent 80%)`,
       duration: 0.1,
     });
   };
@@ -89,10 +60,10 @@ const useControlGlow = () => {
     setGlowPos({ x, y });
     if (!glowRef.current) return;
     gsap.set(glowRef.current, {
-      background: `radial-gradient(0px circle at ${x}px ${y}px, rgba(var(--accent-rgb), 0.5), transparent 80%)`,
+      background: `radial-gradient(0px circle at ${x}px ${y}px, rgba(var(--accent-rgb), 0.3), transparent 80%)`,
     });
     gsap.to(glowRef.current, {
-      background: `radial-gradient(40px circle at ${x}px ${y}px, rgba(var(--accent-rgb), 0.5), transparent 80%)`,
+      background: `radial-gradient(40px circle at ${x}px ${y}px, rgba(var(--accent-rgb), 0.3), transparent 80%)`,
       duration: 0.3,
     });
   };
@@ -100,7 +71,7 @@ const useControlGlow = () => {
   const onGlowLeave = () => {
     if (!glowRef.current) return;
     gsap.to(glowRef.current, {
-      background: `radial-gradient(0px circle at ${glowPos.x}px ${glowPos.y}px, rgba(var(--accent-rgb), 0.5), transparent 80%)`,
+      background: `radial-gradient(0px circle at ${glowPos.x}px ${glowPos.y}px, rgba(var(--accent-rgb), 0.3), transparent 80%)`,
       duration: 0.3,
     });
   };
@@ -108,123 +79,68 @@ const useControlGlow = () => {
   return { controlRef, glowRef, onGlowMove, onGlowEnter, onGlowLeave };
 };
 
-const ACCEPTED_UPLOAD_EXTS = ['.tif', '.tiff', '.gtiff', '.png', '.jpg', '.jpeg'];
-const MAX_FILES_BY_MODE = { single: 1, temporal: 2, sar: 2 };
-
-const extOf = (name) => name.slice(name.lastIndexOf('.')).toLowerCase();
-
-export default function SearchBar({ onSubmit, onClear, onModeChange, disabled = false, onTilesChange = () => {} }) {
+export default function SearchBar({ 
+  onSubmit, 
+  onClear, 
+  onModeChange, 
+  disabled = false, 
+  onTilesChange = () => {} 
+}) {
   const [query, setQuery] = useState('');
   const [focused, setFocused] = useState(false);
   const [mode, setMode] = useState('single');
-  const [pos, setPos] = useState(0);
-  const [files, setFiles] = useState([]);
-  const [uploading, setUploading] = useState(false);
+  const [images, setImages] = useState([]);
   const [uploadError, setUploadError] = useState(null);
-  const prevPos = useRef(0);
   const inputRef = useRef(null);
   const fileInputRef = useRef(null);
   const submitGlow = useControlGlow();
+  const plusGlow = useControlGlow();
 
-  const maxFiles = MAX_FILES_BY_MODE[mode] || 1;
-
-  const uploadFiles = async (list) => {
-    if (list.length === 0) {
-      onTilesChange([]);
-      return;
-    }
-    setUploading(true);
+  const handleFileChange = (e) => {
+    const files = Array.from(e.target.files || []);
+    if (files.length === 0) return;
     setUploadError(null);
-    try {
-      const modality =
-        mode === 'single' ? 'optical'
-        : mode === 'temporal' ? ['optical', 'optical']
-        : ['optical', 'sar'];
-      const payload = await uploadImages(list, { modality });
-      if (payload && payload.status === 'success') {
-        const ids = Array.isArray(payload.tileIds) ? payload.tileIds : [];
-        onTilesChange(ids);
-      } else {
-        setUploadError((payload && payload.error) || 'Image upload failed.');
-        onTilesChange([]);
-      }
-    } catch (err) {
-      setUploadError((err && err.message) || 'Image upload failed.');
-      onTilesChange([]);
-    } finally {
-      setUploading(false);
-    }
-  };
 
-  const handleFilesSelected = (e) => {
-    const selected = Array.from(e.target.files || []);
+    const validFiles = [];
+    const MAX_SIZE = 50 * 1024 * 1024; // 50MB
+
+    for (const file of files) {
+      if (file.size > MAX_SIZE) {
+        setUploadError(`"${file.name}" exceeds 50MB limit.`);
+        continue;
+      }
+      validFiles.push({
+        id: Math.random().toString(36).substring(2, 9),
+        file,
+        url: URL.createObjectURL(file),
+        name: file.name,
+      });
+    }
+
+    if (validFiles.length > 0) {
+      setImages((prev) => [...prev, ...validFiles]);
+      onTilesChange(validFiles.map(f => f.id));
+    }
     e.target.value = '';
-    if (selected.length === 0) return;
-
-    const invalid = selected.filter(f => !ACCEPTED_UPLOAD_EXTS.includes(extOf(f.name)));
-    if (invalid.length > 0) {
-      setUploadError(
-        `Unsupported file type "${invalid.map(f => extOf(f.name)).join(', ')}". Accepted: .tif, .tiff, .gtiff, .png, .jpg, .jpeg.`
-      );
-      return;
-    }
-
-    const merged = [...files];
-    for (const f of selected) {
-      if (merged.length >= maxFiles) {
-        setUploadError(`This mode supports up to ${maxFiles} image${maxFiles > 1 ? 's' : ''}.`);
-        break;
-      }
-      merged.push(f);
-    }
-    if (merged.length === 0) return;
-    setFiles(merged);
-    uploadFiles(merged);
   };
 
-  const handleRemoveFile = (index) => {
-    const remaining = files.filter((_, i) => i !== index);
-    setFiles(remaining);
-    if (remaining.length === 0) {
-      onTilesChange([]);
-    } else {
-      uploadFiles(remaining);
-    }
+  const removeImage = (id) => {
+    setImages((prev) => {
+      const target = prev.find((img) => img.id === id);
+      if (target && target.url) URL.revokeObjectURL(target.url);
+      const updated = prev.filter((img) => img.id !== id);
+      onTilesChange(updated.map(f => f.id));
+      return updated;
+    });
   };
-
-  const handleModeChange = (id) => {
-    setMode(id);
-    onModeChange && onModeChange(id);
-    if (files.length > (MAX_FILES_BY_MODE[id] || 1)) {
-      setFiles([]);
-      setUploadError(null);
-      onTilesChange([]);
-    }
-  };
-
-  const tickerRows = suggestions.concat(suggestions);
-  const ROW_STEP = 48;
-
-  useEffect(() => {
-    const id = setInterval(() => {
-      setPos(p => (p === suggestions.length ? 0 : p + 1));
-    }, 3500);
-    return () => clearInterval(id);
-  }, []);
-
-  useEffect(() => {
-    prevPos.current = pos;
-  }, [pos]);
-
-  const noAnim = prevPos.current > pos;
 
   const handleSearch = () => {
-    if (disabled) return;
     const submittedQuery = query.trim();
-    if (!submittedQuery) return;
+    if (!submittedQuery && images.length === 0) return;
     onClear && onClear();
-    onSubmit && onSubmit(submittedQuery, mode);
+    onSubmit && onSubmit(submittedQuery, mode, images);
     setQuery('');
+    setImages([]);
     if (inputRef.current) inputRef.current.focus();
   };
 
@@ -232,66 +148,64 @@ export default function SearchBar({ onSubmit, onClear, onModeChange, disabled = 
     <div className="composer-wrap">
       <div className="composer-label-row">
         <span className="composer-label">QUERY ACTIVE LOCATION</span>
+        {uploadError && <span className="composer-upload-error">{uploadError}</span>}
         <div className="composer-mode-pills">
           {modes.map(([id, label]) => (
             <button
               key={id}
               type="button"
               className={`composer-mode-pill ${mode === id ? 'active' : ''}`}
-              onClick={() => handleModeChange(id)}
+              onClick={() => { setMode(id); onModeChange && onModeChange(id); }}
             >
               {label}
             </button>
           ))}
         </div>
       </div>
+
       <div className="composer-row">
-        <div
-          className={`new-composer ${focused ? 'focused' : ''}`}
-          onClick={() => { if (inputRef.current) inputRef.current.focus(); }}
+        <button
+          type="button"
+          ref={plusGlow.controlRef}
+          className="composer-plus"
+          onMouseMove={plusGlow.onGlowMove}
+          onMouseEnter={plusGlow.onGlowEnter}
+          onMouseLeave={plusGlow.onGlowLeave}
+          onClick={() => fileInputRef.current && fileInputRef.current.click()}
+          title="Upload image"
+          disabled={disabled}
         >
-          <SearchIcon />
-          {query && (
-            <button
-              className="new-composer-clear"
-              onMouseDown={(e) => { e.preventDefault(); setQuery(''); }}
-              title="Clear"
-            >
-              <XIcon />
-            </button>
-          )}
-          <Input
-            ref={inputRef}
-            type="text"
-            value={query}
-            onChange={e => { setQuery(e.target.value); onClear && onClear(); }}
-            onFocus={() => { setFocused(true); onClear && onClear(); }}
-            onBlur={() => setFocused(false)}
-            onKeyDown={e => e.key === 'Enter' && handleSearch()}
-            placeholder="Ask anything about this location…"
-            aria-label="Satellite analysis question"
-            wrapperClassName="h-full min-w-0 flex-1"
-          />
-        </div>
+          <span ref={plusGlow.glowRef} className="composer-btn-glow" />
+          <PlusIcon />
+        </button>
+
+        <input
+          ref={inputRef}
+          type="text"
+          className="composer-input"
+          placeholder="Ask anything about satellite imagery (e.g. detect aircrafts, measure vegetation...)"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          onFocus={() => setFocused(true)}
+          onBlur={() => setFocused(false)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              handleSearch();
+            }
+          }}
+          disabled={disabled}
+        />
 
         <button
           type="button"
-          className="composer-plus composer-attach"
-          onClick={() => { if (fileInputRef.current) fileInputRef.current.click(); }}
-          disabled={disabled || uploading}
-          title={maxFiles > 1 ? `Attach up to ${maxFiles} images` : 'Attach an image'}
-          aria-label="Attach images"
-        >
-          <ImageIcon />
-        </button>
-
-        <button
           ref={submitGlow.controlRef}
           className="composer-submit"
           onMouseMove={submitGlow.onGlowMove}
           onMouseEnter={submitGlow.onGlowEnter}
           onMouseLeave={submitGlow.onGlowLeave}
-          onMouseDown={(e) => { e.preventDefault(); handleSearch(); }}
+          onClick={handleSearch}
+          disabled={disabled}
           title="Search"
         >
           <span ref={submitGlow.glowRef} className="composer-btn-glow" />
@@ -303,53 +217,26 @@ export default function SearchBar({ onSubmit, onClear, onModeChange, disabled = 
           type="file"
           multiple
           hidden
-          accept=".tif,.tiff,.gtiff,.png,.jpg,.jpeg"
-          onChange={handleFilesSelected}
+          accept=".tif,.tiff,.gtiff,.png,.jpg,.jpeg,.webp"
+          onChange={handleFileChange}
         />
       </div>
 
-      {(files.length > 0 || uploading || uploadError) && (
+      {images.length > 0 && (
         <div className="composer-files-wrap">
           <div className="composer-files">
-            {files.map((f, i) => (
-              <span key={`${f.name}-${i}`} className="composer-file-chip">
-                <span className="composer-file-name">{f.name}</span>
+            {images.map((img) => (
+              <span key={img.id} className="composer-file-chip">
+                <span className="composer-file-name">{img.name}</span>
                 <button
                   type="button"
                   className="composer-file-remove"
-                  onClick={() => handleRemoveFile(i)}
-                  disabled={uploading}
-                  aria-label={`Remove ${f.name}`}
+                  onClick={() => removeImage(img.id)}
+                  aria-label={`Remove ${img.name}`}
                 >
                   <XIcon />
                 </button>
               </span>
-            ))}
-            {uploading && <span className="composer-file-state">Uploading...</span>}
-          </div>
-          {uploadError && <div className="composer-files-error">{uploadError}</div>}
-        </div>
-      )}
-
-      {focused && (
-        <div className="prediction-stack suggestion-carousel">
-          <div
-            className={`suggestion-track${noAnim ? ' no-anim' : ''}`}
-            style={{ transform: `translateY(${-pos * ROW_STEP}px)` }}
-          >
-            {tickerRows.map((item, i) => (
-              <button
-                key={i}
-                className="prediction-row suggestion-row"
-                onMouseDown={(e) => {
-                  e.preventDefault();
-                  setQuery(item);
-                  if (inputRef.current) inputRef.current.focus();
-                }}
-              >
-                <ChevronRightIcon />
-                <span>{item}</span>
-              </button>
             ))}
           </div>
         </div>

@@ -1,0 +1,62 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="8" result="blur" />
+      <feComposite in="SourceGraphic" in2="blur" operator="over" />
+    </filter>
+    
+    <filter id="border-glow" x="-10%" y="-10%" width="120%" height="120%">
+      <feGaussianBlur stdDeviation="6" result="blur" />
+      <feMerge>
+        <feMergeNode in="blur" />
+        <feMergeNode in="SourceGraphic" />
+      </feMerge>
+    </filter>
+
+    <radialGradient id="globeGrad" cx="35%" cy="30%" r="70%">
+      <stop offset="0%" stop-color="#8FC5FF" />
+      <stop offset="60%" stop-color="#4B96F3" />
+      <stop offset="100%" stop-color="#1E448A" />
+    </radialGradient>
+
+    <linearGradient id="ringGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#8FC5FF" />
+      <stop offset="100%" stop-color="#3B7DDD" />
+    </linearGradient>
+  </defs>
+
+  <!-- Panel Container -->
+  <rect x="16" y="16" width="480" height="480" rx="32" ry="32" fill="#0A0E16" stroke="#6EB4FF" stroke-width="1.5" stroke-opacity="0.6" filter="url(#border-glow)" />
+
+  <!-- ICON GROUP -->
+  <g filter="url(#glow)">
+    <!-- Back Orbit Ring Arc (Behind Globe) -->
+    <path d="M 130 150 A 135 48 -22 0 1 382 170" fill="none" stroke="url(#ringGrad)" stroke-width="3" stroke-linecap="round" opacity="0.45" />
+
+    <!-- Globe Sphere Base -->
+    <circle cx="256" cy="180" r="72" fill="url(#globeGrad)" />
+
+    <!-- Lat/Lon Curvature Overlay Lines -->
+    <path d="M 184 180 A 72 72 0 0 0 328 180" fill="none" stroke="#E8ECF1" stroke-width="1.2" opacity="0.3" />
+    <path d="M 196 145 A 72 40 0 0 0 316 145" fill="none" stroke="#E8ECF1" stroke-width="1" opacity="0.25" />
+    <path d="M 196 215 A 72 40 0 0 0 316 215" fill="none" stroke="#E8ECF1" stroke-width="1" opacity="0.25" />
+    <path d="M 256 108 A 72 72 0 0 1 256 252" fill="none" stroke="#E8ECF1" stroke-width="1.2" opacity="0.3" />
+
+    <!-- Abstract Landmass Shapes -->
+    <path d="M 215 140 Q 230 130 245 142 T 260 155 Q 240 165 220 150 Z" fill="#8FC5FF" opacity="0.75" />
+    <path d="M 235 175 Q 255 170 270 185 T 260 215 Q 240 210 230 190 Z" fill="#6EB4FF" opacity="0.7" />
+    <path d="M 280 145 Q 305 140 315 160 T 295 175 Q 280 165 280 145 Z" fill="#8FC5FF" opacity="0.7" />
+
+    <!-- Front Orbit Ring Arc (In Front of Globe) -->
+    <path d="M 382 170 A 135 48 -22 0 1 130 150" fill="none" stroke="url(#ringGrad)" stroke-width="3.5" stroke-linecap="round" />
+    
+    <!-- Small satellite spark dot on the orbit ring -->
+    <circle cx="370" cy="180" r="4" fill="#E8ECF1" />
+  </g>
+
+  <!-- WORDMARK -->
+  <text x="256" y="380" text-anchor="middle" font-family="'Space Grotesk', 'Inter', system-ui, sans-serif" font-weight="600" font-size="44" letter-spacing="-0.5">
+    <tspan fill="#E8ECF1">SatQuery </tspan>
+    <tspan fill="#6EB4FF">AI</tspan>
+  </text>
+</svg>
