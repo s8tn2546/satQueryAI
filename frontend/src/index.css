@@ -1248,6 +1248,7 @@ html.light .composer-btn-glow {
 /* ============ Search bar label row + mode pills ============ */
 .composer-label-row {
   display: flex; align-items: center; justify-content: space-between;
+  width: 100%;
   margin-bottom: 8px; padding: 0 4px;
 }
 .composer-upload-error {

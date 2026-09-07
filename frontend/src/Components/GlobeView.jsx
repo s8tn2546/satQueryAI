@@ -111,7 +111,7 @@ export default function GlobeView({ onCoordsChange, activeQuery }) {
     const viewer = new Cesium.Viewer('cesiumContainer', {
       animation: false,
       baseLayerPicker: true,
-      fullscreenButton: true,
+      fullscreenButton: false,
       fullscreenElement: document.documentElement,
       vrButton: false,
       geocoder: true,

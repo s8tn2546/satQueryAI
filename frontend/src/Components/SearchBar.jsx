@@ -1,13 +1,34 @@
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { gsap } from 'gsap';
+import { Input } from './ui/Input';
 import { ShaderSearchIcon } from './ui/ShaderSearchIcon';
-import { uploadImages } from '../services/api';
+
+const suggestions = [
+  'Describe this satellite image',
+  'Is there a water body?',
+  'What changed between these dates?',
+  'Where did the change occur?',
+  'Has vegetation decreased?',
+  'Compare optical and SAR imagery',
+  'Show the vegetation trend',
+  'Any cloud cover in this scene?',
+  'How much urban expansion has occurred?',
+  'Estimate the average elevation here',
+  'Classify the land use in this area',
+  'Detect possible flood inundation',
+  'Measure the surface temperature trend',
+  'Has agricultural land been lost?',
+];
 
 const modes = [
   ['single', 'Single scene'],
   ['temporal', 'T1 + T2'],
   ['sar', 'Optical + SAR'],
 ];
+
+const SearchIcon = () => (
+  <ShaderSearchIcon size={28} />
+);
 
 const ArrowUpIcon = ({ size = 17 }) => (
   <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -30,6 +51,12 @@ const XIcon = ({ size = 12 }) => (
   </svg>
 );
 
+const ChevronRightIcon = ({ size = 13 }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <polyline points="9 18 15 12 9 6" />
+  </svg>
+);
+
 const useControlGlow = () => {
   const controlRef = useRef(null);
   const glowRef = useRef(null);
@@ -38,7 +65,7 @@ const useControlGlow = () => {
   const setGlow = (x, y, radius) => {
     if (!glowRef.current) return;
     gsap.to(glowRef.current, {
-      background: `radial-gradient(${radius}px circle at ${x}px ${y}px, rgba(var(--accent-rgb), 0.3), transparent 80%)`,
+      background: `radial-gradient(${radius}px circle at ${x}px ${y}px, rgba(var(--accent-rgb), 0.5), transparent 80%)`,
       duration: 0.1,
     });
   };
@@ -60,10 +87,10 @@ const useControlGlow = () => {
     setGlowPos({ x, y });
     if (!glowRef.current) return;
     gsap.set(glowRef.current, {
-      background: `radial-gradient(0px circle at ${x}px ${y}px, rgba(var(--accent-rgb), 0.3), transparent 80%)`,
+      background: `radial-gradient(0px circle at ${x}px ${y}px, rgba(var(--accent-rgb), 0.5), transparent 80%)`,
     });
     gsap.to(glowRef.current, {
-      background: `radial-gradient(40px circle at ${x}px ${y}px, rgba(var(--accent-rgb), 0.3), transparent 80%)`,
+      background: `radial-gradient(40px circle at ${x}px ${y}px, rgba(var(--accent-rgb), 0.5), transparent 80%)`,
       duration: 0.3,
     });
   };
@@ -71,7 +98,7 @@ const useControlGlow = () => {
   const onGlowLeave = () => {
     if (!glowRef.current) return;
     gsap.to(glowRef.current, {
-      background: `radial-gradient(0px circle at ${glowPos.x}px ${glowPos.y}px, rgba(var(--accent-rgb), 0.3), transparent 80%)`,
+      background: `radial-gradient(0px circle at ${glowPos.x}px ${glowPos.y}px, rgba(var(--accent-rgb), 0.5), transparent 80%)`,
       duration: 0.3,
     });
   };
@@ -82,19 +109,37 @@ const useControlGlow = () => {
 export default function SearchBar({ 
   onSubmit, 
   onClear, 
-  onModeChange, 
-  disabled = false, 
-  onTilesChange = () => {} 
+  onModeChange,
+  disabled = false,
+  onTilesChange = () => {}
 }) {
   const [query, setQuery] = useState('');
   const [focused, setFocused] = useState(false);
   const [mode, setMode] = useState('single');
   const [images, setImages] = useState([]);
   const [uploadError, setUploadError] = useState(null);
+  const [pos, setPos] = useState(0);
+  const prevPos = useRef(0);
   const inputRef = useRef(null);
   const fileInputRef = useRef(null);
   const submitGlow = useControlGlow();
   const plusGlow = useControlGlow();
+
+  const tickerRows = suggestions.concat(suggestions);
+  const ROW_STEP = 48;
+
+  useEffect(() => {
+    const id = setInterval(() => {
+      setPos(p => (p === suggestions.length ? 0 : p + 1));
+    }, 3500);
+    return () => clearInterval(id);
+  }, []);
+
+  useEffect(() => {
+    prevPos.current = pos;
+  }, [pos]);
+
+  const noAnim = prevPos.current > pos;
 
   const handleFileChange = (e) => {
     const files = Array.from(e.target.files || []);
@@ -102,7 +147,7 @@ export default function SearchBar({
     setUploadError(null);
 
     const validFiles = [];
-    const MAX_SIZE = 50 * 1024 * 1024; // 50MB
+    const MAX_SIZE = 50 * 1024 * 1024; // 50MB limit
 
     for (const file of files) {
       if (file.size > MAX_SIZE) {
@@ -118,8 +163,11 @@ export default function SearchBar({
     }
 
     if (validFiles.length > 0) {
-      setImages((prev) => [...prev, ...validFiles]);
-      onTilesChange(validFiles.map(f => f.id));
+      setImages((prev) => {
+        const next = [...prev, ...validFiles];
+        onTilesChange(next.map(f => f.id));
+        return next;
+      });
     }
     e.target.value = '';
   };
@@ -156,6 +204,7 @@ export default function SearchBar({
               type="button"
               className={`composer-mode-pill ${mode === id ? 'active' : ''}`}
               onClick={() => { setMode(id); onModeChange && onModeChange(id); }}
+              disabled={disabled}
             >
               {label}
             </button>
@@ -172,30 +221,47 @@ export default function SearchBar({
           onMouseEnter={plusGlow.onGlowEnter}
           onMouseLeave={plusGlow.onGlowLeave}
           onClick={() => fileInputRef.current && fileInputRef.current.click()}
-          title="Upload image"
+          title="Upload imagery"
           disabled={disabled}
         >
           <span ref={plusGlow.glowRef} className="composer-btn-glow" />
           <PlusIcon />
         </button>
 
-        <input
-          ref={inputRef}
-          type="text"
-          className="composer-input"
-          placeholder="Ask anything about satellite imagery (e.g. detect aircrafts, measure vegetation...)"
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          onFocus={() => setFocused(true)}
-          onBlur={() => setFocused(false)}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter') {
-              e.preventDefault();
-              handleSearch();
-            }
-          }}
-          disabled={disabled}
-        />
+        <div
+          className={`new-composer ${focused ? 'focused' : ''}`}
+          onClick={() => { if (inputRef.current) inputRef.current.focus(); }}
+        >
+          <SearchIcon />
+          {query && (
+            <button
+              type="button"
+              className="new-composer-clear"
+              onMouseDown={(e) => { e.preventDefault(); setQuery(''); }}
+              title="Clear text"
+            >
+              <XIcon />
+            </button>
+          )}
+          <Input
+            ref={inputRef}
+            type="text"
+            value={query}
+            onChange={e => { setQuery(e.target.value); onClear && onClear(); }}
+            onFocus={() => { setFocused(true); onClear && onClear(); }}
+            onBlur={() => setTimeout(() => setFocused(false), 200)}
+            onKeyDown={e => {
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                handleSearch();
+              }
+            }}
+            placeholder="Ask anything about this satellite scene…"
+            aria-label="Satellite analysis question"
+            disabled={disabled}
+            wrapperClassName="h-full min-w-0 flex-1"
+          />
+        </div>
 
         <button
           type="button"
@@ -204,7 +270,7 @@ export default function SearchBar({
           onMouseMove={submitGlow.onGlowMove}
           onMouseEnter={submitGlow.onGlowEnter}
           onMouseLeave={submitGlow.onGlowLeave}
-          onClick={handleSearch}
+          onMouseDown={(e) => { e.preventDefault(); handleSearch(); }}
           disabled={disabled}
           title="Search"
         >
@@ -237,6 +303,31 @@ export default function SearchBar({
                   <XIcon />
                 </button>
               </span>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {focused && (
+        <div className="prediction-stack suggestion-carousel">
+          <div
+            className={`suggestion-track${noAnim ? ' no-anim' : ''}`}
+            style={{ transform: `translateY(${-pos * ROW_STEP}px)` }}
+          >
+            {tickerRows.map((item, i) => (
+              <button
+                key={i}
+                type="button"
+                className="prediction-row suggestion-row"
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  setQuery(item);
+                  if (inputRef.current) inputRef.current.focus();
+                }}
+              >
+                <ChevronRightIcon />
+                <span>{item}</span>
+              </button>
             ))}
           </div>
         </div>
