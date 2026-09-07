@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from 'react';
 import { gsap } from 'gsap';
 import { Input } from './ui/Input';
 import { ShaderSearchIcon } from './ui/ShaderSearchIcon';
+import { uploadImages } from '../services/api';
 
 const suggestions = [
   'Describe this satellite image',
@@ -34,6 +35,14 @@ const ArrowUpIcon = ({ size = 17 }) => (
   <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
     <line x1="12" y1="19" x2="12" y2="5" />
     <polyline points="5 12 12 5 19 12" />
+  </svg>
+);
+
+const ImageIcon = ({ size = 16 }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
+    <circle cx="8.5" cy="8.5" r="1.5" />
+    <polyline points="21 15 16 10 5 21" />
   </svg>
 );
 
@@ -99,14 +108,99 @@ const useControlGlow = () => {
   return { controlRef, glowRef, onGlowMove, onGlowEnter, onGlowLeave };
 };
 
-export default function SearchBar({ onSubmit, onClear, onModeChange }) {
+const ACCEPTED_UPLOAD_EXTS = ['.tif', '.tiff', '.gtiff', '.png', '.jpg', '.jpeg'];
+const MAX_FILES_BY_MODE = { single: 1, temporal: 2, sar: 2 };
+
+const extOf = (name) => name.slice(name.lastIndexOf('.')).toLowerCase();
+
+export default function SearchBar({ onSubmit, onClear, onModeChange, disabled = false, onTilesChange = () => {} }) {
   const [query, setQuery] = useState('');
   const [focused, setFocused] = useState(false);
   const [mode, setMode] = useState('single');
   const [pos, setPos] = useState(0);
+  const [files, setFiles] = useState([]);
+  const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState(null);
   const prevPos = useRef(0);
   const inputRef = useRef(null);
+  const fileInputRef = useRef(null);
   const submitGlow = useControlGlow();
+
+  const maxFiles = MAX_FILES_BY_MODE[mode] || 1;
+
+  const uploadFiles = async (list) => {
+    if (list.length === 0) {
+      onTilesChange([]);
+      return;
+    }
+    setUploading(true);
+    setUploadError(null);
+    try {
+      const modality =
+        mode === 'single' ? 'optical'
+        : mode === 'temporal' ? ['optical', 'optical']
+        : ['optical', 'sar'];
+      const payload = await uploadImages(list, { modality });
+      if (payload && payload.status === 'success') {
+        const ids = Array.isArray(payload.tileIds) ? payload.tileIds : [];
+        onTilesChange(ids);
+      } else {
+        setUploadError((payload && payload.error) || 'Image upload failed.');
+        onTilesChange([]);
+      }
+    } catch (err) {
+      setUploadError((err && err.message) || 'Image upload failed.');
+      onTilesChange([]);
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const handleFilesSelected = (e) => {
+    const selected = Array.from(e.target.files || []);
+    e.target.value = '';
+    if (selected.length === 0) return;
+
+    const invalid = selected.filter(f => !ACCEPTED_UPLOAD_EXTS.includes(extOf(f.name)));
+    if (invalid.length > 0) {
+      setUploadError(
+        `Unsupported file type "${invalid.map(f => extOf(f.name)).join(', ')}". Accepted: .tif, .tiff, .gtiff, .png, .jpg, .jpeg.`
+      );
+      return;
+    }
+
+    const merged = [...files];
+    for (const f of selected) {
+      if (merged.length >= maxFiles) {
+        setUploadError(`This mode supports up to ${maxFiles} image${maxFiles > 1 ? 's' : ''}.`);
+        break;
+      }
+      merged.push(f);
+    }
+    if (merged.length === 0) return;
+    setFiles(merged);
+    uploadFiles(merged);
+  };
+
+  const handleRemoveFile = (index) => {
+    const remaining = files.filter((_, i) => i !== index);
+    setFiles(remaining);
+    if (remaining.length === 0) {
+      onTilesChange([]);
+    } else {
+      uploadFiles(remaining);
+    }
+  };
+
+  const handleModeChange = (id) => {
+    setMode(id);
+    onModeChange && onModeChange(id);
+    if (files.length > (MAX_FILES_BY_MODE[id] || 1)) {
+      setFiles([]);
+      setUploadError(null);
+      onTilesChange([]);
+    }
+  };
 
   const tickerRows = suggestions.concat(suggestions);
   const ROW_STEP = 48;
@@ -125,6 +219,7 @@ export default function SearchBar({ onSubmit, onClear, onModeChange }) {
   const noAnim = prevPos.current > pos;
 
   const handleSearch = () => {
+    if (disabled) return;
     const submittedQuery = query.trim();
     if (!submittedQuery) return;
     onClear && onClear();
@@ -143,7 +238,7 @@ export default function SearchBar({ onSubmit, onClear, onModeChange }) {
               key={id}
               type="button"
               className={`composer-mode-pill ${mode === id ? 'active' : ''}`}
-              onClick={() => { setMode(id); onModeChange && onModeChange(id); }}
+              onClick={() => handleModeChange(id)}
             >
               {label}
             </button>
@@ -180,6 +275,17 @@ export default function SearchBar({ onSubmit, onClear, onModeChange }) {
         </div>
 
         <button
+          type="button"
+          className="composer-plus composer-attach"
+          onClick={() => { if (fileInputRef.current) fileInputRef.current.click(); }}
+          disabled={disabled || uploading}
+          title={maxFiles > 1 ? `Attach up to ${maxFiles} images` : 'Attach an image'}
+          aria-label="Attach images"
+        >
+          <ImageIcon />
+        </button>
+
+        <button
           ref={submitGlow.controlRef}
           className="composer-submit"
           onMouseMove={submitGlow.onGlowMove}
@@ -191,7 +297,39 @@ export default function SearchBar({ onSubmit, onClear, onModeChange }) {
           <span ref={submitGlow.glowRef} className="composer-btn-glow" />
           <ArrowUpIcon />
         </button>
+
+        <input
+          ref={fileInputRef}
+          type="file"
+          multiple
+          hidden
+          accept=".tif,.tiff,.gtiff,.png,.jpg,.jpeg"
+          onChange={handleFilesSelected}
+        />
       </div>
+
+      {(files.length > 0 || uploading || uploadError) && (
+        <div className="composer-files-wrap">
+          <div className="composer-files">
+            {files.map((f, i) => (
+              <span key={`${f.name}-${i}`} className="composer-file-chip">
+                <span className="composer-file-name">{f.name}</span>
+                <button
+                  type="button"
+                  className="composer-file-remove"
+                  onClick={() => handleRemoveFile(i)}
+                  disabled={uploading}
+                  aria-label={`Remove ${f.name}`}
+                >
+                  <XIcon />
+                </button>
+              </span>
+            ))}
+            {uploading && <span className="composer-file-state">Uploading...</span>}
+          </div>
+          {uploadError && <div className="composer-files-error">{uploadError}</div>}
+        </div>
+      )}
 
       {focused && (
         <div className="prediction-stack suggestion-carousel">

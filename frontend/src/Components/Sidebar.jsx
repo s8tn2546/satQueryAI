@@ -1,9 +1,18 @@
 import ThemeToggle from './ThemeToggle';
 
-const historyItems = [];
+function historyLabel(item) {
+  if (item && typeof item.queryText === 'string' && item.queryText.trim()) {
+    return item.queryText.trim();
+  }
+  if (item && typeof item.answerText === 'string' && item.answerText.trim()) {
+    return item.answerText.trim();
+  }
+  return 'Untitled analysis';
+}
 
-export default function Sidebar({ open, onClose, activeQuery, activeMode }) {
+export default function Sidebar({ open, onClose, activeQuery, activeMode, history, historyLoading, historyError, activeHistoryId, onSelectHistory }) {
   const modeLabel = { single: 'Single Scene', temporal: 'T1 + T2', sar: 'Optical + SAR' };
+  const items = Array.isArray(history) ? history : [];
 
   return (
     <aside className={`sidebar ${open ? 'open' : ''}`}>
@@ -60,7 +69,11 @@ export default function Sidebar({ open, onClose, activeQuery, activeMode }) {
       <div className="sidebar-scroll">
         <nav className="sidebar-nav">
           <p className="nav-label nav-label-top">History</p>
-          {historyItems.length === 0 ? (
+          {historyLoading ? (
+            <p className="nav-empty">Loading analyses…</p>
+          ) : historyError ? (
+            <p className="nav-empty">{historyError}</p>
+          ) : items.length === 0 ? (
             <div className="sidebar-empty-state">
               <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
                 <circle cx="12" cy="12" r="10" /><line x1="2" y1="12" x2="22" y2="12" />
@@ -71,16 +84,29 @@ export default function Sidebar({ open, onClose, activeQuery, activeMode }) {
             </div>
           ) : (
             <ul className="history-list">
-              {historyItems.map(item => (
-                <li key={item.id}>
-                  <button className="history-row">
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                      <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
-                    </svg>
-                    <span><b>{item.title}</b><small>{item.task} · {item.time}</small></span>
-                  </button>
-                </li>
-              ))}
+              {items.map(item => {
+                const label = historyLabel(item);
+                const task = item && item.taskType ? item.taskType : 'Query';
+                const time = item && item.createdAt ? new Date(item.createdAt).toLocaleDateString([], { month: 'short', day: 'numeric' }) : '';
+                const isActive = activeHistoryId && item && activeHistoryId === item._id;
+                return (
+                  <li key={item && item._id ? item._id : label}>
+                    <button
+                      className={`history-row${isActive ? ' active' : ''}`}
+                      onClick={() => onSelectHistory && onSelectHistory(item)}
+                      disabled={historyLoading}
+                    >
+                      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+                      </svg>
+                      <span>
+                        <b>{label}</b>
+                        <small>{task}{time ? ` · ${time}` : ''}</small>
+                      </span>
+                    </button>
+                  </li>
+                );
+              })}
             </ul>
           )}
         </nav>
