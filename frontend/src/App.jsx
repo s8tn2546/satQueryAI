@@ -1,18 +1,31 @@
-import { useState } from 'react';
+import { useState, useCallback } from 'react';
 import GlobeView from './Components/GlobeView';
 import SearchBar from './Components/SearchBar';
 import Sidebar from './Components/Sidebar';
+import TopBar from './Components/TopBar';
+import ResultsPanel from './Components/ResultsPanel';
 import { MenuToggleIcon } from './Components/ui/MenuToggleIcon';
 
 export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [submitted, setSubmitted] = useState(null);
+  const [activeMode, setActiveMode] = useState('single');
+  const [coords, setCoords] = useState(null);
+
+  const handleCoords = useCallback((c) => setCoords(c), []);
+
+  const handleSubmit = (q, mode) => {
+    setSubmitted(q);
+    setActiveMode(mode);
+  };
 
   return (
     <div className="satquery-app">
       <main className="main-stage">
         <div className="globe-section">
-          <GlobeView />
+          <GlobeView onCoordsChange={handleCoords} activeQuery={submitted} />
+
+          <TopBar coords={coords} activeQuery={submitted} />
 
           <div className="globe-controls-left">
             <button
@@ -26,27 +39,23 @@ export default function App() {
           </div>
 
           <div className="globe-search">
-            <SearchBar onSubmit={q => setSubmitted(q)} onClear={() => setSubmitted(null)} />
-            {submitted && (
-              <div className="search-result">
-                <div className="search-result-header">
-                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <circle cx="11" cy="11" r="8" />
-                    <line x1="21" y1="21" x2="16.65" y2="16.65" />
-                  </svg>
-                  <span className="search-result-query">{submitted}</span>
-                  <span className="search-result-confidence">Queued</span>
-                </div>
-                <p className="search-result-text">
-                  Analysis for "{submitted}" has been queued on the 3D earth. Results will appear here.
-                </p>
-              </div>
-            )}
+            <SearchBar
+              onSubmit={handleSubmit}
+              onClear={() => setSubmitted(null)}
+              onModeChange={setActiveMode}
+            />
           </div>
+
+          <ResultsPanel query={submitted} onClose={() => setSubmitted(null)} />
         </div>
       </main>
 
-      <Sidebar open={sidebarOpen} onClose={() => setSidebarOpen(false)} />
+      <Sidebar
+        open={sidebarOpen}
+        onClose={() => setSidebarOpen(false)}
+        activeQuery={submitted}
+        activeMode={activeMode}
+      />
     </div>
   );
 }

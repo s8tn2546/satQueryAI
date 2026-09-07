@@ -8,7 +8,7 @@ function buildAnswerPrompt(queryText, taskType, toolResults) {
 
   return `You are answering a satellite image analysis query on behalf of SatQuery AI.
 
-User query: "${queryText}"
+User query: "${queryText}"    
 Task type: ${taskType}
 
 Tool results:

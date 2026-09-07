@@ -37,13 +37,6 @@ const ArrowUpIcon = ({ size = 17 }) => (
   </svg>
 );
 
-const PlusIcon = ({ size = 17 }) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <line x1="12" y1="5" x2="12" y2="19" />
-    <line x1="5" y1="12" x2="19" y2="12" />
-  </svg>
-);
-
 const XIcon = ({ size = 14 }) => (
   <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
     <line x1="18" y1="6" x2="6" y2="18" />
@@ -54,20 +47,6 @@ const XIcon = ({ size = 14 }) => (
 const ChevronRightIcon = ({ size = 13 }) => (
   <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
     <polyline points="9 18 15 12 9 6" />
-  </svg>
-);
-
-const LayersIcon = ({ size = 15 }) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <polygon points="12 2 2 7 12 12 22 7 12 2" />
-    <polyline points="2 17 12 22 22 17" />
-    <polyline points="2 12 12 17 22 12" />
-  </svg>
-);
-
-const CheckIcon = ({ size = 14 }) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-    <polyline points="20 6 9 17 4 12" />
   </svg>
 );
 
@@ -120,17 +99,13 @@ const useControlGlow = () => {
   return { controlRef, glowRef, onGlowMove, onGlowEnter, onGlowLeave };
 };
 
-export default function SearchBar({ onSubmit, onClear }) {
+export default function SearchBar({ onSubmit, onClear, onModeChange }) {
   const [query, setQuery] = useState('');
   const [focused, setFocused] = useState(false);
   const [mode, setMode] = useState('single');
-  const [showModes, setShowModes] = useState(false);
   const [pos, setPos] = useState(0);
   const prevPos = useRef(0);
   const inputRef = useRef(null);
-  const popoverRef = useRef(null);
-  const plusHandled = useRef(false);
-  const plusGlow = useControlGlow();
   const submitGlow = useControlGlow();
 
   const tickerRows = suggestions.concat(suggestions);
@@ -144,27 +119,6 @@ export default function SearchBar({ onSubmit, onClear }) {
   }, []);
 
   useEffect(() => {
-    if (!showModes) return;
-    const onDocMouseDown = (e) => {
-      const onPlus = e.target.closest && e.target.closest('.composer-plus');
-      if (onPlus) return;
-      if (popoverRef.current && !popoverRef.current.contains(e.target)) {
-        setShowModes(false);
-      }
-    };
-    document.addEventListener('mousedown', onDocMouseDown);
-    return () => document.removeEventListener('mousedown', onDocMouseDown);
-  }, [showModes]);
-
-  useEffect(() => {
-    if (!showModes) return;
-    const first = popoverRef.current && popoverRef.current.querySelector('.analysis-mode');
-    if (first && document.activeElement && document.activeElement.classList.contains('composer-plus')) {
-      first.focus();
-    }
-  }, [showModes]);
-
-  useEffect(() => {
     prevPos.current = pos;
   }, [pos]);
 
@@ -174,41 +128,29 @@ export default function SearchBar({ onSubmit, onClear }) {
     const submittedQuery = query.trim();
     if (!submittedQuery) return;
     onClear && onClear();
-    onSubmit && onSubmit(submittedQuery);
+    onSubmit && onSubmit(submittedQuery, mode);
     setQuery('');
-    setShowModes(false);
     if (inputRef.current) inputRef.current.focus();
   };
 
   return (
     <div className="composer-wrap">
+      <div className="composer-label-row">
+        <span className="composer-label">QUERY ACTIVE LOCATION</span>
+        <div className="composer-mode-pills">
+          {modes.map(([id, label]) => (
+            <button
+              key={id}
+              type="button"
+              className={`composer-mode-pill ${mode === id ? 'active' : ''}`}
+              onClick={() => { setMode(id); onModeChange && onModeChange(id); }}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
       <div className="composer-row">
-        <button
-          type="button"
-          ref={plusGlow.controlRef}
-          className="composer-plus"
-          onMouseMove={plusGlow.onGlowMove}
-          onMouseEnter={plusGlow.onGlowEnter}
-          onMouseLeave={plusGlow.onGlowLeave}
-          onMouseDown={(e) => { e.preventDefault(); plusHandled.current = true; setShowModes(v => !v); }}
-          onClick={() => {
-            if (plusHandled.current) { plusHandled.current = false; return; }
-            setShowModes(v => !v);
-          }}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' || e.key === ' ') {
-              e.preventDefault();
-              plusHandled.current = true;
-              setShowModes(v => !v);
-            }
-          }}
-          title="Analysis type"
-          aria-expanded={showModes}
-        >
-          <span ref={plusGlow.glowRef} className="composer-btn-glow" />
-          <PlusIcon />
-        </button>
-
         <div
           className={`new-composer ${focused ? 'focused' : ''}`}
           onClick={() => { if (inputRef.current) inputRef.current.focus(); }}
@@ -231,7 +173,7 @@ export default function SearchBar({ onSubmit, onClear }) {
             onFocus={() => { setFocused(true); onClear && onClear(); }}
             onBlur={() => setFocused(false)}
             onKeyDown={e => e.key === 'Enter' && handleSearch()}
-            placeholder="Search..."
+            placeholder="Ask anything about this location…"
             aria-label="Satellite analysis question"
             wrapperClassName="h-full min-w-0 flex-1"
           />
@@ -250,28 +192,6 @@ export default function SearchBar({ onSubmit, onClear }) {
           <ArrowUpIcon />
         </button>
       </div>
-
-      {showModes && (
-        <div ref={popoverRef} className="analysis-popover">
-          <p className="analysis-popover-label">Analysis type</p>
-          {modes.map(([id, label]) => (
-            <button
-              key={id}
-              type="button"
-              className={`analysis-mode ${mode === id ? 'active' : ''}`}
-              onClick={() => { setMode(id); setShowModes(false); }}
-            >
-              <LayersIcon />
-              <span>{label}</span>
-              {mode === id && (
-                <span className="analysis-mode-check">
-                  <CheckIcon />
-                </span>
-              )}
-            </button>
-          ))}
-        </div>
-      )}
 
       {focused && (
         <div className="prediction-stack suggestion-carousel">
