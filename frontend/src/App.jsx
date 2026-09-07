@@ -6,7 +6,7 @@ import TopBar from './Components/TopBar';
 import ResultsPanel from './Components/ResultsPanel';
 import ResultPanel from './Components/ResultPanel';
 import SidebarIcon from './Components/SidebarIcon';
-import { submitQuery, fetchQueryHistory } from './services/api';
+import { submitQuery, fetchQueryHistory, uploadImages } from './services/api';
 
 const SESSION_KEY = 'satquery.sessionId';
 
@@ -74,17 +74,37 @@ export default function App() {
   };
 
   const handleSubmit = async (queryText, mode, imgs = []) => {
-    if (isLoading || !queryText || !queryText.trim()) return;
+    const text = (queryText && queryText.trim()) || '';
+    if (isLoading || (!text && imgs.length === 0)) return;
+    const finalQuery = text || 'Analyze uploaded satellite imagery';
     if (mode) setActiveMode(mode);
     setAttachedImages(imgs);
     setError(null);
-    setSubmitted(queryText);
+    setSubmitted(finalQuery);
     setIsLoading(true);
     try {
+      let activeTileIds = [...tileIds];
+      if (imgs.length > 0) {
+        try {
+          const files = imgs.map((i) => i.file).filter(Boolean);
+          if (files.length > 0) {
+            const uploadRes = await uploadImages(files);
+            if (uploadRes) {
+              const newIds = uploadRes.tileIds || (uploadRes.tileId ? [uploadRes.tileId] : []);
+              if (newIds.length > 0) {
+                activeTileIds = [...activeTileIds, ...newIds];
+              }
+            }
+          }
+        } catch (uploadErr) {
+          console.warn('Image upload API notice:', uploadErr.message);
+        }
+      }
+
       const payload = await submitQuery({
-        queryText: queryText.trim(),
-        imageRefs: tileIds,
-        parameters: {},
+        queryText: finalQuery,
+        imageRefs: activeTileIds,
+        parameters: { mode: mode || activeMode },
         sessionId,
       });
       setResponse(payload);

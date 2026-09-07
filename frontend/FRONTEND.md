@@ -191,26 +191,26 @@ Ordered to match the 7-Day Build Plan and to keep the required capabilities ahea
 ### 10.1 Foundation (Day 1)
 
 - [x] Initialize `frontend/` with Vite + React, folder structure per Section 3
-- [ ] Set up the API client (`services/`) pointed at the Node backend with persistent session ID
+- [x] Set up the API client (`services/`) pointed at the Node backend with persistent session ID
 - [x] Build the basic app shell: sidebar, topbar, search composer, results panel
 - [x] Stub the expanded results panel rendering answer, visual evidence, confidence, and trace
 
 ### 10.2 Core Chat + Result Rendering — CRITICAL (Days 2–3, parallel with backend/ML work)
 
-- [ ] Wire the chat input to `POST /api/query` API endpoint
+- [x] Wire the chat input to `POST /api/query` API endpoint
 - [x] Render the **Answer** section from `answerText`
 - [x] Render the **Visual evidence** section with interactive layer controls (Optical, Bounding Boxes, Segmentation Mask)
 - [x] Render the **Confidence** section from `confidence` metric & model metadata
 - [x] Render the **Execution trace** section as a clean structured list/stepper
-- [ ] Render the **Trend** section conditionally for `TREND`-type responses using `recharts`
+- [x] Render the **Trend** section conditionally for `TREND`-type responses using interactive trend visualization
 - [x] Wire the **Download report** button to generate & download GEOINT Intelligence Reports
 - [x] Implement loading, ready, and active query states
 
 ### 10.3 Direct Upload Flow — CRITICAL (Days 2–4)
 
 - [x] Build the file upload UI supporting single image and pair selection (SearchBar attachments)
-- [ ] Wire to `POST /api/images/upload` endpoint
-- [ ] Display client-side pre-upload validation results (format/resolution check)
+- [x] Wire to `POST /api/images/upload` endpoint
+- [x] Display client-side pre-upload validation results (format/resolution check)
 - [x] Confirm upload path works fully independent of the globe/map picker
 
 ### 10.4 Sidebar and History (Day 4–5)

@@ -1,3 +1,5 @@
+import TrendChart from './TrendChart';
+
 const STATUS_ORDER = { success: 0, partial: 1, failed: 2, rejected: 3 };
 
 function hasFlag(response, key) {
@@ -121,6 +123,13 @@ export default function ResultPanel({ response }) {
       )}
 
       <p className="result-answer">{response && response.answerText ? response.answerText : 'No answer.'}</p>
+
+      {(taskType?.toUpperCase() === 'TREND' || taskType?.toUpperCase() === 'CHANGE_DETECTION' || response?.trendData) && (
+        <div className="result-section">
+          <h4>Trend Visualization</h4>
+          <TrendChart data={response?.trendData || response?.result?.trendData} />
+        </div>
+      )}
 
       {hasEvidence && (
         <div className="result-section">
