@@ -14,6 +14,13 @@ from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+# Load environment variables from .env BEFORE importing router modules so that
+# module-level env reads at import time (VQA_ADAPTER_PATH, CAPTION_ADAPTER_PATH,
+# VLM_MODEL, ...) observe .env values instead of being captured too early.
+env_path = Path(__file__).resolve().parent.parent / ".env"
+if env_path.exists():
+    load_dotenv(env_path)
+
 from app.api.area import router as area_router
 from app.api.caption import router as caption_router
 from app.api.change import router as change_router
@@ -24,11 +31,6 @@ from app.api.optical_sar import router as optical_sar_router
 from app.api.trend import router as trend_router
 from app.api.validate import router as validate_router
 from app.api.vqa import router as vqa_router
-
-# Load environment variables from .env if present
-env_path = Path(__file__).resolve().parent.parent / ".env"
-if env_path.exists():
-    load_dotenv(env_path)
 
 logging.basicConfig(
     level=logging.INFO,

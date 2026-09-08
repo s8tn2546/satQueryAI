@@ -36,9 +36,11 @@ services:
       HOST: 0.0.0.0
       NODE_ENV: ${NODE_ENV:-development}
       VLM_MODEL: ${VLM_MODEL:-Qwen/Qwen2-VL-2B-Instruct}
-      # Optional LoRA adapter mounts; uncomment to enable fine-tuned inference.
-      # VQA_ADAPTER_PATH: /app/adaptation/checkpoint
-      # CAPTION_ADAPTER_PATH: /app/adaptation/checkpoint
+      # LoRA adapter for fine-tuned VQA (Qwen2-VL-2B-Instruct). The adapter
+      # lives in the image at /app/adaptation/final_adapter via COPY . .
+      VQA_ADAPTER_PATH: /app/adaptation/final_adapter
+      # Optional LoRA adapter for captioning; uncomment to enable.
+      # CAPTION_ADAPTER_PATH: /app/adaptation/final_adapter
       # Google Earth Engine (leave empty for labeled mock/dev mode).
       GEE_MODE: ${GEE_MODE:-}
       GEE_PROJECT_ID: ${GEE_PROJECT_ID:-}
@@ -60,6 +62,7 @@ services:
       PORT: 5000
       MONGODB_URI: mongodb://mongodb:27017/satquery
       ML_SERVICE_BASE_URL: http://ml:8000
+      ML_SERVICE_TIMEOUT_MS: ${ML_SERVICE_TIMEOUT_MS:-120000}
       JWT_SECRET: ${JWT_SECRET:-satquery-dev-secret}
       LLM_API_KEY: ${LLM_API_KEY:-}
       LLM_PROVIDER: ${LLM_PROVIDER:-openai}

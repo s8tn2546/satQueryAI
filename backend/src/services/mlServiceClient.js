@@ -6,10 +6,12 @@ dotenv.config();
 
 const ML_SERVICE_BASE_URL = process.env.ML_SERVICE_BASE_URL || 'http://localhost:8000';
 // Per-call timeout in ms. Env-tunable (ML_SERVICE_TIMEOUT_MS) without code
-// changes; the 5000ms default is unchanged. A timed-out call falls back to a
-// clearly-labeled mock result — callers must treat metadata.mock results as
-// labeled data, never real (the trend route never caches them).
-const DEFAULT_TIMEOUT = Number(process.env.ML_SERVICE_TIMEOUT_MS) || 5000;
+// changes. Default is 120000ms: demo-safe for slow CPU VLM inference
+// (Qwen2-VL + LoRA can take ~2 minutes on a CPU-only Mac). A timed-out call
+// falls back to a clearly-labeled mock result — callers must treat
+// metadata.mock results as labeled data, never real (the trend route never
+// caches them).
+const DEFAULT_TIMEOUT = Number(process.env.ML_SERVICE_TIMEOUT_MS) || 120000;
 
 /**
  * Multipart (file-stream) transport definition for Geo/RS endpoints that accept

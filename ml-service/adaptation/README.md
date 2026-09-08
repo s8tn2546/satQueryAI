@@ -184,10 +184,21 @@ After a successful training run, point the VQA loader at the final adapter:
 
 1. Set `.env` (or environment):
    ```bash
-   VQA_ADAPTER_PATH=./adaptation/checkpoint
+   VQA_ADAPTER_PATH=./adaptation/final_adapter
    ```
+   The `.env` value is read at startup before routers are imported, so it is
+   honored even when `VQA_ADAPTER_PATH` is not exported in the shell.
 2. Restart the ML service. The `/vqa` endpoint (`app/models/vlm_loader.py`)
    loads the adapter via `PeftModel.from_pretrained(base_model, adapter_path)`.
+
+**Docker:** the `final_adapter/` directory is copied into the image at
+`/app/adaptation/final_adapter`; `docker-compose.yml` sets
+`VQA_ADAPTER_PATH: /app/adaptation/final_adapter` on the `ml` service.
+
+**Backend timeout:** real VLM inference on CPU can take ~2 minutes. The
+backend's ML service call timeout defaults to 120000 ms
+(`ML_SERVICE_TIMEOUT_MS`, `backend/src/services/mlServiceClient.js`). Lowering
+it can cause a labeled mock fallback instead.
 
 **Compatibility requirements verified by the pipeline:**
 - The trained base model must be the SAME as the inference base model
