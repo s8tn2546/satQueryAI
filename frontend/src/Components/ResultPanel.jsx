@@ -3,11 +3,6 @@ import TrendChart from './TrendChart';
 
 const STATUS_ORDER = { success: 0, partial: 1, failed: 2, rejected: 3 };
 
-function hasFlag(response, key) {
-  const tools = Array.isArray(response?.toolResults) ? response.toolResults : [];
-  return tools.some(t => t && t.metadata && t.metadata[key] === true);
-}
-
 function formatTime(timestamp) {
   if (!timestamp) return null;
   try {
@@ -92,8 +87,6 @@ export default function ResultPanel({ response }) {
   const signals = Array.isArray(response?.confidenceSignals) ? response.confidenceSignals : [];
   const trace = Array.isArray(response?.executionTrace) ? response.executionTrace : [];
   const tools = Array.isArray(response?.toolResults) ? response.toolResults : [];
-  const offline = hasFlag(response, 'offline');
-  const mock = hasFlag(response, 'mock');
   const topResult = response && response.result !== undefined ? response.result : null;
 
   const sortedTools = [...tools].sort((a, b) => {
@@ -137,14 +130,6 @@ export default function ResultPanel({ response }) {
           )}
         </button>
       </div>
-
-      {(offline || mock) && (
-        <p className="result-mock-note">
-          {offline
-            ? 'Includes mock/offline tool results (labelled non-model placeholders) — not real model inference.'
-            : 'Includes labelled mock tool results — not real model inference.'}
-        </p>
-      )}
 
       <p className="result-answer">{response && response.answerText ? response.answerText : 'No answer.'}</p>
 

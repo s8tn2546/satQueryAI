@@ -45,16 +45,27 @@ export default function App() {
 
   const handleCoords = useCallback((c) => setCoords(c), []);
 
+  const [roiTileIds, setRoiTileIds] = useState([]);
+
   const handleRegionSelect = async (bbox) => {
+    const label = `ROI ${bbox.south.toFixed(3)}°N, ${bbox.west.toFixed(3)}°E`;
+    let fetchedIds = [];
     try {
       const fetched = await fetchRegionImagery(bbox, { mode: activeMode });
-      if (fetched && fetched.tileIds) {
-        setTileIds((prev) => [...prev, ...fetched.tileIds]);
-        setRoiAttachment(fetched);
-      }
+      fetchedIds = fetched?.tileIds || (fetched?.tileId ? [fetched.tileId] : []);
     } catch (err) {
       console.warn('Region fetch notice:', err.message);
     }
+    setRoiTileIds(fetchedIds);
+    if (fetchedIds.length > 0) {
+      setTileIds((prev) => [...prev, ...fetchedIds]);
+    }
+    setRoiAttachment({ name: label, bbox, tileIds: fetchedIds });
+  };
+
+  const handleClearRoi = () => {
+    setRoiAttachment(null);
+    setRoiTileIds([]);
   };
 
   useEffect(() => {
@@ -192,7 +203,7 @@ export default function App() {
               disabled={isLoading}
               onTilesChange={setTileIds}
               roiAttachment={roiAttachment}
-              onClearRoi={() => setRoiAttachment(null)}
+              onClearRoi={handleClearRoi}
             />
 
             {isLoading && !response && (

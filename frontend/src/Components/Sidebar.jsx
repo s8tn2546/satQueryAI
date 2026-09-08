@@ -65,13 +65,7 @@ export default function Sidebar({
   const [historyOpen, setHistoryOpen] = useState(true);
   const modeLabel = { single: 'Single Scene', temporal: 'T1 + T2', sar: 'Optical + SAR' };
 
-  const defaultHistory = [
-    { id: 'h1', query: 'Detect aircraft movements & apron parking', mode: 'single', time: '10m ago' },
-    { id: 'h2', query: 'Vegetation NDVI temporal change 2023-2024', mode: 'temporal', time: '2h ago' },
-    { id: 'h3', query: 'Coastal port ship counting & SAR radar analysis', mode: 'sar', time: '1d ago' },
-  ];
-
-  const items = Array.isArray(history) && history.length > 0 ? history : defaultHistory;
+  const items = Array.isArray(history) ? history : [];
 
   return (
     <aside className={`sidebar ${open ? 'open' : ''}`}>
@@ -139,6 +133,8 @@ export default function Sidebar({
               <div className="sidebar-history-meta">Loading history...</div>
             ) : historyError ? (
               <div className="sidebar-history-meta">{historyError}</div>
+            ) : items.length === 0 ? (
+              <div className="sidebar-history-meta">No analysis history yet.</div>
             ) : (
               items.map((item) => {
                 const label = item.queryText || item.query || 'Untitled analysis';
