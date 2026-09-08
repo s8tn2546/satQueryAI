@@ -1,24 +1,6 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef } from 'react';
 import { gsap } from 'gsap';
-import { Input } from './ui/Input';
 import { ShaderSearchIcon } from './ui/ShaderSearchIcon';
-
-const suggestions = [
-  'Describe this satellite image',
-  'Is there a water body?',
-  'What changed between these dates?',
-  'Where did the change occur?',
-  'Has vegetation decreased?',
-  'Compare optical and SAR imagery',
-  'Show the vegetation trend',
-  'Any cloud cover in this scene?',
-  'How much urban expansion has occurred?',
-  'Estimate the average elevation here',
-  'Classify the land use in this area',
-  'Detect possible flood inundation',
-  'Measure the surface temperature trend',
-  'Has agricultural land been lost?',
-];
 
 const modes = [
   ['single', 'Single scene'],
@@ -48,12 +30,6 @@ const XIcon = ({ size = 12 }) => (
   <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
     <line x1="18" y1="6" x2="6" y2="18" />
     <line x1="6" y1="6" x2="18" y2="18" />
-  </svg>
-);
-
-const ChevronRightIcon = ({ size = 13 }) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <polyline points="9 18 15 12 9 6" />
   </svg>
 );
 
@@ -118,28 +94,10 @@ export default function SearchBar({
   const [mode, setMode] = useState('single');
   const [images, setImages] = useState([]);
   const [uploadError, setUploadError] = useState(null);
-  const [pos, setPos] = useState(0);
-  const prevPos = useRef(0);
   const inputRef = useRef(null);
   const fileInputRef = useRef(null);
   const submitGlow = useControlGlow();
   const plusGlow = useControlGlow();
-
-  const tickerRows = suggestions.concat(suggestions);
-  const ROW_STEP = 48;
-
-  useEffect(() => {
-    const id = setInterval(() => {
-      setPos(p => (p === suggestions.length ? 0 : p + 1));
-    }, 3500);
-    return () => clearInterval(id);
-  }, []);
-
-  useEffect(() => {
-    prevPos.current = pos;
-  }, [pos]);
-
-  const noAnim = prevPos.current > pos;
 
   const handleFileChange = (e) => {
     const files = Array.from(e.target.files || []);
@@ -193,7 +151,7 @@ export default function SearchBar({
   };
 
   return (
-    <div className="composer-wrap">
+    <div className="composer-wrap w-full">
       <div className="composer-label-row">
         <span className="composer-label">QUERY ACTIVE LOCATION</span>
         {uploadError && <span className="composer-upload-error">{uploadError}</span>}
@@ -212,7 +170,7 @@ export default function SearchBar({
         </div>
       </div>
 
-      <div className="composer-row">
+      <div className="composer-row w-full">
         <button
           type="button"
           ref={plusGlow.controlRef}
@@ -229,27 +187,18 @@ export default function SearchBar({
         </button>
 
         <div
-          className={`new-composer ${focused ? 'focused' : ''}`}
+          className={`new-composer flex-1 w-full ${focused ? 'focused' : ''}`}
           onClick={() => { if (inputRef.current) inputRef.current.focus(); }}
         >
           <SearchIcon />
-          {query && (
-            <button
-              type="button"
-              className="new-composer-clear"
-              onMouseDown={(e) => { e.preventDefault(); setQuery(''); }}
-              title="Clear text"
-            >
-              <XIcon />
-            </button>
-          )}
-          <Input
+          <input
             ref={inputRef}
             type="text"
+            className="flex-1 w-full h-full bg-transparent border-0 outline-none text-slate-100 text-sm px-2 min-w-0"
             value={query}
             onChange={e => { setQuery(e.target.value); onClear && onClear(); }}
             onFocus={() => { setFocused(true); onClear && onClear(); }}
-            onBlur={() => setTimeout(() => setFocused(false), 200)}
+            onBlur={() => setFocused(false)}
             onKeyDown={e => {
               if (e.key === 'Enter') {
                 e.preventDefault();
@@ -259,8 +208,17 @@ export default function SearchBar({
             placeholder="Ask anything about this satellite scene…"
             aria-label="Satellite analysis question"
             disabled={disabled}
-            wrapperClassName="h-full min-w-0 flex-1"
           />
+          {query && (
+            <button
+              type="button"
+              className="new-composer-clear ml-auto"
+              onMouseDown={(e) => { e.preventDefault(); setQuery(''); }}
+              title="Clear text"
+            >
+              <XIcon />
+            </button>
+          )}
         </div>
 
         <button
@@ -289,7 +247,7 @@ export default function SearchBar({
       </div>
 
       {images.length > 0 && (
-        <div className="composer-files-wrap">
+        <div className="composer-files-wrap w-full">
           <div className="composer-files">
             {images.map((img) => (
               <span key={img.id} className="composer-file-chip">
@@ -303,31 +261,6 @@ export default function SearchBar({
                   <XIcon />
                 </button>
               </span>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {focused && (
-        <div className="prediction-stack suggestion-carousel">
-          <div
-            className={`suggestion-track${noAnim ? ' no-anim' : ''}`}
-            style={{ transform: `translateY(${-pos * ROW_STEP}px)` }}
-          >
-            {tickerRows.map((item, i) => (
-              <button
-                key={i}
-                type="button"
-                className="prediction-row suggestion-row"
-                onMouseDown={(e) => {
-                  e.preventDefault();
-                  setQuery(item);
-                  if (inputRef.current) inputRef.current.focus();
-                }}
-              >
-                <ChevronRightIcon />
-                <span>{item}</span>
-              </button>
             ))}
           </div>
         </div>

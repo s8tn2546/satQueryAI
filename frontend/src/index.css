@@ -207,49 +207,65 @@ html.light .satquery-app {
 
 
 /* ============ SIH-derived layout ============ */
-.satquery-app {
-  width: 100%;
+html, body, #root {
+  width: 100vw;
   height: 100vh;
+  height: 100dvh;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  position: fixed;
+  inset: 0;
+  background: var(--bg-primary);
+}
+
+.satquery-app {
+  width: 100vw;
+  height: 100vh;
+  height: 100dvh;
   display: flex;
   flex-direction: column;
-  position: relative;
+  position: fixed;
+  inset: 0;
+  overflow: hidden;
   background: var(--bg-primary);
   transition: background-color 0.4s ease;
 }
 
-/* Globe section — fills the entire viewport so the website ends at the
-   boundary of the 3D model (the earth itself is raised inside the scene) */
+/* Globe section — fixed edge-to-edge canvas container */
 .globe-section {
   position: fixed;
   top: 0;
   left: 0;
   right: 0;
-  width: 100%;
+  bottom: 0;
+  width: 100vw;
   height: 100vh;
-  flex: none;
-  margin-bottom: 0;
-}
-@supports (height: 100dvh) {
-  .satquery-app {
-    height: 100dvh;
-  }
-  .globe-section {
-    height: 100dvh;
-  }
+  height: 100dvh;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
 }
 
-/* 3D model fills the whole website - no borders/boundaries on the Cesium surface */
+/* 3D model fills the whole screen - fixed edge-to-edge canvas */
 .globe-section .cesium-widget,
 .globe-section .cesium-widget canvas,
 .globe-section .cesium-viewer,
 .globe-section #cesiumContainer {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
   border: 0;
   box-shadow: none;
   border-radius: 0;
   margin: 0;
   padding: 0;
-  width: 100%;
-  height: 100%;
+  width: 100vw !important;
+  height: 100vh !important;
+  height: 100dvh !important;
+  display: block;
 }
 
 /* Fullscreen mode fixes: expand WebGL canvas 100vw x 100vh with seamless dark background */
@@ -1092,8 +1108,8 @@ html.light .composer-btn-glow {
 .prompt-input::placeholder { color: var(--glass-muted-text); }
 
 @media (max-width: 900px) {
-  .earth-stage { height: calc(100vh - 24px); min-height: 420px; }
-  .hero-top { min-height: calc(100vh - 24px); }
+  .earth-stage { height: 100%; }
+  .hero-top { min-height: 100vh; }
 }
 @media (max-width: 640px) {
   .topbar {
@@ -1381,13 +1397,61 @@ html.light .composer-btn-glow {
   font-size: 12px; font-weight: 700; color: var(--glass-text);
 }
 .results-panel-title svg { color: var(--accent-color); }
-.results-panel-close {
+.results-panel-close,
+.results-panel-fullscreen-btn {
   width: 24px; height: 24px; border-radius: 7px;
   border: 1px solid var(--glass-border); background: transparent;
   color: var(--glass-muted-text); display: grid; place-items: center;
   cursor: pointer; transition: background 0.15s, color 0.15s;
 }
-.results-panel-close:hover { background: var(--glass-hover); color: var(--glass-text); }
+.results-panel-close:hover,
+.results-panel-fullscreen-btn:hover { background: var(--glass-hover); color: var(--glass-text); }
+
+/* Fullscreen expanded state covering the full canvas screen */
+.results-panel.fullscreen,
+.search-result.fullscreen {
+  position: fixed !important;
+  inset: 0 !important;
+  top: 0 !important;
+  left: 0 !important;
+  right: 0 !important;
+  bottom: 0 !important;
+  width: 100vw !important;
+  height: 100vh !important;
+  height: 100dvh !important;
+  transform: none !important;
+  animation: none !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  max-width: none !important;
+  max-height: none !important;
+  z-index: 99999 !important;
+  border-radius: 0 !important;
+  border: none !important;
+  background: rgba(6, 9, 19, 0.96) !important;
+  backdrop-filter: blur(28px) !important;
+  -webkit-backdrop-filter: blur(28px) !important;
+  box-shadow: none !important;
+  display: flex !important;
+  flex-direction: column !important;
+}
+.results-panel.fullscreen .results-panel-header {
+  padding: 16px 24px;
+  background: rgba(15, 23, 42, 0.8);
+}
+.results-panel.fullscreen .results-panel-body {
+  flex: 1 !important;
+  max-height: none !important;
+  padding: 24px !important;
+  overflow-y: auto !important;
+}
+.results-panel.fullscreen .evidence-viewport {
+  height: calc(100vh - 240px) !important;
+  max-height: 700px !important;
+  min-height: 350px !important;
+  width: 100% !important;
+  margin: 0 auto !important;
+}
 
 /* Results Tabs */
 .results-tabs {

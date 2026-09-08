@@ -7,7 +7,6 @@ export default function GlobeView({ onCoordsChange, activeQuery }) {
   const containerRef = useRef(null);
   const viewerRef = useRef(null);
   const lastTouchDist = useRef(null);
-  const rotationRef = useRef(null);
   const markerRef = useRef(null);
 
   useEffect(() => {
@@ -131,6 +130,7 @@ export default function GlobeView({ onCoordsChange, activeQuery }) {
         viewerRef.current.resize();
       }
     };
+    window.addEventListener('resize', handleResize);
     document.addEventListener('fullscreenchange', handleResize);
     document.addEventListener('webkitfullscreenchange', handleResize);
     document.addEventListener('mozfullscreenchange', handleResize);
@@ -269,31 +269,6 @@ export default function GlobeView({ onCoordsChange, activeQuery }) {
       }
     });
 
-    let isUserInteracting = false;
-    const startRotation = () => {
-      if (rotationRef.current) return;
-      rotationRef.current = setInterval(() => {
-        if (!viewer.isDestroyed() && !isUserInteracting) {
-          viewer.scene.camera.rotate(Cesium.Cartesian3.UNIT_Z, -0.0005);
-          viewer.scene.requestRender();
-        }
-      }, 16);
-    };
-    const stopRotation = () => {
-      clearInterval(rotationRef.current);
-      rotationRef.current = null;
-    };
-    const onInteractionStart = () => { isUserInteracting = true; stopRotation(); };
-    const onInteractionEnd = () => {
-      isUserInteracting = false;
-      setTimeout(startRotation, 4000);
-    };
-    viewer.scene.canvas.addEventListener('mousedown', onInteractionStart);
-    viewer.scene.canvas.addEventListener('mouseup', onInteractionEnd);
-    viewer.scene.canvas.addEventListener('touchstart', onInteractionStart);
-    viewer.scene.canvas.addEventListener('touchend', onInteractionEnd);
-    setTimeout(startRotation, 3000);
-
     const removeListener = viewer.scene.globe.tileLoadProgressEvent.addEventListener((queueLength) => {
       if (queueLength === 0) setIsLoading(false);
     });
@@ -302,8 +277,8 @@ export default function GlobeView({ onCoordsChange, activeQuery }) {
 
     return () => {
       clearTimeout(timer);
-      stopRotation();
       removeCoordListener();
+      window.removeEventListener('resize', handleResize);
       document.removeEventListener('fullscreenchange', handleResize);
       document.removeEventListener('webkitfullscreenchange', handleResize);
       document.removeEventListener('mozfullscreenchange', handleResize);
