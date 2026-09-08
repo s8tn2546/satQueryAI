@@ -4,7 +4,6 @@ import SearchBar from './Components/SearchBar';
 import Sidebar from './Components/Sidebar';
 import TopBar from './Components/TopBar';
 import ResultsPanel from './Components/ResultsPanel';
-import ResultPanel from './Components/ResultPanel';
 import SidebarIcon from './Components/SidebarIcon';
 import { submitQuery, fetchQueryHistory, uploadImages, fetchRegionImagery } from './services/api';
 
@@ -45,6 +44,26 @@ export default function App() {
 
   const handleCoords = useCallback((c) => setCoords(c), []);
 
+  const buildResultData = (res, uploaded) => {
+    const result = res?.result && typeof res.result === 'object' ? res.result : {};
+    const boxes = Array.isArray(result.boxes)
+      ? result.boxes
+      : Array.isArray(result.detections)
+        ? result.detections
+        : [];
+    return {
+      answerText: res?.answerText || '',
+      boxes,
+      trace: res?.executionTrace || [],
+      uploadedImages: uploaded,
+      trendData: res?.trendData || result?.trendData || null,
+      metrics: result?.metrics && typeof result.metrics === 'object' ? result.metrics : {},
+      modelMetadata: res?.modelMetadata && typeof res.modelMetadata === 'object' ? res.modelMetadata : {},
+      severity: res?.severity || null,
+      confidence: typeof res?.confidence === 'number' ? res.confidence : null,
+    };
+  };
+
   const [roiTileIds, setRoiTileIds] = useState([]);
 
   const handleRegionSelect = async (bbox) => {
@@ -52,7 +71,13 @@ export default function App() {
     let fetchedIds = [];
     try {
       const fetched = await fetchRegionImagery(bbox, { mode: activeMode });
-      fetchedIds = fetched?.tileIds || (fetched?.tileId ? [fetched.tileId] : []);
+      const imageList = Array.isArray(fetched?.images) ? fetched.images : [];
+      fetchedIds = imageList
+        .map((t) => t && (t.tileId || t._id))
+        .filter(Boolean);
+      if (fetchedIds.length === 0 && Array.isArray(fetched?.tileIds)) {
+        fetchedIds = fetched.tileIds;
+      }
     } catch (err) {
       console.warn('Region fetch notice:', err.message);
     }
@@ -235,15 +260,13 @@ export default function App() {
                 <p className="search-result-text">{error}</p>
               </div>
             )}
-
-            {response && !error && <ResultPanel response={response} />}
           </div>
 
-          {submitted && !response && (
-            <ResultsPanel 
-              query={submitted} 
-              resultData={attachedImages.length > 0 ? { uploadedImages: attachedImages } : null}
-              onClose={handleClear} 
+          {submitted && (
+            <ResultsPanel
+              query={submitted}
+              resultData={response ? buildResultData(response, attachedImages) : (attachedImages.length > 0 ? { uploadedImages: attachedImages } : null)}
+              onClose={handleClear}
             />
           )}
         </div>
