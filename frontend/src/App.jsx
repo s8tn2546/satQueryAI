@@ -132,7 +132,9 @@ export default function App() {
     setSubmitted(finalQuery);
     setIsLoading(true);
     try {
-      let activeTileIds = [...tileIds];
+      // Only real backend Mongo tile IDs (24-hex) may be sent as imageRefs.
+      // Any UI-only/searchbar-generated IDs are excluded.
+      let activeTileIds = tileIds.filter((id) => /^[0-9a-fA-F]{24}$/.test(id));
       if (imgs.length > 0) {
         try {
           const files = imgs.map((i) => i.file).filter(Boolean);
@@ -141,6 +143,9 @@ export default function App() {
             if (uploadRes) {
               const newIds = uploadRes.tileIds || (uploadRes.tileId ? [uploadRes.tileId] : []);
               if (newIds.length > 0) {
+                // Uploaded backend tile IDs are authoritative and replace any
+                // stale client IDs (merged with real ROI tile IDs, never with
+                // SearchBar UI IDs).
                 activeTileIds = [...activeTileIds, ...newIds];
               }
             }
@@ -226,7 +231,6 @@ export default function App() {
               onClear={handleClear}
               onModeChange={setActiveMode}
               disabled={isLoading}
-              onTilesChange={setTileIds}
               roiAttachment={roiAttachment}
               onClearRoi={handleClearRoi}
             />
