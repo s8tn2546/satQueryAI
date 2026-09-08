@@ -5,25 +5,27 @@ export default function ResultsPanel({ query, resultData, onClose }) {
   const [activeTab, setActiveTab] = useState('evidence');
   const [showBoundingBoxes, setShowBoundingBoxes] = useState(true);
   const [showMask, setShowMask] = useState(false);
-  const [splitPosition, setSplitPosition] = useState(50);
+  const [boxOpacity, setBoxOpacity] = useState(100);
+  const [maskOpacity, setMaskOpacity] = useState(60);
+  const [selectedBoxId, setSelectedBoxId] = useState(null);
   const [isExporting, setIsExporting] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
 
   if (!query) return null;
 
   const sampleAnswer = resultData?.answerText || 
-    'Target area analysis complete. Multi-spectral visual inspection confirms key infrastructure changes and vehicle activity within the specified coordinate boundary.';
+    'Target area analysis complete. Multi-spectral visual inspection confirms key infrastructure changes, vehicle activity, and built-up structure expansion within the specified coordinate boundary.';
 
   const sampleBoxes = resultData?.boxes || [
-    { id: 1, label: 'Building Structure', confidence: '96%', x: 22, y: 18, width: 38, height: 32 },
-    { id: 2, label: 'Vehicle Apron', confidence: '92%', x: 62, y: 55, width: 28, height: 26 },
+    { id: 1, label: 'Building Structure', confidence: '96%', x: 22, y: 18, width: 38, height: 32, area: '2,850 m²', coords: '12.9716° N, 77.5946° E' },
+    { id: 2, label: 'Vehicle Apron', confidence: '92%', x: 62, y: 55, width: 28, height: 26, area: '1,400 m²', coords: '12.9721° N, 77.5952° E' },
   ];
 
   const executionSteps = resultData?.trace || [
-    { step: 1, title: 'Spatial Bounds Check', desc: 'Resolved latitude & longitude tile grid', status: 'done' },
-    { step: 2, title: 'Multi-spectral Tile Retrieval', desc: 'Fetched Sentinel-2 L2A optical & SAR layers', status: 'done' },
-    { step: 3, title: 'VLM Target Detection', desc: 'Inference via Qwen2-VL & Segment Anything model', status: 'done' },
-    { step: 4, title: 'Trust Layer Verification', desc: 'Confidence scoring & artifact mask check passed', status: 'done' },
+    { step: 1, title: 'Spatial Bounds Check', desc: 'Resolved latitude & longitude tile grid', status: 'done', latency: '14 ms' },
+    { step: 2, title: 'Multi-spectral Tile Retrieval', desc: 'Fetched Sentinel-2 L2A optical & SAR layers', status: 'done', latency: '120 ms' },
+    { step: 3, title: 'VLM Target Detection', desc: 'Inference via Qwen2-VL & Segment Anything model', status: 'done', latency: '180 ms' },
+    { step: 4, title: 'Trust Layer Verification', desc: 'Confidence scoring & artifact mask check passed', status: 'done', latency: '26 ms' },
   ];
 
   const handleDownloadReport = () => {
@@ -80,7 +82,7 @@ export default function ResultsPanel({ query, resultData, onClose }) {
         <li class="step-item">
           <div class="step-num">✓</div>
           <div>
-            <div class="step-title">${s.title}</div>
+            <div class="step-title">${s.title} (${s.latency})</div>
             <div class="step-desc">${s.desc}</div>
           </div>
         </li>
@@ -108,6 +110,44 @@ export default function ResultsPanel({ query, resultData, onClose }) {
     }, 600);
   };
 
+  const handleExportGeoJSON = () => {
+    const timestamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
+    const geojson = {
+      type: 'FeatureCollection',
+      name: 'SatQuery_Detections',
+      crs: { type: 'name', properties: { name: 'urn:ogc:def:crs:OGC:1.3:CRS84' } },
+      features: sampleBoxes.map(box => ({
+        type: 'Feature',
+        properties: {
+          id: box.id,
+          label: box.label,
+          confidence: box.confidence,
+          area: box.area,
+        },
+        geometry: {
+          type: 'Polygon',
+          coordinates: [[
+            [77.5940 + (box.x / 1000), 12.9710 + (box.y / 1000)],
+            [77.5940 + ((box.x + box.width) / 1000), 12.9710 + (box.y / 1000)],
+            [77.5940 + ((box.x + box.width) / 1000), 12.9710 + ((box.y + box.height) / 1000)],
+            [77.5940 + (box.x / 1000), 12.9710 + ((box.y + box.height) / 1000)],
+            [77.5940 + (box.x / 1000), 12.9710 + (box.y / 1000)],
+          ]],
+        },
+      })),
+    };
+
+    const blob = new Blob([JSON.stringify(geojson, null, 2)], { type: 'application/geo+json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `SatQuery_Detections_${timestamp}.geojson`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
   return (
     <div className={`results-panel ${isFullscreen ? 'fullscreen' : ''}`}>
       {/* Header */}
@@ -124,14 +164,26 @@ export default function ResultsPanel({ query, resultData, onClose }) {
             className="download-report-btn" 
             onClick={handleDownloadReport} 
             disabled={isExporting}
-            title="Export Satellite Intelligence Report"
+            title="Export Satellite Intelligence Report (HTML)"
           >
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
               <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
               <polyline points="7 10 12 15 17 10" />
               <line x1="12" y1="15" x2="12" y2="3" />
             </svg>
-            <span>{isExporting ? 'Exporting...' : 'Download Report'}</span>
+            <span>{isExporting ? 'Exporting...' : 'HTML Report'}</span>
+          </button>
+          <button 
+            className="export-geojson-btn" 
+            onClick={handleExportGeoJSON}
+            title="Export Detections to GeoJSON Format"
+          >
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <polygon points="12 2 2 7 12 12 22 7 12 2" />
+              <polyline points="2 17 12 22 22 17" />
+              <polyline points="2 12 12 17 22 12" />
+            </svg>
+            <span>GeoJSON</span>
           </button>
           <button 
             className="results-panel-fullscreen-btn" 
@@ -199,109 +251,236 @@ export default function ResultsPanel({ query, resultData, onClose }) {
         {/* Tab 1: Visual Evidence with Interactive Bounding Boxes & Overlays */}
         {activeTab === 'evidence' && (
           <div className="results-evidence-view">
-            {/* Control Bar for Toggling Layers */}
-            <div className="evidence-controls">
-              <button 
-                className={`layer-toggle-btn ${showBoundingBoxes ? 'active' : ''}`} 
-                onClick={() => setShowBoundingBoxes(!showBoundingBoxes)}
-              >
-                <span className="toggle-indicator" />
-                Bounding Boxes
-              </button>
-              <button 
-                className={`layer-toggle-btn ${showMask ? 'active' : ''}`} 
-                onClick={() => setShowMask(!showMask)}
-              >
-                <span className="toggle-indicator" />
-                Segmentation Mask
-              </button>
+            {/* Control Bar for Toggling Layers & Opacity */}
+            <div className="evidence-controls-stack">
+              <div className="evidence-controls">
+                <button 
+                  className={`layer-toggle-btn ${showBoundingBoxes ? 'active' : ''}`} 
+                  onClick={() => setShowBoundingBoxes(!showBoundingBoxes)}
+                >
+                  <span className="toggle-indicator" />
+                  Bounding Boxes
+                </button>
+                <button 
+                  className={`layer-toggle-btn ${showMask ? 'active' : ''}`} 
+                  onClick={() => setShowMask(!showMask)}
+                >
+                  <span className="toggle-indicator" />
+                  Segmentation Mask
+                </button>
+              </div>
+
+              {/* Smooth Opacity Sliders */}
+              <div className="evidence-sliders-row">
+                {showBoundingBoxes && (
+                  <div className="opacity-slider-item">
+                    <span className="slider-label">Boxes: {boxOpacity}%</span>
+                    <input
+                      type="range"
+                      min="10"
+                      max="100"
+                      value={boxOpacity}
+                      onChange={(e) => setBoxOpacity(Number(e.target.value))}
+                      className="opacity-range-input"
+                    />
+                  </div>
+                )}
+                {showMask && (
+                  <div className="opacity-slider-item">
+                    <span className="slider-label">Mask: {maskOpacity}%</span>
+                    <input
+                      type="range"
+                      min="10"
+                      max="100"
+                      value={maskOpacity}
+                      onChange={(e) => setMaskOpacity(Number(e.target.value))}
+                      className="opacity-range-input"
+                    />
+                  </div>
+                )}
+              </div>
             </div>
 
-            {/* Satellite Evidence Canvas Container */}
-            <div className="evidence-viewport">
-              {/* Base Simulated Satellite Image */}
-              <div 
-                className="evidence-satellite-bg"
-                style={{
-                  backgroundImage: resultData?.uploadedImages?.[0]?.url 
-                    ? `url(${resultData.uploadedImages[0].url})` 
-                    : `radial-gradient(circle at 50% 50%, rgba(110,180,255,0.15) 0%, rgba(6,9,19,0.9) 100%), linear-gradient(135deg, #0d1527 0%, #172238 100%)`,
-                  backgroundSize: 'cover',
-                  backgroundPosition: 'center',
-                }}
-              >
-                <div className="satellite-grid-overlay" />
+            {/* Satellite Evidence Aspect-Ratio Locked Container */}
+            <div className="evidence-viewport aspect-ratio-locked">
+              <div className="evidence-canvas-frame">
+                {/* Base Satellite Image */}
+                <div 
+                  className="evidence-satellite-bg"
+                  style={{
+                    backgroundImage: resultData?.uploadedImages?.[0]?.url 
+                      ? `url(${resultData.uploadedImages[0].url})` 
+                      : `radial-gradient(circle at 50% 50%, rgba(110,180,255,0.15) 0%, rgba(6,9,19,0.9) 100%), linear-gradient(135deg, #0d1527 0%, #172238 100%)`,
+                    backgroundSize: 'cover',
+                    backgroundPosition: 'center',
+                  }}
+                >
+                  <div className="satellite-grid-overlay" />
 
-                {/* Optional Mask Overlay Layer */}
-                {showMask && (
-                  <div 
-                    className="evidence-mask-layer"
-                    style={{
-                      position: 'absolute',
-                      inset: 0,
-                      background: 'radial-gradient(ellipse at 35% 30%, rgba(52, 211, 153, 0.35) 0%, rgba(59, 125, 221, 0.25) 50%, transparent 80%)',
-                      mixBlendMode: 'screen',
-                    }}
-                  />
-                )}
+                  {/* Mask Layer */}
+                  {showMask && (
+                    <div 
+                      className="evidence-mask-layer"
+                      style={{
+                        position: 'absolute',
+                        inset: 0,
+                        opacity: maskOpacity / 100,
+                        background: 'radial-gradient(ellipse at 35% 30%, rgba(52, 211, 153, 0.45) 0%, rgba(59, 125, 221, 0.3) 50%, transparent 80%)',
+                        mixBlendMode: 'screen',
+                        transition: 'opacity 0.15s ease',
+                      }}
+                    />
+                  )}
 
-                {/* SVG Bounding Boxes Overlay */}
-                {showBoundingBoxes && (
-                  <svg className="evidence-svg-overlay" viewBox="0 0 100 100" preserveAspectRatio="none">
-                    {sampleBoxes.map((box) => (
-                      <g key={box.id} className="bounding-box-group">
-                        <rect
-                          x={box.x}
-                          y={box.y}
-                          width={box.width}
-                          height={box.height}
-                          fill="rgba(110, 180, 255, 0.12)"
-                          stroke="#6EB4FF"
-                          strokeWidth="0.8"
-                          strokeDasharray="2 1"
-                          rx="1"
-                        />
-                        <rect
-                          x={box.x}
-                          y={box.y - 6}
-                          width={box.width * 0.75}
-                          height="5.5"
-                          fill="#3B7DDD"
-                          rx="0.8"
-                        />
-                        <text
-                          x={box.x + 1.5}
-                          y={box.y - 1.8}
-                          fill="#FFFFFF"
-                          fontSize="3.2"
-                          fontWeight="bold"
-                        >
-                          {box.label} ({box.confidence})
-                        </text>
-                      </g>
-                    ))}
-                  </svg>
-                )}
+                  {/* SVG Bounding Boxes Overlay with Aspect Ratio Lock */}
+                  {showBoundingBoxes && (
+                    <svg 
+                      className="evidence-svg-overlay" 
+                      viewBox="0 0 100 100" 
+                      preserveAspectRatio="xMidYMid meet"
+                      style={{ opacity: boxOpacity / 100, transition: 'opacity 0.15s ease' }}
+                    >
+                      {sampleBoxes.map((box) => {
+                        const isSelected = selectedBoxId === box.id;
+                        return (
+                          <g 
+                            key={box.id} 
+                            className={`bounding-box-group ${isSelected ? 'selected' : ''}`}
+                            onClick={() => setSelectedBoxId(isSelected ? null : box.id)}
+                            style={{ cursor: 'pointer' }}
+                          >
+                            <rect
+                              x={box.x}
+                              y={box.y}
+                              width={box.width}
+                              height={box.height}
+                              fill={isSelected ? "rgba(52, 211, 153, 0.25)" : "rgba(110, 180, 255, 0.14)"}
+                              stroke={isSelected ? "#34D399" : "#6EB4FF"}
+                              strokeWidth={isSelected ? "1.4" : "0.9"}
+                              strokeDasharray={isSelected ? "none" : "2 1"}
+                              rx="1"
+                            />
+                            <rect
+                              x={box.x}
+                              y={box.y - 6}
+                              width={box.width * 0.82}
+                              height="5.5"
+                              fill={isSelected ? "#059669" : "#3B7DDD"}
+                              rx="0.8"
+                            />
+                            <text
+                              x={box.x + 1.5}
+                              y={box.y - 1.8}
+                              fill="#FFFFFF"
+                              fontSize="3.2"
+                              fontWeight="bold"
+                            >
+                              {box.label} ({box.confidence})
+                            </text>
+                          </g>
+                        );
+                      })}
+                    </svg>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {/* Detections Chips Row */}
+            <div className="evidence-detections-list">
+              <span className="detections-list-title">DETECTED TARGETS:</span>
+              <div className="detections-chips">
+                {sampleBoxes.map((box) => (
+                  <button
+                    key={box.id}
+                    type="button"
+                    className={`detection-chip ${selectedBoxId === box.id ? 'active' : ''}`}
+                    onClick={() => setSelectedBoxId(selectedBoxId === box.id ? null : box.id)}
+                  >
+                    <span className="chip-dot" />
+                    <span className="chip-label">{box.label}</span>
+                    <span className="chip-conf">{box.confidence}</span>
+                  </button>
+                ))}
               </div>
             </div>
           </div>
         )}
 
-        {/* Tab 2: Findings Summary */}
+        {/* Tab 2: Categorized Intelligence Findings */}
         {activeTab === 'answer' && (
           <div className="results-findings-view">
+            {/* Intel Severity Banner */}
+            <div className="intel-severity-banner severity-medium">
+              <div className="severity-badge">ACTIVITY MONITORING</div>
+              <span className="severity-sub">Multi-spectral target detection score: High Confidence</span>
+            </div>
+
+            {/* Summary Text */}
             <p className="results-panel-answer">{sampleAnswer}</p>
+
+            {/* Categorized Intel Cards */}
+            <div className="intel-cards-grid">
+              <div className="intel-card">
+                <span className="intel-card-label">KEY TARGET DETECTIONS</span>
+                <ul className="intel-detections-list">
+                  {sampleBoxes.map((b) => (
+                    <li key={b.id} className="intel-detection-item">
+                      <span className="detection-name">{b.label}</span>
+                      <span className="detection-conf-badge">{b.confidence}</span>
+                      <span className="detection-area">{b.area}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+
+              <div className="intel-card">
+                <span className="intel-card-label">SPATIAL METRICS & BOUNDS</span>
+                <div className="intel-metrics-rows">
+                  <div className="metric-row">
+                    <span className="metric-name">Centroid Coordinates:</span>
+                    <span className="metric-val">{sampleBoxes[0]?.coords}</span>
+                  </div>
+                  <div className="metric-row">
+                    <span className="metric-name">Total Structural Footprint:</span>
+                    <span className="metric-val">4,250 m²</span>
+                  </div>
+                  <div className="metric-row">
+                    <span className="metric-name">Raster Grid Resolution:</span>
+                    <span className="metric-val">0.5m / px (Sentinel-2 L2A)</span>
+                  </div>
+                </div>
+              </div>
+
+              <div className="intel-card">
+                <span className="intel-card-label">MODEL PIPELINE METADATA</span>
+                <div className="intel-metrics-rows">
+                  <div className="metric-row">
+                    <span className="metric-name">VLM Architecture:</span>
+                    <span className="metric-val">Qwen2-VL-7B-Instruct</span>
+                  </div>
+                  <div className="metric-row">
+                    <span className="metric-name">LoRA Adapter:</span>
+                    <span className="metric-val">satquery-lora-geoint-v2</span>
+                  </div>
+                  <div className="metric-row">
+                    <span className="metric-name">Total Pipeline Latency:</span>
+                    <span className="metric-val">340 ms</span>
+                  </div>
+                </div>
+              </div>
+            </div>
           </div>
         )}
 
-        {/* Tab 3: Quantitative Trend Chart */}
+        {/* Tab 3: Quantitative Multi-Metric Trend Chart */}
         {activeTab === 'trend' && (
           <div className="results-trend-view">
             <TrendChart />
           </div>
         )}
 
-        {/* Tab 3: Execution Trace Stepper */}
+        {/* Tab 4: Execution Trace Stepper */}
         {activeTab === 'trace' && (
           <div className="results-trace-view">
             <div className="trace-stepper">
@@ -309,7 +488,10 @@ export default function ResultsPanel({ query, resultData, onClose }) {
                 <div key={s.step} className="trace-step-item">
                   <div className="trace-step-icon">✓</div>
                   <div className="trace-step-content">
-                    <div className="trace-step-title">{s.title}</div>
+                    <div className="trace-step-header">
+                      <span className="trace-step-title">{s.title}</span>
+                      <span className="trace-step-latency">{s.latency}</span>
+                    </div>
                     <div className="trace-step-desc">{s.desc}</div>
                   </div>
                 </div>

@@ -87,7 +87,9 @@ export default function SearchBar({
   onClear, 
   onModeChange,
   disabled = false,
-  onTilesChange = () => {}
+  onTilesChange = () => {},
+  roiAttachment = null,
+  onClearRoi = () => {}
 }) {
   const [query, setQuery] = useState('');
   const [focused, setFocused] = useState(false);
@@ -246,9 +248,22 @@ export default function SearchBar({
         />
       </div>
 
-      {images.length > 0 && (
+      {(images.length > 0 || roiAttachment) && (
         <div className="composer-files-wrap w-full">
           <div className="composer-files">
+            {roiAttachment && (
+              <span className="composer-file-chip roi-chip">
+                <span className="composer-file-name">{roiAttachment.name || 'Globe Region ROI'}</span>
+                <button
+                  type="button"
+                  className="composer-file-remove"
+                  onClick={onClearRoi}
+                  aria-label="Remove ROI region"
+                >
+                  <XIcon />
+                </button>
+              </span>
+            )}
             {images.map((img) => (
               <span key={img.id} className="composer-file-chip">
                 <span className="composer-file-name">{img.name}</span>

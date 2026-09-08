@@ -6,7 +6,7 @@ import TopBar from './Components/TopBar';
 import ResultsPanel from './Components/ResultsPanel';
 import ResultPanel from './Components/ResultPanel';
 import SidebarIcon from './Components/SidebarIcon';
-import { submitQuery, fetchQueryHistory, uploadImages } from './services/api';
+import { submitQuery, fetchQueryHistory, uploadImages, fetchRegionImagery } from './services/api';
 
 const SESSION_KEY = 'satquery.sessionId';
 
@@ -41,8 +41,21 @@ export default function App() {
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyError, setHistoryError] = useState(null);
   const [activeHistoryId, setActiveHistoryId] = useState(null);
+  const [roiAttachment, setRoiAttachment] = useState(null);
 
   const handleCoords = useCallback((c) => setCoords(c), []);
+
+  const handleRegionSelect = async (bbox) => {
+    try {
+      const fetched = await fetchRegionImagery(bbox, { mode: activeMode });
+      if (fetched && fetched.tileIds) {
+        setTileIds((prev) => [...prev, ...fetched.tileIds]);
+        setRoiAttachment(fetched);
+      }
+    } catch (err) {
+      console.warn('Region fetch notice:', err.message);
+    }
+  };
 
   useEffect(() => {
     if (!sessionId) return;
@@ -152,7 +165,11 @@ export default function App() {
     <div className="satquery-app">
       <main className="main-stage">
         <div className="globe-section">
-          <GlobeView onCoordsChange={handleCoords} activeQuery={submitted} />
+          <GlobeView 
+            onCoordsChange={handleCoords} 
+            activeQuery={submitted} 
+            onRegionSelect={handleRegionSelect}
+          />
 
           <TopBar coords={coords} activeQuery={submitted} />
 
@@ -174,6 +191,8 @@ export default function App() {
               onModeChange={setActiveMode}
               disabled={isLoading}
               onTilesChange={setTileIds}
+              roiAttachment={roiAttachment}
+              onClearRoi={() => setRoiAttachment(null)}
             />
 
             {isLoading && !response && (

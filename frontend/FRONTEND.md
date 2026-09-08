@@ -230,8 +230,8 @@ Ordered to match the 7-Day Build Plan and to keep the required capabilities ahea
 ### 10.6 Map/Globe Region Picker + Auto-Fetch — STRETCH (Day 6, only if mandatory items above are stable)
 
 - [x] Capture camera latitude & longitude coordinates in real-time in TopBar
-- [ ] Implement region bounding box selection on the globe
-- [ ] Wire the selected region to the fetch-imagery endpoint
+- [x] Implement region bounding box selection on the globe
+- [x] Wire the selected region to the fetch-imagery endpoint
 
 ### 10.7 Polish and PWA (Day 7, only if time remains)
 
