@@ -45,6 +45,7 @@ from adaptation._train_helpers import (
     TEXT_TOKEN_TYPE,
     build_masked_labels,
     effective_batch_size,
+    make_mm_token_type_ids,
     pad_token_type_ids,
     split_train_eval,
 )
@@ -278,38 +279,40 @@ def test_pad_token_type_ids_no_padding_when_already_long():
 
 
 def test_mm_token_type_ids_is_returned_by_dataset_and_forwarded():
-    """The dataset must return mm_token_type_ids and training must forward it.
+    """The dataset must use processor mm_token_type_ids and forward it.
 
-    Dependency-free source check: __getitem__'s return dict must include
-    mm_token_type_ids, and the model(...) call in the training loop must pass
-    mm_token_type_ids=... so Qwen2-VL M-RoPE receives real processor values.
+    Dependency-free source check: __getitem__ sources mm_token_type_ids from the
+    processor output (via _ensure_mm_token_type_ids, which reads
+    full_inputs["mm_token_type_ids"] first), and the training loop forwards it
+    to model() when present — so Qwen2-VL M-RoPE receives real processor values.
     """
     src = TRAIN_SCRIPT.read_text()
 
-    # 1. __getitem__ reads it from the processor output and returns it.
-    assert '"mm_token_type_ids": mm_token_type_ids' in src or (
-        "'mm_token_type_ids': mm_token_type_ids" in src
-    )
-    assert '"mm_token_type_ids"][0]' in src or "full_inputs[\"mm_token_type_ids\"]" in src
+    # 1. __getitem__ trusts the processor-returned field (from full_inputs).
+    assert 'if "mm_token_type_ids" in processor_output' in src
+    assert "full_inputs" in src and "processor_output" in src
 
-    # 2. The training loop pulls it from the batch and forwards it to model().
+    # 2. The training loop pulls it from the batch and forwards it to model()
+    #    only when it exists.
     loop = src.split("for batch in train_loader:")[1]
-    assert "mm_token_type_ids=mm_tids" in loop
-    assert 'batch["mm_token_type_ids"]' in loop
+    assert 'batch.get("mm_token_type_ids")' in loop
+    assert 'fwd_kwargs["mm_token_type_ids"] = mm_tids' in loop
+    assert "outputs = model(**fwd_kwargs)" in loop
 
 
 def test_mm_token_type_ids_no_fake_default():
-    """The real processor output (full_inputs["mm_token_type_ids"]) is used.
+    """The real processor output (if any) is preferred, never a zeros default.
 
-    Requirement: never fabricate a default tensor when the processor provides
-    the real values. The dataset must source token-type ids from the processor
-    output dict, not from a hardcoded zeros factory.
+    Requirement: never fabricate a default tensor standing in for the processor.
+    Any reconstruction of the field must come from the input_ids-based heuristic
+    (make_mm_token_type_ids), never a hardcoded torch.zeros(...) factory.
     """
     src = TRAIN_SCRIPT.read_text()
-    assert 'full_inputs["mm_token_type_ids"]' in src
-    # The only manufacture of values for these ids must be the pad helper, never
-    # a raw torch.zeros(...) default tensor standing in for the processor.
+    assert 'if "mm_token_type_ids" in processor_output' in src
+    # The only manufacture of values for these ids must be the input_ids-based
+    # helper, never a raw torch.zeros(...) default tensor standing in.
     assert "mm_token_type_ids = torch.zeros(" not in src
+    assert "make_mm_token_type_ids" in src
 
 
 # ---------------------------------------------------------------------------
@@ -399,3 +402,120 @@ def test_training_loop_uses_accumulated_step():
     assert "--steps\", type=int, default=500" in src or re.search(
         r'"--steps"[^)]*default=500', src
     )
+
+
+# ---------------------------------------------------------------------------
+# mm_token_type_ids: optional processor field (WITH and WITHOUT)
+# ---------------------------------------------------------------------------
+
+
+def _fake_processor(with_field, image_token_ids, video_token_ids=(), audio_token_ids=()):
+    """Build a minimal fake processor for `_ensure_mm_token_type_ids` tests.
+
+    Emulates the two Qwen2-VL processor behaviors:
+      - WITH: `create_mm_token_type_ids` is present and `__call__` returns the
+        field directly (transformers that honor return_mm_token_type_ids=True).
+      - WITHOUT: processor does not expose the field at all.
+    """
+
+    class _Tok:
+        pass
+
+    tokenizer = _Tok()
+    tokenizer.pad_token_id = 0
+
+    class _Processor:
+        image_token_id = list(image_token_ids)
+        video_token_id = list(video_token_ids)
+        audio_token_id = list(audio_token_ids)
+        tokenizer = tokenizer
+
+        def create_mm_token_type_ids(self, batch):
+            out = []
+            for row in batch:
+                out.append(
+                    make_mm_token_type_ids(
+                        row,
+                        image_token_ids=self.image_token_id,
+                        video_token_ids=self.video_token_id,
+                        audio_token_ids=self.audio_token_id,
+                    )
+                )
+            return out
+
+    return _Processor()
+
+
+def test_processor_output_with_mm_token_type_ids_used_directly():
+    """WITH the field: __getitem__ must use the processor-returned value."""
+    src = TRAIN_SCRIPT.read_text()
+    # Explicitly request the field so supported processor versions return it.
+    assert "return_mm_token_type_ids=True" in src
+    # The helper must check the processor output first (no reconstruction when
+    # the real field is present).
+    assert '"mm_token_type_ids" in processor_output' in src
+
+
+def test_processor_output_without_mm_token_type_ids_falls_back():
+    """WITHOUT the field: __getitem__ must reconstruct it from input_ids,
+    never crash with KeyError, and never invent arbitrary modality labels."""
+    # The helper reconstructs modality ids for a real id sequence.
+    image_ids = [151665, 151666]
+    video_ids = [151667]
+    audio_ids = [151668]
+    ids = [100, image_ids[0], image_ids[1], 200, video_ids[0], audio_ids[0], 300]
+
+    tids = make_mm_token_type_ids(
+        ids,
+        image_token_ids=image_ids,
+        video_token_ids=video_ids,
+        audio_token_ids=audio_ids,
+    )
+    # image -> 1, video -> 2, audio -> 3, text -> 0, preserving order.
+    assert tids == [0, 1, 1, 0, 2, 3, 0]
+
+    # The source must guard against the missing key (no raw KeyError).
+    src = TRAIN_SCRIPT.read_text()
+    assert 'if "mm_token_type_ids" in processor_output' in src
+
+
+def test_dataset_returns_and_forwards_only_when_present():
+    """When the field is absent, __getitem__ must NOT return mm_token_type_ids
+    and training must NOT forward it; when present, it is returned and forwarded."""
+    src = TRAIN_SCRIPT.read_text()
+    loop = src.split("for batch in train_loader:")[1]
+    # Training must conditionally forward the field, not hard-require it.
+    assert 'batch.get("mm_token_type_ids")' in loop
+    assert "if mm_tids is not None:" in loop
+    assert 'if "mm_token_type_ids" in item and item["mm_token_type_ids"] is not None' in src
+
+
+def test_pixel_values_and_image_grid_thw_remain_mandatory():
+    """image_grid_thw / pixel_values must stay required for image inputs."""
+    src = TRAIN_SCRIPT.read_text()
+    ds = src.split("class RSVQADataset")[1]
+    # Dataset still reads both from the processor output without fallback.
+    assert 'pixel_values = full_inputs["pixel_values"].squeeze(0)' in ds
+    assert 'image_grid_thw = full_inputs["image_grid_thw"].squeeze(0)' in ds
+    # Training loop always forwards them, unconditionally.
+    loop = src.split("for batch in train_loader:")[1]
+    assert "pixel_values=pixel_vals" in loop
+    assert "image_grid_thw=grid_thw" in loop
+
+
+def test_mm_token_type_ids_optional_omitted_from_model_kwargs_when_absent():
+    """Model kwargs must omit mm_token_type_ids when the batch lacks it."""
+    src = TRAIN_SCRIPT.read_text()
+    loop = src.split("for batch in train_loader:")[1]
+    # fwd_kwargs is built without mm_token_type_ids unless present.
+    assert "fwd_kwargs = dict(" in loop
+    assert 'if mm_tids is not None:' in loop
+    assert 'fwd_kwargs["mm_token_type_ids"] = mm_tids' in loop
+    assert "outputs = model(**fwd_kwargs)" in loop
+
+
+def test_padding_not_attempted_when_mm_token_type_ids_absent():
+    """Pad logic must be skipped entirely when the field is absent."""
+    src = TRAIN_SCRIPT.read_text()
+    # The padding block is guarded by `if mm_token_type_ids is not None`.
+    assert "if mm_token_type_ids is not None:" in src

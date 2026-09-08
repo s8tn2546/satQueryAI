@@ -75,9 +75,57 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from adaptation._train_helpers import (  # noqa: E402
     build_masked_labels,
     effective_batch_size,
+    make_mm_token_type_ids,
     pad_token_type_ids,
     split_train_eval,
 )
+
+def _ensure_mm_token_type_ids(
+    processor,
+    processor_output: dict,
+    input_ids,
+):
+    """Obtain per-token modality ids from the processor or reconstruct them.
+
+    Some transformers/Qwen2-VL versions do NOT return ``mm_token_type_ids``
+    unless ``return_mm_token_type_ids=True`` is explicitly passed.  When
+    ``return_mm_token_type_ids=True`` is also unsupported, we fall back to
+    rebuilding the field from ``input_ids`` using the processor's known
+    image/video/audio token id sets — the same logic the processor applies
+    internally.
+
+    Returns:
+        torch.Tensor or None — None when the field is absent and the
+        processor does not expose enough information to reconstruct it.
+    """
+    if "mm_token_type_ids" in processor_output:
+        return processor_output["mm_token_type_ids"].squeeze(0)
+
+    # Try the processor's own reconstruction method (transformers ≥ 4.x), which
+    # knows the exact image/video/audio placeholder token ids.
+    create = getattr(processor, "create_mm_token_type_ids", None)
+    if create is not None:
+        ids = input_ids
+        if hasattr(ids, "tolist"):
+            ids = ids.tolist()
+        result = create([ids])
+        if result:
+            return torch.tensor(result[0], dtype=torch.long)
+
+    # Dependency-free fallback: rebuild modality ids from input_ids using the
+    # processor's token id sets (no invented modality labels).
+    image_ids = set(getattr(processor, "image_token_id", None) or [])
+    video_ids = set(getattr(processor, "video_token_id", None) or [])
+    audio_ids = set(getattr(processor, "audio_token_id", None) or [])
+    ids = input_ids
+    if hasattr(ids, "tolist"):
+        ids = ids.tolist()
+    tids = make_mm_token_type_ids(
+        ids, image_token_ids=image_ids, video_token_ids=video_ids,
+        audio_token_ids=audio_ids,
+    )
+    return torch.tensor(tids, dtype=torch.long)
+
 
 BASE_MODEL  = "Qwen/Qwen2-VL-2B-Instruct"
 DATASET_ID  = "cpratikaki/RSVQA-HR_qwen_finetuning"
@@ -241,6 +289,7 @@ class RSVQADataset(torch.utils.data.Dataset):
             images=image_inputs,
             videos=video_inputs,
             return_tensors="pt",
+            return_mm_token_type_ids=True,
         )
         input_ids = full_inputs["input_ids"].squeeze(0)
         attention_mask = full_inputs["attention_mask"].squeeze(0)
@@ -248,7 +297,9 @@ class RSVQADataset(torch.utils.data.Dataset):
         image_grid_thw = full_inputs["image_grid_thw"].squeeze(0)
         # Preserve the processor-returned per-token modality ids (0=text, 1=image).
         # Required by Qwen2-VL for multimodal RoPE when multimodal inputs are passed.
-        mm_token_type_ids = full_inputs["mm_token_type_ids"].squeeze(0)
+        mm_token_type_ids = _ensure_mm_token_type_ids(
+            self.processor, full_inputs, input_ids
+        )
 
         seq = input_ids.numel()
         if seq > self.max_length:
@@ -292,19 +343,22 @@ class RSVQADataset(torch.utils.data.Dataset):
             )
             # Pad mm_token_type_ids to the EXACT same length (0 = no modality),
             # matching the manual input_ids/attention_mask padding.
-            mm_token_type_ids = torch.tensor(
-                pad_token_type_ids(mm_token_type_ids.tolist(), self.max_length),
-                dtype=torch.long,
-            )
+            if mm_token_type_ids is not None:
+                mm_token_type_ids = torch.tensor(
+                    pad_token_type_ids(mm_token_type_ids.tolist(), self.max_length),
+                    dtype=torch.long,
+                )
 
-        return {
+        result = {
             "input_ids": input_ids,
             "attention_mask": attention_mask,
             "pixel_values": pixel_values,
             "image_grid_thw": image_grid_thw,
-            "mm_token_type_ids": mm_token_type_ids,
             "labels": torch.tensor(labels, dtype=torch.long),
         }
+        if mm_token_type_ids is not None:
+            result["mm_token_type_ids"] = mm_token_type_ids
+        return result
 
 
 def validate_first_sample(ds: RSVQADataset, device: torch.device, dtype: torch.dtype) -> None:
@@ -324,8 +378,11 @@ def validate_first_sample(ds: RSVQADataset, device: torch.device, dtype: torch.d
     logger.info("  non-masked label tokens: %d", non_masked)
     logger.info("  pixel_values : shape=%s", tuple(item["pixel_values"].shape))
     logger.info("  image_grid_thw: shape=%s", tuple(item["image_grid_thw"].shape))
-    logger.info("  mm_token_type_ids: shape=%s dtype=%s",
-                tuple(item["mm_token_type_ids"].shape), item["mm_token_type_ids"].dtype)
+    if "mm_token_type_ids" in item and item["mm_token_type_ids"] is not None:
+        logger.info("  mm_token_type_ids: shape=%s dtype=%s",
+                    tuple(item["mm_token_type_ids"].shape), item["mm_token_type_ids"].dtype)
+    else:
+        logger.info("  mm_token_type_ids: absent (model will infer modality from input_ids)")
     logger.info("  device       : %s  dtype=%s", device, dtype)
     if non_masked == 0:
         raise RuntimeError(
@@ -649,7 +706,9 @@ def main() -> None:
             pixel_vals = batch["pixel_values"].to(device)
             grid_thw = batch["image_grid_thw"].to(device)
             labels = batch["labels"].to(device)
-            mm_tids = batch["mm_token_type_ids"].to(device)
+            mm_tids = batch.get("mm_token_type_ids")
+            if mm_tids is not None:
+                mm_tids = mm_tids.to(device)
 
             if input_ids.shape[-1] != labels.shape[-1]:
                 raise RuntimeError(
@@ -657,21 +716,23 @@ def main() -> None:
                     f"labels {tuple(labels.shape)}. Labels must be aligned to the "
                     f"full input sequence."
                 )
-            if input_ids.shape[-1] != mm_tids.shape[-1]:
+            if mm_tids is not None and input_ids.shape[-1] != mm_tids.shape[-1]:
                 raise RuntimeError(
                     f"Shape mismatch: input_ids {tuple(input_ids.shape)} vs "
                     f"mm_token_type_ids {tuple(mm_tids.shape)}. mm_token_type_ids "
                     f"must be aligned to the full input sequence."
                 )
 
-            outputs = model(
+            fwd_kwargs = dict(
                 input_ids=input_ids,
                 attention_mask=attn_mask,
                 pixel_values=pixel_vals,
                 image_grid_thw=grid_thw,
-                mm_token_type_ids=mm_tids,
                 labels=labels,
             )
+            if mm_tids is not None:
+                fwd_kwargs["mm_token_type_ids"] = mm_tids
+            outputs = model(**fwd_kwargs)
             # Scale by 1/grad_accum so that accumulated gradients match a single
             # forward pass with the effective batch size.
             loss = outputs.loss / accum_steps

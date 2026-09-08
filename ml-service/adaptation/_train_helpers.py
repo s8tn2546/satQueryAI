@@ -34,6 +34,49 @@ IGNORE_INDEX = -100
 # Qwen2-VL mm_token_type_ids convention: 0 = text/no modality, 1 = image.
 TEXT_TOKEN_TYPE = 0
 IMAGE_TOKEN_TYPE = 1
+VIDEO_TOKEN_TYPE = 2
+AUDIO_TOKEN_TYPE = 3
+
+
+def make_mm_token_type_ids(
+    input_ids,
+    image_token_ids=(),
+    video_token_ids=(),
+    audio_token_ids=(),
+):
+    """Reconstruct per-token modality ids from ``input_ids``.
+
+    Mirrors the Qwen2-VL processor's own ``create_mm_token_type_ids`` logic so a
+    missing processor field can be rebuilt from scratch, without inventing
+    arbitrary modality labels.
+
+    Each position is ``IMAGE_TOKEN_TYPE`` (1) when it appears in
+    ``image_token_ids``, ``VIDEO_TOKEN_TYPE`` (2) or ``AUDIO_TOKEN_TYPE`` (3)
+    likewise, otherwise ``TEXT_TOKEN_TYPE`` (0).
+
+    Args:
+        input_ids:      flat sequence of token ids (list, tuple or tensor-like).
+        image_token_ids: iterable of image placeholder token ids.
+        video_token_ids: iterable of video placeholder token ids.
+        audio_token_ids: iterable of audio placeholder token ids.
+
+    Returns:
+        List[int] of the same length as ``input_ids``.
+    """
+    image_set = set(image_token_ids)
+    video_set = set(video_token_ids)
+    audio_set = set(audio_token_ids)
+    out = []
+    for tok in input_ids:
+        if tok in image_set:
+            out.append(IMAGE_TOKEN_TYPE)
+        elif tok in video_set:
+            out.append(VIDEO_TOKEN_TYPE)
+        elif tok in audio_set:
+            out.append(AUDIO_TOKEN_TYPE)
+        else:
+            out.append(TEXT_TOKEN_TYPE)
+    return out
 
 
 def split_train_eval(
