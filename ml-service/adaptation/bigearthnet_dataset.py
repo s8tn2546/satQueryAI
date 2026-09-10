@@ -595,6 +595,32 @@ def select_eval_samples(samples: list[dict], n: int, seed: int) -> list[dict]:
     return [samples[i] for i in idx]
 
 
+def collate_bigearthnet_batch(batch: list[dict]) -> dict:
+    """Collate a DataLoader batch of BigEarthNet Qwen2-VL training samples.
+
+    Text tensors (``input_ids``, ``attention_mask``, ``labels``,
+    ``mm_token_type_ids``) are right-padded to a fixed ``max_length`` by the
+    dataset, so they stack on the batch dim.  Vision tensors are
+    variable-length per sample (``pixel_values`` is ``(num_image_tokens,
+    hidden_dim)`` and ``image_grid_thw`` is ``(num_images, 3)``); the default
+    stack would add a spurious leading batch dim that Qwen2-VL rejects with
+    ``ValueError: not enough values to unpack (expected 3, got 2)``.  They are
+    concatenated along dim 0 to ``(total_image_tokens, hidden_dim)`` and
+    ``(total_images, 3)`` respectively, matching what the model's forward pass
+    expects.
+    """
+    import torch
+
+    out: dict = {}
+    for key in batch[0]:
+        tensors = [sample[key] for sample in batch]
+        if key in ("pixel_values", "image_grid_thw"):
+            out[key] = torch.cat(tensors, dim=0)
+        else:
+            out[key] = torch.stack(tensors, dim=0)
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Preflight (pre-training sanity checks; also exposed as a CLI)
 # ---------------------------------------------------------------------------

@@ -102,6 +102,7 @@ from adaptation.bigearthnet_dataset import (  # noqa: E402
     ImageryNotAvailableError,
     PreflightError,
     build_qwen_conversation,
+    collate_bigearthnet_batch,
     run_preflight,
     select_eval_samples,
     split_patches_no_leakage,
@@ -732,7 +733,8 @@ def main() -> None:
     validate_first_sample(train_qwen, device, dtype)
 
     train_loader = torch.utils.data.DataLoader(
-        train_qwen, batch_size=args.batch_size, shuffle=True, drop_last=True
+        train_qwen, batch_size=args.batch_size, shuffle=True, drop_last=True,
+        collate_fn=collate_bigearthnet_batch,
     )
 
     optimizer = torch.optim.AdamW(
