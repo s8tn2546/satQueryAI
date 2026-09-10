@@ -30,6 +30,7 @@ from adaptation.bigearthnet_dataset import (
     percentile_normalize,
     run_preflight,
     split_patches_no_leakage,
+    validate_samples,
 )
 
 # ---------------------------------------------------------------------------
@@ -291,6 +292,81 @@ def test_dataset_subset_caps_unique_patches(tmp_path):
     pf = _bigearthnet_parquet(tmp_path)
     ds = BigEarthNetDataset(pf, tmp_path / "nope_lmdb", subset=2, seed=42)
     assert ds.num_patches == 2
+
+
+def test_materialize_exposes_canonical_s2_rgb_s1_rgb(tmp_path, monkeypatch):
+    """materialize() must expose top-level s2_rgb / s1_rgb PIL RGB images.
+
+    Regression guard for the runtime error
+    ``ValueError: Dataset sample 0 is missing required field 's2_rgb'.`` —
+    the trainer reads the canonical top-level fields, so they must exist on
+    every materialized sample.
+    """
+    pf = _bigearthnet_parquet(tmp_path)
+    ds = BigEarthNetDataset(pf, tmp_path / "nope_lmdb", splits=("train",))
+    s2 = Image.new("RGB", (16, 12))
+    s1 = Image.new("RGB", (16, 12))
+    monkeypatch.setattr(ds, "get_patch_images", lambda patch_id: (s2, s1))
+
+    samples = ds.materialize(ds.patches)
+    assert samples
+    for s in samples:
+        assert s["s2_rgb"] is s2
+        assert s["s1_rgb"] is s1
+        assert isinstance(s["s2_rgb"], Image.Image) and s["s2_rgb"].mode == "RGB"
+        assert isinstance(s["s1_rgb"], Image.Image) and s["s1_rgb"].mode == "RGB"
+        # Backward-compatible tuple kept alongside the canonical fields.
+        assert s["images"] == (s2, s1)
+        # The observed runtime key set plus the two canonical image fields.
+        assert set(s) == {
+            "ID", "answer", "category", "images", "patch_id", "question",
+            "split", "type", "s2_rgb", "s1_rgb",
+        }
+        assert s["question"] and s["answer"] and s["patch_id"]
+
+
+def _materialized_sample(s2_mode="RGB", s1_mode="RGB") -> dict:
+    return {
+        "s2_rgb": Image.new(s2_mode, (8, 8)),
+        "s1_rgb": Image.new(s1_mode, (8, 8)),
+        "images": (Image.new(s2_mode, (8, 8)), Image.new(s1_mode, (8, 8))),
+        "question": "Is the land cover agricultural?",
+        "answer": "yes",
+        "patch_id": "PATCH_A",
+        "type": "binary",
+        "category": "land-cover",
+        "split": "train",
+        "ID": "BEN00000000",
+    }
+
+
+def test_validate_samples_accepts_materialized_sample():
+    """validate_samples must accept a materialized sample unchanged (no raise)."""
+    sample = _materialized_sample()
+    validate_samples([sample])
+
+
+def test_validate_samples_normalizes_non_rgb_images():
+    """Palette/gray images are eagerly converted to RGB, never rejected."""
+    sample = _materialized_sample(s2_mode="L", s1_mode="P")
+    validate_samples([sample])
+    assert sample["s2_rgb"].mode == "RGB"
+    assert sample["s1_rgb"].mode == "RGB"
+
+
+def test_validate_samples_missing_s2_rgb_raises():
+    """A sample lacking the canonical s2_rgb field fails loudly."""
+    sample = _materialized_sample()
+    del sample["s2_rgb"]
+    with pytest.raises(ValueError, match="missing required field 's2_rgb'"):
+        validate_samples([sample])
+
+
+def test_validate_samples_rejects_non_pil_image():
+    sample = _materialized_sample()
+    sample["s1_rgb"] = "not an image"
+    with pytest.raises(TypeError, match="'s1_rgb' must be a PIL.Image"):
+        validate_samples([sample])
 
 
 def test_dataset_missing_parquet_raises(tmp_path):

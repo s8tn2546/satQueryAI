@@ -16,8 +16,10 @@ entirely on the *training* side.  It provides:
        - S1 composite:    R = VV,        G = VH,       B = VV/VH ratio
 
   3. ``BigEarthNetDataset`` — parquet + LMDB accessor that produces
-     per-annotation training samples carrying the two PIL RGB images, the
-     instruction and the reference answer (binary / mcq support).
+     per-annotation training samples carrying the two PIL RGB images (as
+     canonical top-level ``s2_rgb`` / ``s1_rgb`` fields, plus a
+     backward-compatible ``images`` tuple), the instruction and the reference
+     answer (binary / mcq support).
 
   4. ``build_qwen_conversation`` — builds the Qwen2-VL chat-template messages
      with two image entries and one text instruction, ready for the processor.
@@ -29,10 +31,15 @@ entirely on the *training* side.  It provides:
      Fails clearly with actionable instructions when the official LMDB imagery
      is absent.  It NEVER falls back to metadata-only or synthetic imagery.
 
+  7. ``BigEarthNetQwenDataset`` — torch ``Dataset`` turning materialized
+     samples into Qwen2-VL ``input_ids`` / ``attention_mask`` / ``pixel_values``
+     / ``image_grid_thw`` / ``labels`` tensors, and ``collate_bigearthnet_batch``
+     to assemble batches without a spurious vision batch dimension.
+
 Module hygiene:
-  * No ``torch`` / ``transformers`` imports at module level, so the
-    compositing + split + preflight helpers can be unit tested and
-    ``py_compile``-checked in lightweight environments.
+  * No ``torch`` / ``transformers`` imports REQUIRED at module level (torch is
+    imported lazily/optionally), so the compositing + split + preflight helpers
+    can be unit tested and ``py_compile``-checked in lightweight environments.
   * ``pandas`` / ``lmdb`` / ``safetensors`` are imported lazily inside the
     methods that need them.
 """
@@ -48,6 +55,17 @@ from typing import Callable, Iterable, Optional
 
 import numpy as np
 from PIL import Image
+
+try:
+    import torch
+except ImportError:  # keep the module importable in lightweight environments
+    torch = None
+
+from adaptation._train_helpers import (
+    build_masked_labels,
+    make_mm_token_type_ids,
+    pad_token_type_ids,
+)
 
 # ---------------------------------------------------------------------------
 # BigEarthNet.txt constants (verified against the official parquet schema)
@@ -506,14 +524,22 @@ class BigEarthNetDataset:
         return self._images_cache[patch_id]
 
     def materialize(self, patches: Iterable[dict]) -> list[dict]:
-        """Turn a list of patch dicts into explicit training sample dicts."""
+        """Turn a list of patch dicts into explicit training sample dicts.
+
+        Every sample carries the two composites as the canonical top-level
+        ``s2_rgb`` / ``s1_rgb`` PIL RGB image fields (the fields the trainer and
+        the Qwen2-VL dataset read), plus ``images`` = ``(s2_rgb, s1_rgb)`` kept
+        only for backward compatibility.
+        """
         samples: list[dict] = []
         for p in patches:
-            images = self.get_patch_images(p["patch_id"])
+            s2_rgb, s1_rgb = self.get_patch_images(p["patch_id"])
             for row in p["rows"]:
                 samples.append(
                     {
-                        "images": images,
+                        "s2_rgb": s2_rgb,
+                        "s1_rgb": s1_rgb,
+                        "images": (s2_rgb, s1_rgb),
                         "question": row["input"].strip(),
                         "answer": row["output"].strip(),
                         "patch_id": p["patch_id"],
@@ -524,6 +550,161 @@ class BigEarthNetDataset:
                     }
                 )
         return samples
+
+
+# ---------------------------------------------------------------------------
+# Qwen2-VL SFT dataset (torch-backed; consumes materialized samples with the
+# canonical top-level ``s2_rgb`` / ``s1_rgb`` fields above)
+# ---------------------------------------------------------------------------
+
+
+def _ensure_mm_token_type_ids(
+    processor,
+    processor_output: dict,
+    input_ids,
+):
+    """Same safeguard as the RSVQA script: modality ids may need rebuilding."""
+    if "mm_token_type_ids" in processor_output:
+        return processor_output["mm_token_type_ids"].squeeze(0)
+
+    create = getattr(processor, "create_mm_token_type_ids", None)
+    if create is not None:
+        ids = input_ids
+        if hasattr(ids, "tolist"):
+            ids = ids.tolist()
+        result = create([ids])
+        if result:
+            return torch.tensor(result[0], dtype=torch.long)
+
+    image_ids = set(getattr(processor, "image_token_id", None) or [])
+    video_ids = set(getattr(processor, "video_token_id", None) or [])
+    audio_ids = set(getattr(processor, "audio_token_id", None) or [])
+    ids = input_ids
+    if hasattr(ids, "tolist"):
+        ids = ids.tolist()
+    tids = make_mm_token_type_ids(
+        ids, image_token_ids=image_ids, video_token_ids=video_ids,
+        audio_token_ids=audio_ids,
+    )
+    return torch.tensor(tids, dtype=torch.long)
+
+
+_QwenDatasetBase = torch.utils.data.Dataset if torch is not None else object
+
+
+class BigEarthNetQwenDataset(_QwenDatasetBase):
+    """Qwen2-VL SFT dataset for one two-image BigEarthNet training sample.
+
+    Each item returns inputs dict with input_ids, attention_mask, pixel_values,
+    image_grid_thw, and labels.  Labels are aligned to the FULL input sequence
+    (prompt + answer) and only the assistant/answer tokens contribute to loss.
+    """
+
+    def __init__(self, samples: list[dict], processor, max_length: int) -> None:
+        self.samples = samples
+        self.processor = processor
+        self.max_length = max_length
+
+    def __len__(self) -> int:
+        return len(self.samples)
+
+    def __getitem__(self, idx: int) -> dict[str, torch.Tensor]:
+        from qwen_vl_utils import process_vision_info
+
+        s = self.samples[idx]
+        question = str(s["question"]).strip()
+        answer = str(s["answer"]).strip()
+
+        if not question:
+            raise ValueError(f"Sample {idx} has an empty question.")
+        if not answer:
+            raise ValueError(f"Sample {idx} has an empty answer.")
+
+        # ---- Build the two-image conversation (S2 composite + S1 composite).
+        user_msg, assistant_msg = build_qwen_conversation(
+            s["s2_rgb"], s["s1_rgb"], question, answer
+        )
+
+        prompt_text = self.processor.apply_chat_template(
+            [user_msg], tokenize=False, add_generation_prompt=True
+        )
+        full_text = self.processor.apply_chat_template(
+            [user_msg, assistant_msg], tokenize=False, add_generation_prompt=False
+        )
+        image_inputs, video_inputs = process_vision_info([user_msg])
+        if len(image_inputs) != 2:
+            raise ValueError(
+                f"Sample {idx}: expected exactly 2 images from process_vision_info, "
+                f"got {len(image_inputs)}. The two-image conversation is malformed."
+            )
+
+        # ---- Encode WITHOUT truncation or padding (see RSVQA script notes).
+        full_inputs = self.processor(
+            text=[full_text],
+            images=image_inputs,
+            videos=video_inputs,
+            return_tensors="pt",
+            return_mm_token_type_ids=True,
+        )
+        input_ids = full_inputs["input_ids"].squeeze(0)
+        attention_mask = full_inputs["attention_mask"].squeeze(0)
+        pixel_values = full_inputs["pixel_values"].squeeze(0)
+        image_grid_thw = full_inputs["image_grid_thw"].squeeze(0)
+        mm_token_type_ids = _ensure_mm_token_type_ids(
+            self.processor, full_inputs, input_ids
+        )
+
+        seq = input_ids.numel()
+        if seq > self.max_length:
+            raise ValueError(
+                f"Sample {idx}: encoded sequence is {seq} tokens, which exceeds "
+                f"--max-length {self.max_length}. The two image regions (+ answer) "
+                f"must fit within max_length; increase --max-length."
+            )
+
+        prompt_inputs = self.processor(
+            text=[prompt_text],
+            images=image_inputs,
+            videos=video_inputs,
+            return_tensors="pt",
+        )
+        answer_start = prompt_inputs["input_ids"].shape[-1]
+
+        labels = build_masked_labels(
+            input_ids.tolist(),
+            answer_start=answer_start,
+            pad_token_id=self.processor.tokenizer.pad_token_id,
+            max_length=self.max_length,
+        )
+
+        pad_id = self.processor.tokenizer.pad_token_id
+        if seq < self.max_length:
+            pads = self.max_length - seq
+            input_ids = torch.cat(
+                [input_ids, torch.full((pads,), pad_id, dtype=input_ids.dtype)]
+            )
+            attention_mask = torch.cat(
+                [
+                    attention_mask,
+                    torch.zeros((pads,), dtype=attention_mask.dtype),
+                ]
+            )
+            if mm_token_type_ids is not None:
+                mm_token_type_ids = torch.tensor(
+                    pad_token_type_ids(mm_token_type_ids.tolist(), self.max_length),
+                    dtype=torch.long,
+                )
+
+        result = {
+            "input_ids": input_ids,
+            "attention_mask": attention_mask,
+            "pixel_values": pixel_values,
+            "image_grid_thw": image_grid_thw,
+            "labels": torch.tensor(labels, dtype=torch.long),
+        }
+        if mm_token_type_ids is not None:
+            result["mm_token_type_ids"] = mm_token_type_ids
+        return result
 
 
 # ---------------------------------------------------------------------------
@@ -593,6 +774,27 @@ def select_eval_samples(samples: list[dict], n: int, seed: int) -> list[dict]:
         return list(samples)
     idx = sorted(rng.sample(range(len(samples)), n))
     return [samples[i] for i in idx]
+
+
+def validate_samples(samples: list[dict]) -> None:
+    """Ensure every materialized sample has the required two-image fields."""
+    for i, s in enumerate(samples):
+        for field in ("s2_rgb", "s1_rgb", "question", "answer"):
+            if field not in s or s[field] in (None, ""):
+                raise ValueError(
+                    f"Dataset sample {i} is missing required field '{field}'. "
+                    f"Expected BigEarthNet fields: s2_rgb, s1_rgb, question, answer. "
+                    f"Sample keys: {sorted(s.keys())}"
+                )
+        for key, img in (("s2_rgb", s["s2_rgb"]), ("s1_rgb", s["s1_rgb"])):
+            if not isinstance(img, Image.Image):
+                raise TypeError(
+                    f"Dataset sample {i}: '{key}' must be a PIL.Image, got "
+                    f"{type(img).__name__}"
+                )
+            if img.mode != "RGB":
+                # Normalize eagerly so the dataset never sees a palette/gray image.
+                s[key] = img.convert("RGB")
 
 
 def collate_bigearthnet_batch(batch: list[dict]) -> dict:
@@ -734,7 +936,8 @@ def run_preflight(
                     f"{sorted(S2_COMPOSITE_BANDS)}; S1: {sorted(S1_COMPOSITE_BANDS)})"
                 )
             sample = ds.materialize(ds.patches[:max_patches])[0]
-            s2_rgb, s1_rgb = sample["images"]
+            s2_rgb = sample["s2_rgb"]
+            s1_rgb = sample["s1_rgb"]
             _check(
                 "matching_pair",
                 True,

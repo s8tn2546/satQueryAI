@@ -91,14 +91,10 @@ from qwen_vl_utils import process_vision_info  # noqa: E402
 
 # Ensure ``ml-service`` is on sys.path so this script runs from any CWD.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from adaptation._train_helpers import (  # noqa: E402
-    build_masked_labels,
-    effective_batch_size,
-    make_mm_token_type_ids,
-    pad_token_type_ids,
-)
+from adaptation._train_helpers import effective_batch_size  # noqa: E402
 from adaptation.bigearthnet_dataset import (  # noqa: E402
     BigEarthNetDataset,
+    BigEarthNetQwenDataset,
     ImageryNotAvailableError,
     PreflightError,
     build_qwen_conversation,
@@ -106,38 +102,8 @@ from adaptation.bigearthnet_dataset import (  # noqa: E402
     run_preflight,
     select_eval_samples,
     split_patches_no_leakage,
+    validate_samples,
 )
-
-
-def _ensure_mm_token_type_ids(
-    processor,
-    processor_output: dict,
-    input_ids,
-):
-    """Same safeguard as the RSVQA script: modality ids may need rebuilding."""
-    if "mm_token_type_ids" in processor_output:
-        return processor_output["mm_token_type_ids"].squeeze(0)
-
-    create = getattr(processor, "create_mm_token_type_ids", None)
-    if create is not None:
-        ids = input_ids
-        if hasattr(ids, "tolist"):
-            ids = ids.tolist()
-        result = create([ids])
-        if result:
-            return torch.tensor(result[0], dtype=torch.long)
-
-    image_ids = set(getattr(processor, "image_token_id", None) or [])
-    video_ids = set(getattr(processor, "video_token_id", None) or [])
-    audio_ids = set(getattr(processor, "audio_token_id", None) or [])
-    ids = input_ids
-    if hasattr(ids, "tolist"):
-        ids = ids.tolist()
-    tids = make_mm_token_type_ids(
-        ids, image_token_ids=image_ids, video_token_ids=video_ids,
-        audio_token_ids=audio_ids,
-    )
-    return torch.tensor(tids, dtype=torch.long)
 
 
 BASE_MODEL  = "Qwen/Qwen2-VL-2B-Instruct"
@@ -198,140 +164,6 @@ def log_hardware(device: torch.device, dtype: torch.dtype) -> None:
         logger.info("GPU   : %s (%.1f GB VRAM)", name, vram)
     elif device.type == "mps":
         logger.info("GPU   : Apple Silicon (MPS)")
-
-
-def validate_samples(samples: list[dict]) -> None:
-    """Ensure every sample has the required two-image BigEarthNet fields."""
-    for i, s in enumerate(samples):
-        for field in ("s2_rgb", "s1_rgb", "question", "answer"):
-            if field not in s or s[field] in (None, ""):
-                raise ValueError(
-                    f"Dataset sample {i} is missing required field '{field}'. "
-                    f"Expected BigEarthNet fields: s2_rgb, s1_rgb, question, answer. "
-                    f"Sample keys: {sorted(s.keys())}"
-                )
-        for key, img in (("s2_rgb", s["s2_rgb"]), ("s1_rgb", s["s1_rgb"])):
-            if not isinstance(img, Image.Image):
-                raise TypeError(
-                    f"Dataset sample {i}: '{key}' must be a PIL.Image, got "
-                    f"{type(img).__name__}"
-                )
-            if img.mode != "RGB":
-                # Normalize eagerly so the dataset never sees a palette/gray image.
-                s[key] = img.convert("RGB")
-
-
-class BigEarthNetQwenDataset(torch.utils.data.Dataset):
-    """Qwen2-VL SFT dataset for one two-image BigEarthNet training sample.
-
-    Each item returns inputs dict with input_ids, attention_mask, pixel_values,
-    image_grid_thw, and labels.  Labels are aligned to the FULL input sequence
-    (prompt + answer) and only the assistant/answer tokens contribute to loss.
-    """
-
-    def __init__(self, samples: list[dict], processor, max_length: int) -> None:
-        self.samples = samples
-        self.processor = processor
-        self.max_length = max_length
-
-    def __len__(self) -> int:
-        return len(self.samples)
-
-    def __getitem__(self, idx: int) -> dict[str, torch.Tensor]:
-        s = self.samples[idx]
-        question = str(s["question"]).strip()
-        answer = str(s["answer"]).strip()
-
-        if not question:
-            raise ValueError(f"Sample {idx} has an empty question.")
-        if not answer:
-            raise ValueError(f"Sample {idx} has an empty answer.")
-
-        # ---- Build the two-image conversation (S2 composite + S1 composite).
-        user_msg, assistant_msg = build_qwen_conversation(
-            s["s2_rgb"], s["s1_rgb"], question, answer
-        )
-
-        prompt_text = self.processor.apply_chat_template(
-            [user_msg], tokenize=False, add_generation_prompt=True
-        )
-        full_text = self.processor.apply_chat_template(
-            [user_msg, assistant_msg], tokenize=False, add_generation_prompt=False
-        )
-        image_inputs, video_inputs = process_vision_info([user_msg])
-        if len(image_inputs) != 2:
-            raise ValueError(
-                f"Sample {idx}: expected exactly 2 images from process_vision_info, "
-                f"got {len(image_inputs)}. The two-image conversation is malformed."
-            )
-
-        # ---- Encode WITHOUT truncation or padding (see RSVQA script notes).
-        full_inputs = self.processor(
-            text=[full_text],
-            images=image_inputs,
-            videos=video_inputs,
-            return_tensors="pt",
-            return_mm_token_type_ids=True,
-        )
-        input_ids = full_inputs["input_ids"].squeeze(0)
-        attention_mask = full_inputs["attention_mask"].squeeze(0)
-        pixel_values = full_inputs["pixel_values"].squeeze(0)
-        image_grid_thw = full_inputs["image_grid_thw"].squeeze(0)
-        mm_token_type_ids = _ensure_mm_token_type_ids(
-            self.processor, full_inputs, input_ids
-        )
-
-        seq = input_ids.numel()
-        if seq > self.max_length:
-            raise ValueError(
-                f"Sample {idx}: encoded sequence is {seq} tokens, which exceeds "
-                f"--max-length {self.max_length}. The two image regions (+ answer) "
-                f"must fit within max_length; increase --max-length."
-            )
-
-        prompt_inputs = self.processor(
-            text=[prompt_text],
-            images=image_inputs,
-            videos=video_inputs,
-            return_tensors="pt",
-        )
-        answer_start = prompt_inputs["input_ids"].shape[-1]
-
-        labels = build_masked_labels(
-            input_ids.tolist(),
-            answer_start=answer_start,
-            pad_token_id=self.processor.tokenizer.pad_token_id,
-            max_length=self.max_length,
-        )
-
-        pad_id = self.processor.tokenizer.pad_token_id
-        if seq < self.max_length:
-            pads = self.max_length - seq
-            input_ids = torch.cat(
-                [input_ids, torch.full((pads,), pad_id, dtype=input_ids.dtype)]
-            )
-            attention_mask = torch.cat(
-                [
-                    attention_mask,
-                    torch.zeros((pads,), dtype=attention_mask.dtype),
-                ]
-            )
-            if mm_token_type_ids is not None:
-                mm_token_type_ids = torch.tensor(
-                    pad_token_type_ids(mm_token_type_ids.tolist(), self.max_length),
-                    dtype=torch.long,
-                )
-
-        result = {
-            "input_ids": input_ids,
-            "attention_mask": attention_mask,
-            "pixel_values": pixel_values,
-            "image_grid_thw": image_grid_thw,
-            "labels": torch.tensor(labels, dtype=torch.long),
-        }
-        if mm_token_type_ids is not None:
-            result["mm_token_type_ids"] = mm_token_type_ids
-        return result
 
 
 def validate_first_sample(ds: BigEarthNetQwenDataset, device: torch.device, dtype: torch.dtype) -> None:
