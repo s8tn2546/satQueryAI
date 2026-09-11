@@ -17,60 +17,6 @@ export function toPercent(v) {
   return `${Math.round(v * 1000) / 10}%`;
 }
 
-/** Format a measured value with at most `digits` decimals (no float noise). */
-export function formatValue(v, digits = 2) {
-  if (!isFiniteNumber(v)) return null;
-  const factor = 10 ** digits;
-  return String(Math.round(v * factor) / factor);
-}
-
-/**
- * Format an already-percentage-scaled value (0..100) at 1 decimal place.
- * Unlike toPercent (which converts a 0..1 fraction), this value is already a
- * percentage, e.g. change_percentage = 11.582242 → "11.6%".
- */
-export function formatPercent(v, digits = 1) {
-  const val = formatValue(v, digits);
-  return val === null ? null : `${val}%`;
-}
-
-/** Human-readable label for a change-detection method (fallback: raw method). */
-const CHANGE_METHOD_LABELS = {
-  absolute_difference: 'Pixel-level absolute difference',
-};
-
-export function changeMethodLabel(method) {
-  if (typeof method !== 'string') return null;
-  return CHANGE_METHOD_LABELS[method] || method;
-}
-
-/** Readable label for the change threshold source. */
-export function thresholdSourceLabel(source) {
-  if (source === 'auto_2sigma') return 'auto (2σ)';
-  if (source === 'explicit') return 'explicit';
-  if (typeof source === 'string') return source;
-  return null;
-}
-
-/**
- * Deterministic headline verdict for bi-temporal change detection.
- *
- * A PRESENTATION heuristic derived ONLY from the measured `change_percentage`
- * (the fraction of compared pixels that exceeded the threshold). It never
- * alters the tool's numbers and never adds semantic claims (buildings, water,
- * etc.) — it only describes the magnitude of the pixel-level change.
- */
-const MAJOR_CHANGE_PCT = 5; // ≥5% of compared pixels → "Major"
-export function changeVerdict(pct) {
-  if (isFiniteNumber(pct) && pct > 0) {
-    if (pct >= MAJOR_CHANGE_PCT) {
-      return { label: 'Major change detected between T1 and T2.', status: 'major' };
-    }
-    return { label: 'Change detected between T1 and T2.', status: 'minor' };
-  }
-  return { label: 'No significant pixel-level change detected between T1 and T2.', status: 'none' };
-}
-
 /** First tool result entry for the given tool name (any status). */
 export function toolResult(toolResults, tool) {
   if (!Array.isArray(toolResults)) return null;
@@ -204,15 +150,14 @@ export function buildFindings({ taskType, answerText, toolResults, query, status
           ? result.changePercentage
           : null;
       if (pct !== null) {
-        const verdict = changeVerdict(pct);
-        const percentLabel = formatPercent(pct);
-        const method = changeMethodLabel(result.method);
-        const explanation = method
-          ? `${percentLabel} of the compared pixels exceeded the configured change threshold (${method}).`
-          : `${percentLabel} of the compared pixels exceeded the configured change threshold.`;
+        const primary = `Change detected: ${pct}%${isFiniteNumber(result.threshold) ? ` of pixels exceeded the configured threshold` : ' of pixels changed between the two captures'}.`;
+        const parts = [];
+        if (isFiniteNumber(result.mean_difference)) parts.push(`mean difference ${result.mean_difference}`);
+        if (isFiniteNumber(result.max_difference)) parts.push(`max difference ${result.max_difference}`);
+        if (result.method) parts.push(`method: ${result.method}`);
         return {
-          primary: verdict.label,
-          explanation,
+          primary,
+          explanation: parts.length > 0 ? `${parts.join('; ')}.` : 'Computed by comparing the two source captures.',
           isBinary: false,
           modelName,
           adapterActive

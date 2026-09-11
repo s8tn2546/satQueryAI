@@ -8,12 +8,7 @@ import {
   toolConfidence,
   primaryToolName,
   rawVqaAnswer,
-  isFiniteNumber,
-  formatPercent,
-  formatValue,
-  changeMethodLabel,
-  thresholdSourceLabel,
-  changeVerdict
+  isFiniteNumber
 } from '../lib/results';
 
 const TOOL_LABELS = {
@@ -138,23 +133,6 @@ export default function ResultsPanel({ query, resultData, onClose, isAnalyzing =
     ? (isFiniteNumber(changeToolResult.change_percentage) ? changeToolResult.change_percentage
       : isFiniteNumber(changeToolResult.changePercentage) ? changeToolResult.changePercentage : null)
     : null;
-
-  // Single display source for the temporal change stats. Only relays values
-  // the change tool actually reported — never invents numbers or semantics.
-  const changeSummary = (() => {
-    if (!changeToolResult) return null;
-    return {
-      verdict: changeVerdict(changePct),
-      percentLabel: formatPercent(changePct),
-      changedPixels: isFiniteNumber(changeToolResult.changed_pixels) ? changeToolResult.changed_pixels : null,
-      validPixels: isFiniteNumber(changeToolResult.valid_pixels) ? changeToolResult.valid_pixels : null,
-      meanDifference: formatValue(changeToolResult.mean_difference),
-      maxDifference: formatValue(changeToolResult.max_difference),
-      threshold: formatValue(changeToolResult.threshold, 4),
-      thresholdSource: thresholdSourceLabel(changeToolResult.threshold_source),
-      method: changeMethodLabel(changeToolResult.method),
-    };
-  })();
 
   const confidence = resultData?.confidence != null
     ? `${(Number(resultData.confidence) * 100).toFixed(1)}%`
@@ -302,18 +280,7 @@ export default function ResultsPanel({ query, resultData, onClose, isAnalyzing =
 
   function sourceCardTitle(info) {
     if (taskType === 'CHANGE_ANALYSIS') {
-      // T1/T2 follow the backend's deterministic ordering (earliest capture
-      // date first, mirroring the /change tool call), falling back to the
-      // reference order when no capture dates are available.
-      if (!info || !info._id) return 'Temporal capture';
-      const timeline = imageRefs.map((id) => tileInfos[id]).filter((t) => t && t._id);
-      const dated = timeline.filter((t) => t.captureDate);
-      const ordered =
-        timeline.length > 1 && dated.length === timeline.length
-          ? [...timeline].sort((a, b) => new Date(a.captureDate) - new Date(b.captureDate))
-          : timeline;
-      const isT1 = ordered.length > 0 && String(ordered[0]._id) === String(info._id);
-      return isT1 ? 'T1 · Before capture' : 'T2 · After capture';
+      return Array.isArray(imageRefs) && info && imageRefs[0] === String(info._id) ? 'Before capture' : 'After capture';
     }
     if (taskType === 'OPTICAL_SAR') {
       return info && info.modality === 'sar' ? 'SAR source' : 'Optical source';
@@ -704,43 +671,22 @@ export default function ResultsPanel({ query, resultData, onClose, isAnalyzing =
                     <span className="evidence-context-val">{findings.adapterActive ? 'Active' : 'Inactive'}</span>
                   </div>
                 )}
-                {taskType === 'CHANGE_ANALYSIS' && changeSummary && changeSummary.percentLabel && (
+                {taskType === 'CHANGE_ANALYSIS' && changePct !== null && (
                   <div className="evidence-context-row">
                     <span className="evidence-context-name">Change detected</span>
-                    <span className="evidence-context-val">{changeSummary.percentLabel} of compared pixels</span>
+                    <span className="evidence-context-val">{changePct}%</span>
                   </div>
                 )}
-                {taskType === 'CHANGE_ANALYSIS' && changeSummary && changeSummary.changedPixels != null && changeSummary.validPixels != null && (
+                {taskType === 'CHANGE_ANALYSIS' && changeToolResult && isFiniteNumber(changeToolResult.threshold) && (
                   <div className="evidence-context-row">
-                    <span className="evidence-context-name">Changed pixels</span>
-                    <span className="evidence-context-val">{formatValue(changeSummary.changedPixels, 0)} of {formatValue(changeSummary.validPixels, 0)} valid</span>
+                    <span className="evidence-context-name">Threshold</span>
+                    <span className="evidence-context-val">{changeToolResult.threshold}</span>
                   </div>
                 )}
-                {taskType === 'CHANGE_ANALYSIS' && changeSummary && changeSummary.meanDifference != null && (
+                {taskType === 'CHANGE_ANALYSIS' && changeToolResult && typeof changeToolResult.method === 'string' && (
                   <div className="evidence-context-row">
-                    <span className="evidence-context-name">Mean pixel difference</span>
-                    <span className="evidence-context-val">{changeSummary.meanDifference}</span>
-                  </div>
-                )}
-                {taskType === 'CHANGE_ANALYSIS' && changeSummary && changeSummary.maxDifference != null && (
-                  <div className="evidence-context-row">
-                    <span className="evidence-context-name">Max pixel difference</span>
-                    <span className="evidence-context-val">{changeSummary.maxDifference}</span>
-                  </div>
-                )}
-                {taskType === 'CHANGE_ANALYSIS' && changeSummary && changeSummary.threshold != null && (
-                  <div className="evidence-context-row">
-                    <span className="evidence-context-name">Change threshold</span>
-                    <span className="evidence-context-val">
-                      {changeSummary.threshold}
-                      {changeSummary.thresholdSource ? ` · ${changeSummary.thresholdSource}` : ''}
-                    </span>
-                  </div>
-                )}
-                {taskType === 'CHANGE_ANALYSIS' && changeSummary && changeSummary.method && (
-                  <div className="evidence-context-row">
-                    <span className="evidence-context-name">Method</span>
-                    <span className="evidence-context-val">{changeSummary.method}</span>
+                    <span className="evidence-context-name">Change method</span>
+                    <span className="evidence-context-val">{changeToolResult.method}</span>
                   </div>
                 )}
                 {findings.isBinary && rawAnswer && (
@@ -779,58 +725,8 @@ export default function ResultsPanel({ query, resultData, onClose, isAnalyzing =
         {/* Tab 2: Findings */}
         {activeTab === 'answer' && (
           <div className="results-findings-view">
-            {Object.keys(metrics).length > 0 || Object.keys(modelMetadata).length > 0 || severity || (taskType === 'CHANGE_ANALYSIS' && changeSummary) ? (
+            {(boxes.length > 0 || Object.keys(metrics).length > 0 || Object.keys(modelMetadata).length > 0 || severity) ? (
               <div className="intel-cards-grid">
-                {taskType === 'CHANGE_ANALYSIS' && changeSummary && (
-                  <div className="intel-card">
-                    <span className="intel-card-label">TEMPORAL CHANGE SUMMARY</span>
-                    <div className={`change-verdict change-verdict-${changeSummary.verdict.status}`}>
-                      {changeSummary.verdict.label}
-                    </div>
-                    <div className="change-pct-hero">
-                      <span className="change-pct-value">{changeSummary.percentLabel || '—'}</span>
-                      <span className="change-pct-unit">of compared pixels changed</span>
-                    </div>
-                    <div className="intel-metrics-rows">
-                      {changeSummary.changedPixels != null && changeSummary.validPixels != null && (
-                        <div className="metric-row">
-                          <span className="metric-name">Changed pixels</span>
-                          <span className="metric-val">
-                            {formatValue(changeSummary.changedPixels, 0)} of {formatValue(changeSummary.validPixels, 0)} valid
-                          </span>
-                        </div>
-                      )}
-                      {changeSummary.meanDifference != null && (
-                        <div className="metric-row">
-                          <span className="metric-name">Mean pixel difference</span>
-                          <span className="metric-val">{changeSummary.meanDifference}</span>
-                        </div>
-                      )}
-                      {changeSummary.maxDifference != null && (
-                        <div className="metric-row">
-                          <span className="metric-name">Max pixel difference</span>
-                          <span className="metric-val">{changeSummary.maxDifference}</span>
-                        </div>
-                      )}
-                      {changeSummary.threshold != null && (
-                        <div className="metric-row">
-                          <span className="metric-name">Change threshold</span>
-                          <span className="metric-val">
-                            {changeSummary.threshold}
-                            {changeSummary.thresholdSource ? ` · ${changeSummary.thresholdSource}` : ''}
-                          </span>
-                        </div>
-                      )}
-                      {changeSummary.method && (
-                        <div className="metric-row">
-                          <span className="metric-name">Method</span>
-                          <span className="metric-val">{changeSummary.method}</span>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                )}
-
                 {severity && (
                   <div className={`intel-severity-banner severity-${severity.level || 'medium'}`}>
                     <div className="severity-badge">{severity.label || severity.level || 'INFO'}</div>
@@ -882,11 +778,7 @@ export default function ResultsPanel({ query, resultData, onClose, isAnalyzing =
                 )}
               </div>
             ) : (
-              <p className="results-empty-state">
-                {taskType === 'CHANGE_ANALYSIS'
-                  ? 'No change-detection statistics were returned for this query.'
-                  : 'No additional conclusion metadata was returned for this query.'}
-              </p>
+              <p className="results-empty-state">No additional conclusion metadata was returned for this query.</p>
             )}
           </div>
         )}
@@ -897,14 +789,10 @@ export default function ResultsPanel({ query, resultData, onClose, isAnalyzing =
             {!trendState.requested ? (
               <div className="trend-not-requested">
                 <p className="results-panel-hint">
-                  <strong>{taskType === 'CHANGE_ANALYSIS'
-                    ? 'No trend analysis was provided for this query.'
-                    : 'Trend analysis was not requested for this query.'}</strong>
+                  <strong>Trend analysis was not requested for this query.</strong>
                 </p>
                 <p className="results-panel-hint">
-                  {taskType === 'CHANGE_ANALYSIS'
-                    ? 'This analysis compared two captures (T1 and T2). A multi-date trend series was not requested or provided, so no trend chart is shown.'
-                    : 'Trend analysis is available for region/time-series queries (e.g. NDVI or NDWI over a period).'}
+                  Trend analysis is available for region/time-series queries (e.g. NDVI or NDWI over a period).
                 </p>
               </div>
             ) : trendState.data ? (

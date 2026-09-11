@@ -1863,26 +1863,6 @@ html.light .composer-btn-glow {
 .metric-name { color: var(--glass-muted-text); }
 .metric-val { color: var(--glass-text); font-weight: 600; }
 
-/* Temporal change summary (change findings card) */
-.change-verdict {
-  display: inline-flex; align-items: center;
-  font-size: 11px; font-weight: 700;
-  padding: 3px 9px; border-radius: 14px; margin-bottom: 8px;
-}
-.change-verdict-major { color: #F87171; background: rgba(248, 113, 113, 0.12); border: 1px solid rgba(248, 113, 113, 0.3); }
-.change-verdict-minor { color: #FCD34D; background: rgba(252, 211, 77, 0.1); border: 1px solid rgba(252, 211, 77, 0.3); }
-.change-verdict-none { color: #94A3B8; background: rgba(148, 163, 184, 0.1); border: 1px solid rgba(148, 163, 184, 0.3); }
-.change-pct-hero {
-  display: flex; align-items: baseline; gap: 8px;
-  margin-bottom: 10px; padding-bottom: 10px;
-  border-bottom: 1px solid var(--glass-border);
-}
-.change-pct-value {
-  font-size: 28px; font-weight: 800; letter-spacing: -0.5px;
-  color: #ffffff; font-variant-numeric: tabular-nums;
-}
-.change-pct-unit { font-size: 10px; color: var(--glass-muted-text); text-transform: uppercase; letter-spacing: 0.6px; }
-
 /* Trend Chart Metrics Selector */
 .trend-metric-selector {
   display: flex; gap: 6px; margin-bottom: 12px;
