@@ -34,25 +34,6 @@ export function formatPercent(v, digits = 1) {
   return val === null ? null : `${val}%`;
 }
 
-/**
- * Label for a stored tile `source` value. Only maps values that actually exist
- * in the backend Tile enum — it never invents a sensor. Uploaded demo imagery
- * stays labeled "Uploaded imagery", not a real satellite acquisition.
- */
-const SOURCE_LABELS = {
-  'sentinel-2': 'Sentinel-2',
-  'sentinel-1': 'Sentinel-1',
-  bhuvan: 'Bhuvan',
-  'cartosat-2s': 'Cartosat-2S',
-  risat: 'RISAT',
-  'gee-fetch': 'Fetched imagery (GEE)',
-  'benchmark-upload': 'Uploaded imagery'
-};
-
-export function sourceLabel(source) {
-  return SOURCE_LABELS[source] || source || null;
-}
-
 /** Human-readable label for a change-detection method (fallback: raw method). */
 const CHANGE_METHOD_LABELS = {
   absolute_difference: 'Pixel-level absolute difference',
@@ -88,60 +69,6 @@ export function changeVerdict(pct) {
     return { label: 'Change detected between T1 and T2.', status: 'minor' };
   }
   return { label: 'No significant pixel-level change detected between T1 and T2.', status: 'none' };
-}
-
-/**
- * OPTICAL_SAR display summary built ONLY from real returned values.
- *
- * Modes:
- *  - 'fused'  real quantitative cross-modal fusion result from the tool
- *  - 'mock'   legacy mock land-cover output (only surfaced when ML is offline)
- *  - 'failed' the tool errored or never produced a successful result
- *
- * It relays the exact fields the tool returned and never synthesizes numbers,
- * sensors, confidence, change percentages or semantic observations.
- */
-export function opticalSarSummary({ toolResults, status, answerText }) {
-  const fused = successfulToolResult(toolResults, 'optical_sar');
-
-  if (fused && fused.result && fused.result.fusedLandCover) {
-    return {
-      mode: 'mock',
-      succeeded: true,
-      fusedLandCover: fused.result.fusedLandCover,
-      summary: typeof fused.result.summary === 'string' ? fused.result.summary : null,
-      confidence: isFiniteNumber(fused.confidence) ? fused.confidence : null
-    };
-  }
-
-  if (fused && fused.result && typeof fused.result === 'object') {
-    return {
-      mode: 'fused',
-      succeeded: true,
-      optical: fused.result.optical || null,
-      sar: fused.result.sar || null,
-      fusion: fused.result.fusion || null,
-      overlap: fused.result.overlap || null,
-      alignment: fused.result.alignment || null,
-      crs: fused.result.crs || null,
-      resolution: fused.result.resolution || null,
-      warnings: Array.isArray(fused.result.warnings) ? fused.result.warnings : [],
-      metadata: fused.metadata && typeof fused.metadata === 'object' ? fused.metadata : {},
-      confidence: isFiniteNumber(fused.confidence) ? fused.confidence : null
-    };
-  }
-
-  const failedEntry = toolResult(toolResults, 'optical_sar');
-  const error = (failedEntry && failedEntry.result && typeof failedEntry.result.error === 'string')
-    ? failedEntry.result.error
-    : (typeof answerText === 'string' ? answerText : '');
-  return {
-    mode: 'failed',
-    succeeded: false,
-    error,
-    needsGeoref: /georeferenc/i.test(error),
-    failed: status === 'failed' || status === 'rejected'
-  };
 }
 
 /** First tool result entry for the given tool name (any status). */
@@ -213,13 +140,11 @@ export function buildFindings({ taskType, answerText, toolResults, query, status
   const failed = status === 'failed' || status === 'rejected';
 
   if (failed) {
-    if (taskType === 'OPTICAL_SAR') {
-      const needsGeoref = /georeferenc/i.test(String(answerText || ''));
+    const needsGeoref = /georeferenc/i.test(String(answerText || ''));
+    if (taskType === 'OPTICAL_SAR' && needsGeoref) {
       return {
         primary: 'Optical + SAR analysis could not be completed.',
-        explanation: needsGeoref
-          ? 'Full geospatial fusion requires co-registered, georeferenced optical and SAR rasters.'
-          : String(answerText || '').replace(/^Unable to process(?: your request)?:?\s*/i, ''),
+        explanation: 'Optical + SAR analysis requires georeferenced optical and SAR rasters.',
         isBinary: false,
         modelName,
         adapterActive
@@ -303,27 +228,18 @@ export function buildFindings({ taskType, answerText, toolResults, query, status
     }
 
     case 'OPTICAL_SAR': {
-      const os = opticalSarSummary({ toolResults, status, answerText });
-      if (os.mode === 'mock') {
+      const fused = successfulToolResult(toolResults, 'optical_sar');
+      if (fused && fused.result && fused.result.fusedLandCover) {
         return {
           primary: 'Cross-modal fusion completed.',
-          explanation: `Reported fused land-cover distribution: ${JSON.stringify(os.fusedLandCover)}`,
-          isBinary: false,
-          modelName,
-          adapterActive
-        };
-      }
-      if (os.mode === 'fused') {
-        return {
-          primary: 'Optical + SAR analysis completed.',
-          explanation: 'Quantitative pixel-level fusion of the optical and SAR rasters completed over their co-registered overlap.',
+          explanation: `Fused land-cover result: ${JSON.stringify(fused.result.fusedLandCover)}`,
           isBinary: false,
           modelName,
           adapterActive
         };
       }
       return {
-        primary: answerText || 'Optical + SAR analysis produced no output.',
+        primary: answerText || 'Fusion analysis produced no output.',
         explanation: 'Result reported by the optical + SAR fusion tool.',
         isBinary: false,
         modelName,
