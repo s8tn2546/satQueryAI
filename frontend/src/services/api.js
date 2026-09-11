@@ -3,7 +3,7 @@
  *
  * Base URL resolution:
  *   1. VITE_API_BASE_URL env var (see .env.example)
- *   2. Dev fallback: http://localhost:5000
+ *   2. Dev fallback: http://localhost:5010
  *
  * Contract-verified against backend/src/routes/query.js and
  * backend/src/routes/images.js. No authentication is implemented because
@@ -11,7 +11,7 @@
  * optional; no route uses requireAuth).
  */
 
-const DEV_FALLBACK_BASE_URL = 'http://localhost:5000';
+const DEV_FALLBACK_BASE_URL = 'http://localhost:5010';
 
 export const API_BASE_URL = (
   import.meta.env.VITE_API_BASE_URL || DEV_FALLBACK_BASE_URL
@@ -153,6 +153,7 @@ export function uploadImages(files, { source, modality, modalityHint } = {}) {
  * ({ start, end } ISO strings or [start, end]).
  * Returns the same shape as POST /api/images/upload: { status, tileId, tileIds, tiles }.
  */
+// eslint-disable-next-line no-unused-vars -- destructured caller option kept for symmetry
 export function fetchRegionImagery(bbox, { mode = 'single', dateRange = null } = {}) {
   const polygon = {
     type: 'Polygon',
@@ -167,4 +168,32 @@ export function fetchRegionImagery(bbox, { mode = 'single', dateRange = null } =
   const startDate = (dateRange && (dateRange.start || dateRange[0])) || undefined;
   const endDate = (dateRange && (dateRange.end || dateRange[1])) || undefined;
   return post('/api/images/fetch-by-region', { boundingBox: polygon, startDate, endDate });
+}
+
+/**
+ * POST /api/ml/warmup
+ * Best-effort pre-load of the VLM (base + LoRA) on the ML service. Safe and
+ * idempotent; the backend skips it while a query is in flight. Fire-and-forget
+ * at app entry so the first real query does not pay cold-start inference cost.
+ */
+export function warmupVlm() {
+  return post('/api/ml/warmup', {});
+}
+
+/**
+ * GET /api/tiles/:id
+ * Tile metadata for the Evidence view: { _id, source, modality, format,
+ * renderable, storedFile, captureDate, crs, resolution, bands }.
+ */
+export function fetchTile(id) {
+  return get(`/api/tiles/${id}`);
+}
+
+/**
+ * URL of a persisted tile's source imagery. Renderable formats (PNG/JPEG)
+ * resolve to an <img> src; TIFF/unsupported formats are rendered as labelled
+ * cards instead (the endpoint rejects them with 415).
+ */
+export function tileImageUrl(id) {
+  return `${API_BASE_URL}/api/tiles/${id}/image`;
 }

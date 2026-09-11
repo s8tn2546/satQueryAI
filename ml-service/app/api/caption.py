@@ -43,6 +43,11 @@ router = APIRouter()
 CAPTION_ADAPTER_PATH = os.environ.get("CAPTION_ADAPTER_PATH")
 
 
+def _adapter_detected() -> bool:
+    """True only if a LoRA adapter is configured AND present on disk."""
+    return bool(CAPTION_ADAPTER_PATH) and Path(CAPTION_ADAPTER_PATH).exists()
+
+
 def _offline_caption_output(
     filename: str,
     size_bytes: int,
@@ -74,7 +79,7 @@ def _offline_caption_output(
             "filename": filename,
             "size_bytes": size_bytes,
             "model": DEFAULT_CAPTION_MODEL,
-            "adapter_used": CAPTION_ADAPTER_PATH is not None,
+            "adapter_used": False,
             "mock": True,
             "offline": True,
             "reason": str(exc),
@@ -144,6 +149,6 @@ async def caption_endpoint(
             "filename": filename,
             "size_bytes": len(content),
             "model": DEFAULT_CAPTION_MODEL,
-            "adapter_used": CAPTION_ADAPTER_PATH is not None,
+            "adapter_used": _adapter_detected(),
         },
     )

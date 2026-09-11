@@ -31,7 +31,11 @@ from app.common.http_utils import (
     save_to_temp,
     validate_upload_ext,
 )
-from app.models.vlm_loader import DEFAULT_VQA_MODEL, VLMUnavailableError
+from app.models.vlm_loader import (
+    DEFAULT_VQA_MODEL,
+    VLMUnavailableError,
+    load_qwen_model,
+)
 from app.schemas.common import ToolOutput
 from app.tools.vqa import VQAError, compute_vqa
 
@@ -40,6 +44,11 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 VQA_ADAPTER_PATH = os.environ.get("VQA_ADAPTER_PATH")
+
+
+def _adapter_detected() -> bool:
+    """True only if a LoRA adapter is configured AND present on disk."""
+    return bool(VQA_ADAPTER_PATH) and Path(VQA_ADAPTER_PATH).exists()
 
 
 def _offline_vqa_output(
@@ -76,7 +85,7 @@ def _offline_vqa_output(
             "filename": filename,
             "size_bytes": size_bytes,
             "model": DEFAULT_VQA_MODEL,
-            "adapter_used": VQA_ADAPTER_PATH is not None,
+            "adapter_used": False,
             "mock": True,
             "offline": True,
             "reason": str(exc),
@@ -157,6 +166,33 @@ async def vqa_endpoint(
             "filename": filename,
             "size_bytes": len(content),
             "model": DEFAULT_VQA_MODEL,
-            "adapter_used": VQA_ADAPTER_PATH is not None,
+            "adapter_used": _adapter_detected(),
         },
     )
+
+
+@router.post("/vlm/warmup")
+async def vlm_warmup():
+    """Pre-load the VLM (base model + LoRA adapter) into the in-memory cache.
+
+    Call once before a live demo so the first real VQA/caption request does
+    not pay the cold model-load cost (~20-50s on CPU). Subsequent
+    warm-vs-cold inference timing is reported. This performs no analysis.
+    """
+    from time import time
+
+    t0 = time()
+    try:
+        model, _ = load_qwen_model(DEFAULT_VQA_MODEL, VQA_ADAPTER_PATH)
+        from peft import PeftModel
+
+        load_s = round(time() - t0, 1)
+        return {
+            "status": "ok",
+            "model": DEFAULT_VQA_MODEL,
+            "adapter_path": VQA_ADAPTER_PATH,
+            "adapter_active": isinstance(model, PeftModel),
+            "load_seconds": load_s,
+        }
+    except VLMUnavailableError as exc:
+        return {"status": "unavailable", "reason": str(exc)}

@@ -6,12 +6,12 @@ dotenv.config();
 
 const ML_SERVICE_BASE_URL = process.env.ML_SERVICE_BASE_URL || 'http://localhost:8000';
 // Per-call timeout in ms. Env-tunable (ML_SERVICE_TIMEOUT_MS) without code
-// changes. Default is 120000ms: demo-safe for slow CPU VLM inference
-// (Qwen2-VL + LoRA can take ~2 minutes on a CPU-only Mac). A timed-out call
-// falls back to a clearly-labeled mock result — callers must treat
-// metadata.mock results as labeled data, never real (the trend route never
-// caches them).
-const DEFAULT_TIMEOUT = Number(process.env.ML_SERVICE_TIMEOUT_MS) || 120000;
+// changes. Default is 600000ms: safe for cold-start CPU VLM inference
+// (Qwen2-VL + LoRA measured ~200s cold / ~117s warm on a CPU-only Mac). A
+// timed-out call falls back to a clearly-labeled mock result — callers must
+// treat metadata.mock results as labeled data, never real (the trend route
+// never caches them).
+const DEFAULT_TIMEOUT = Number(process.env.ML_SERVICE_TIMEOUT_MS) || 600000;
 
 /**
  * Multipart (file-stream) transport definition for Geo/RS endpoints that accept
@@ -309,6 +309,7 @@ export async function callMlService(endpoint, payload, options = {}) {
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
+  activeMlCalls += 1;
 
   try {
     const isFile = isFileEndpoint(endpoint);
@@ -342,9 +343,63 @@ export async function callMlService(endpoint, payload, options = {}) {
     clearTimeout(timer);
     console.warn(`[MLServiceClient] Unable to connect to ML service at ${url} (${err.message}). Using mock result.`);
     return getMockResult(endpoint, payload);
+  } finally {
+    activeMlCalls = Math.max(0, activeMlCalls - 1);
   }
 }
 
+// Number of ML-service calls currently in flight. Used to keep a warmup from
+// contending with a live query: the VLM is single-model and concurrent warmup +
+// inference caused hangs in the past.
+let activeMlCalls = 0;
+let warmupPromise = null;
+
+/**
+ * Warm up the ML service VLM (load base model + LoRA adapter into its
+ * in-memory cache) so the first user query does not pay the cold-start cost.
+ *
+ * Safe: idempotent on the ML side (cached model), serialized here, and skipped
+ * while any other ML call is in flight. Never falls back to mock — the caller
+ * only learns whether the warmup actually happened.
+ */
+export async function warmupMl() {
+  if (warmupPromise) return warmupPromise;
+  if (activeMlCalls > 0) {
+    return { status: 'skipped', reason: 'busy', activeCalls: activeMlCalls };
+  }
+
+  warmupPromise = (async () => {
+    const controller = new AbortController();
+    const timeoutMs = Math.min(DEFAULT_TIMEOUT, 180000);
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    activeMlCalls += 1;
+    try {
+      const url = `${ML_SERVICE_BASE_URL}/vlm/warmup`;
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: '{}',
+        signal: controller.signal
+      });
+      if (!response.ok) {
+        const detail = await response.text().catch(() => '');
+        return { status: 'unavailable', httpStatus: response.status, detail };
+      }
+      const data = await response.json();
+      return { status: 'ok', ...data };
+    } catch (err) {
+      return { status: 'unavailable', reason: err.message };
+    } finally {
+      activeMlCalls = Math.max(0, activeMlCalls - 1);
+    }
+  })().finally(() => {
+    warmupPromise = null;
+  });
+
+  return warmupPromise;
+}
+
 export default {
-  callMlService
+  callMlService,
+  warmupMl
 };
