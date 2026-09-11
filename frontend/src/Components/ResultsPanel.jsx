@@ -13,7 +13,9 @@ import {
   formatValue,
   changeMethodLabel,
   thresholdSourceLabel,
-  changeVerdict
+  changeVerdict,
+  opticalSarSummary,
+  sourceLabel
 } from '../lib/results';
 
 const TOOL_LABELS = {
@@ -159,6 +161,11 @@ export default function ResultsPanel({ query, resultData, onClose, isAnalyzing =
   const confidence = resultData?.confidence != null
     ? `${(Number(resultData.confidence) * 100).toFixed(1)}%`
     : null;
+
+  // Optical + SAR display summary built ONLY from real tool output. The real
+  // tool returns quantitative fusion statistics; the legacy offline mock
+  // returns a semantic land-cover distribution and stays labeled as mock.
+  const osSummary = opticalSarSummary({ toolResults, status, answerText });
 
   // Only finished analysis artifacts count as a result. A bare uploaded-image
   // preview while a request is still pending must NOT read as "Analysis
@@ -316,7 +323,7 @@ export default function ResultsPanel({ query, resultData, onClose, isAnalyzing =
       return isT1 ? 'T1 · Before capture' : 'T2 · After capture';
     }
     if (taskType === 'OPTICAL_SAR') {
-      return info && info.modality === 'sar' ? 'SAR source' : 'Optical source';
+      return info && info.modality === 'sar' ? 'SAR input' : 'Optical input';
     }
     return 'Source imagery';
   }
@@ -325,9 +332,23 @@ export default function ResultsPanel({ query, resultData, onClose, isAnalyzing =
     const parts = [];
     if (info) {
       if (info.source === 'benchmark-upload') parts.push('Uploaded satellite imagery');
-      else if (info.source) parts.push(`Source: ${info.source}`);
-      if (info.modality) parts.push(info.modality.toUpperCase());
+      else if (info.source) parts.push(`Source: ${sourceLabel(info.source)}`);
+      if (info.modality) {
+        parts.push(taskType === 'OPTICAL_SAR'
+          ? (info.modality === 'sar' ? 'SAR · radar backscatter' : 'Optical · multispectral')
+          : info.modality.toUpperCase());
+      }
       if (info.format) parts.push(info.format.toUpperCase());
+      if (taskType === 'OPTICAL_SAR') {
+        if (Array.isArray(info.bands) && info.bands.length > 0) {
+          parts.push(`Bands: ${info.bands.join(', ')}`);
+        }
+        // Filenames come from the tool's own metadata when fusion ran on the
+        // real ML service; nothing is invented when they are absent.
+        const isSar = info.modality === 'sar';
+        const filename = isSar ? osSummary.metadata?.filename_sar : osSummary.metadata?.filename_optical;
+        if (filename) parts.push(filename);
+      }
       if (info.captureDate) parts.push(String(info.captureDate).slice(0, 10));
     }
     return parts.join(' · ');
@@ -758,20 +779,20 @@ export default function ResultsPanel({ query, resultData, onClose, isAnalyzing =
                 <p className="trend-driver-text">{evidence.notes}</p>
               </div>
             ) : null}
-            {!evidence.notes && imageRefs.length > 0 && (
+            {taskType === 'OPTICAL_SAR' && osSummary.succeeded && !isAnalyzing && (
+              <div className="evidence-notes-card">
+                <span className="intel-card-label">COMPLEMENTARY MODALITIES</span>
+                <p className="trend-driver-text">
+                  Optical imagery captures reflected solar radiation for visual spectral evidence, while SAR
+                  uses radar backscatter related to surface structure and moisture — and can see through clouds
+                  and at night. Analysed together, the two inputs provide complementary evidence about the same scene.
+                </p>
+              </div>
+            )}
+            {!evidence.notes && !(taskType === 'OPTICAL_SAR') && imageRefs.length > 0 && (
               <p className="results-empty-state small">
                 No additional supporting evidence was returned by the selected tool.
               </p>
-            )}
-
-            {taskType === 'OPTICAL_SAR' && status === 'failed' && /georeferenc/i.test(String(answerText)) && (
-              <div className="evidence-notes-card warn">
-                <span className="intel-card-label">SAR FUSION REQUIREMENT</span>
-                <p className="trend-driver-text">
-                  Optical + SAR analysis requires georeferenced optical and SAR rasters. The uploaded images
-                  could not be co-registered, so no fusion result was produced.
-                </p>
-              </div>
             )}
           </div>
         )}
@@ -779,7 +800,7 @@ export default function ResultsPanel({ query, resultData, onClose, isAnalyzing =
         {/* Tab 2: Findings */}
         {activeTab === 'answer' && (
           <div className="results-findings-view">
-            {Object.keys(metrics).length > 0 || Object.keys(modelMetadata).length > 0 || severity || (taskType === 'CHANGE_ANALYSIS' && changeSummary) ? (
+            {Object.keys(metrics).length > 0 || Object.keys(modelMetadata).length > 0 || severity || (taskType === 'CHANGE_ANALYSIS' && changeSummary) || (taskType === 'OPTICAL_SAR' && osSummary.succeeded) ? (
               <div className="intel-cards-grid">
                 {taskType === 'CHANGE_ANALYSIS' && changeSummary && (
                   <div className="intel-card">
@@ -828,6 +849,109 @@ export default function ResultsPanel({ query, resultData, onClose, isAnalyzing =
                         </div>
                       )}
                     </div>
+                  </div>
+                )}
+
+                {taskType === 'OPTICAL_SAR' && osSummary.succeeded && (
+                  <div className="intel-card">
+                    <span className="intel-card-label">
+                      {osSummary.mode === 'mock' ? 'REPORTED FUSED RESULT (MOCK)' : 'COMBINED OPTICAL + SAR ANALYSIS'}
+                    </span>
+                    {osSummary.mode === 'mock' ? (
+                      <div className="intel-metrics-rows">
+                        {Object.entries(osSummary.fusedLandCover || {}).map(([key, value]) => (
+                          <div key={key} className="metric-row">
+                            <span className="metric-name">{key}</span>
+                            <span className="metric-val">{formatValue(value, 1)}%</span>
+                          </div>
+                        ))}
+                        {osSummary.summary && (
+                          <div className="metric-row">
+                            <span className="metric-name">Summary</span>
+                            <span className="metric-val">{osSummary.summary}</span>
+                          </div>
+                        )}
+                      </div>
+                    ) : (
+                      <div className="intel-metrics-rows">
+                        {osSummary.alignment && osSummary.alignment.method && (
+                          <div className="metric-row">
+                            <span className="metric-name">Alignment</span>
+                            <span className="metric-val">
+                              {osSummary.alignment.method}
+                              {osSummary.alignment.resampling ? ` · ${osSummary.alignment.resampling}` : ''}
+                            </span>
+                          </div>
+                        )}
+                        {osSummary.crs && typeof osSummary.crs.match === 'boolean' && (
+                          <div className="metric-row">
+                            <span className="metric-name">CRS match</span>
+                            <span className="metric-val">{osSummary.crs.match ? 'Yes' : 'No'}</span>
+                          </div>
+                        )}
+                        {osSummary.overlap && isFiniteNumber(osSummary.overlap.valid_pixels) && (
+                          <div className="metric-row">
+                            <span className="metric-name">Overlapping pixels</span>
+                            <span className="metric-val">
+                              {formatValue(osSummary.overlap.valid_pixels, 0)}
+                              {isFiniteNumber(osSummary.overlap.overlap_ratio)
+                                ? ` (${Math.round(osSummary.overlap.overlap_ratio * 1000) / 10}% of the optical raster)`
+                                : ''}
+                            </span>
+                          </div>
+                        )}
+                        {osSummary.overlap && isFiniteNumber(osSummary.overlap.valid_area_km2) && (
+                          <div className="metric-row">
+                            <span className="metric-name">Valid overlap area</span>
+                            <span className="metric-val">{formatValue(osSummary.overlap.valid_area_km2, 3)} km²</span>
+                          </div>
+                        )}
+                        {osSummary.optical && osSummary.optical.feature_basis && (
+                          <div className="metric-row">
+                            <span className="metric-name">Optical feature</span>
+                            <span className="metric-val">{osSummary.optical.feature_basis}</span>
+                          </div>
+                        )}
+                        {osSummary.sar && (
+                          <div className="metric-row">
+                            <span className="metric-name">SAR band</span>
+                            <span className="metric-val">
+                              {osSummary.sar.band != null ? `Band ${osSummary.sar.band}` : '—'}
+                              {osSummary.sar.speckle_filter ? ` · speckle filter: ${osSummary.sar.speckle_filter}` : ''}
+                            </span>
+                          </div>
+                        )}
+                        {osSummary.fusion && osSummary.fusion.method && (
+                          <div className="metric-row">
+                            <span className="metric-name">Fusion method</span>
+                            <span className="metric-val">
+                              {osSummary.fusion.method}
+                              {isFiniteNumber(osSummary.fusion.optical_weight) && isFiniteNumber(osSummary.fusion.sar_weight)
+                                ? ` (optical ${formatValue(osSummary.fusion.optical_weight, 2)} / SAR ${formatValue(osSummary.fusion.sar_weight, 2)})`
+                                : ''}
+                            </span>
+                          </div>
+                        )}
+                        {osSummary.fusion && isFiniteNumber(osSummary.fusion.combined_mean) && (
+                          <div className="metric-row">
+                            <span className="metric-name">Combined mean</span>
+                            <span className="metric-val">{formatValue(osSummary.fusion.combined_mean, 3)}</span>
+                          </div>
+                        )}
+                        {osSummary.fusion && isFiniteNumber(osSummary.fusion.pearson_correlation) && (
+                          <div className="metric-row">
+                            <span className="metric-name">Optical–SAR correlation</span>
+                            <span className="metric-val">{formatValue(osSummary.fusion.pearson_correlation, 3)}</span>
+                          </div>
+                        )}
+                        {osSummary.warnings.length > 0 && (
+                          <div className="metric-row">
+                            <span className="metric-name">Warnings</span>
+                            <span className="metric-val">{osSummary.warnings.join(' · ')}</span>
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </div>
                 )}
 
