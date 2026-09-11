@@ -65,7 +65,7 @@ export default function GlobeScrollDemo() {
       align: "center" as const,
       actions: [
         { label: "Enter Your Earth", variant: "accent" as const, onClick: goToLogin },
-        { label: "View Documentation", variant: "secondary" as const, onClick: () => console.log("Docs clicked") },
+        { label: "View Documentation", variant: "secondary" as const, onClick: () => window.open("https://github.com/s8tn2546/satQueryAI", "_blank", "noopener") },
       ],
     },
   ];

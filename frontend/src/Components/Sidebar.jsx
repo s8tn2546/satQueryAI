@@ -60,7 +60,8 @@ export default function Sidebar({
   historyError = null, 
   activeHistoryId = null,
   onNewAnalysis, 
-  onSelectHistory 
+  onSelectHistory,
+  onSignOut
 }) {
   const [historyOpen, setHistoryOpen] = useState(true);
   const modeLabel = { single: 'Single Scene', temporal: 'T1 + T2', sar: 'Optical + SAR' };
@@ -189,7 +190,7 @@ export default function Sidebar({
             <ChevronRightIcon size={14} className="sidebar-nav-chevron" />
           </button>
 
-          <button className="sidebar-nav-row">
+          <button className="sidebar-nav-row" onClick={onSignOut} title="Sign out">
             <div className="sidebar-nav-left">
               <LogOutIcon size={16} />
               <span className="sidebar-nav-label">Sign out</span>

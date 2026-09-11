@@ -1,4 +1,5 @@
 import { useState, useCallback, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import GlobeView from './Components/GlobeView';
 import SearchBar from './Components/SearchBar';
 import Sidebar from './Components/Sidebar';
@@ -34,6 +35,7 @@ function getSessionId() {
 }
 
 export default function App() {
+  const navigate = useNavigate();
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [sessionId] = useState(getSessionId);
   const [submitted, setSubmitted] = useState(null);
@@ -248,6 +250,19 @@ export default function App() {
     setSubmittedTileIds([]);
   };
 
+  const handleSignOut = () => {
+    try {
+      window.sessionStorage.removeItem(SESSION_KEY);
+    } catch { /* ignore */ }
+    try {
+      window.localStorage.removeItem('userEmail');
+      window.localStorage.removeItem('rememberMe');
+    } catch { /* ignore */ }
+    setSidebarOpen(false);
+    handleClear();
+    navigate('/login');
+  };
+
   const handleSelectHistory = (item) => {
     if (!item) return;
     setSubmitted(item.queryText || item.query || '');
@@ -349,6 +364,7 @@ export default function App() {
         activeHistoryId={activeHistoryId}
         onNewAnalysis={handleClear}
         onSelectHistory={handleSelectHistory}
+        onSignOut={handleSignOut}
       />
     </div>
   );
