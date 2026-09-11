@@ -42,6 +42,11 @@ export default function App() {
   const [activeHistoryId, setActiveHistoryId] = useState(null);
   const [roiAttachment, setRoiAttachment] = useState(null);
 
+  useEffect(() => {
+    document.body.classList.add('app-route');
+    return () => document.body.classList.remove('app-route');
+  }, []);
+
   const handleCoords = useCallback((c) => setCoords(c), []);
 
   const buildResultData = (res, uploaded) => {
