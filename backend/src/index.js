@@ -9,6 +9,8 @@ import toolsRouter from './routes/tools.js';
 import authRouter from './routes/auth.js';
 import trendRouter from './routes/trend.js';
 import fetchImageryRouter from './routes/fetch-imagery.js';
+import tilesRouter from './routes/tiles.js';
+import mlRouter from './routes/ml.js';
 
 dotenv.config();
 
@@ -30,6 +32,8 @@ app.use('/api/query', queryRouter);
 app.use('/api/tools', toolsRouter);
 app.use('/api/query/trend', trendRouter);
 app.use('/api/images/fetch-by-region', fetchImageryRouter);
+app.use('/api/tiles', tilesRouter);
+app.use('/api/ml', mlRouter);
 
 let server;
 

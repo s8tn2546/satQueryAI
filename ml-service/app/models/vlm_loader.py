@@ -128,6 +128,12 @@ def load_qwen_model(model_name: str = DEFAULT_MODEL, adapter_path: str | None = 
             raise VLMUnavailableError(
                 f"Real VLM inference unavailable: failed to apply LoRA adapter '{adapter_path}': {exc}"
             ) from exc
+    elif adapter_path:
+        logger.warning(
+            "LoRA adapter path configured but not found on disk; running base "
+            "model without adapter: %s",
+            adapter_path,
+        )
 
     if device.type == "cpu":
         model.to(device)

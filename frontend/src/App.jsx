@@ -5,9 +5,17 @@ import Sidebar from './Components/Sidebar';
 import TopBar from './Components/TopBar';
 import ResultsPanel from './Components/ResultsPanel';
 import SidebarIcon from './Components/SidebarIcon';
-import { submitQuery, fetchQueryHistory, uploadImages, fetchRegionImagery } from './services/api';
+import { submitQuery, fetchQueryHistory, uploadImages, fetchRegionImagery, warmupVlm } from './services/api';
 
 const SESSION_KEY = 'satquery.sessionId';
+
+// When a two-image mode is selected but the query text does not already
+// express the task, prepend a minimal honest hint so the deterministic
+// heuristic intent classifier (and any LLM) routes to the right tool.
+const MODE_TASK_HINT = {
+  temporal: { prefix: 'Detect changes between these two images. ', triggers: ['chang', 'between these two', 'bi-temporal'] },
+  sar: { prefix: 'Fuse optical and SAR imagery. ', triggers: ['fus', 'optical'] },
+};
 
 function getSessionId() {
   try {
@@ -41,10 +49,13 @@ export default function App() {
   const [historyError, setHistoryError] = useState(null);
   const [activeHistoryId, setActiveHistoryId] = useState(null);
   const [roiAttachment, setRoiAttachment] = useState(null);
+  // Backend tile IDs resolved for the CURRENT visible result. Persisted in the
+  // Query document (inputRefs), so History restores the same source imagery.
+  const [submittedTileIds, setSubmittedTileIds] = useState([]);
 
   const handleCoords = useCallback((c) => setCoords(c), []);
 
-  const buildResultData = (res, uploaded) => {
+  const buildResultData = (res, uploaded, imageRefs) => {
     const result = res?.result && typeof res.result === 'object' ? res.result : {};
     const boxes = Array.isArray(result.boxes)
       ? result.boxes
@@ -56,11 +67,20 @@ export default function App() {
       boxes,
       trace: res?.executionTrace || [],
       uploadedImages: uploaded,
+      toolResults: Array.isArray(res?.toolResults) ? res.toolResults : [],
+      imageRefs: Array.isArray(imageRefs) ? imageRefs : [],
+      evidence: res?.evidence && typeof res.evidence === 'object' ? res.evidence : null,
+      parameters: res?.parameters && typeof res.parameters === 'object' ? res.parameters : {},
       trendData: res?.trendData || result?.trendData || null,
       metrics: result?.metrics && typeof result.metrics === 'object' ? result.metrics : {},
       modelMetadata: res?.modelMetadata && typeof res.modelMetadata === 'object' ? res.modelMetadata : {},
       severity: res?.severity || null,
       confidence: typeof res?.confidence === 'number' ? res.confidence : null,
+      status: res?.status || null,
+      taskType: res?.taskType || null,
+      isMockResult: Array.isArray(res?.toolResults)
+        ? res.toolResults.some((t) => Boolean(t && t.metadata && t.metadata.mock === true))
+        : false,
     };
   };
 
@@ -108,6 +128,21 @@ export default function App() {
     return () => { cancelled = true; };
   }, [sessionId]);
 
+  // Best-effort VLM warm-up so the first real query does not pay the
+  // cold-start cost. Safe: backend skips it while a query is in flight, and
+  // it never blocks the UI (fire-and-forget, failures ignored silently).
+  useEffect(() => {
+    let cancelled = false;
+    warmupVlm()
+      .then((r) => {
+        if (!cancelled && r && r.status === 'ok') {
+          console.info(`[warmup] VLM ready (model=${r.model}, LoRA active=${r.adapter_active})`);
+        }
+      })
+      .catch(() => { /* warmup is best-effort */ });
+    return () => { cancelled = true; };
+  }, []);
+
   const refreshHistory = async () => {
     if (!sessionId) return;
     setHistoryLoading(true);
@@ -125,11 +160,23 @@ export default function App() {
   const handleSubmit = async (queryText, mode, imgs = []) => {
     const text = (queryText && queryText.trim()) || '';
     if (isLoading || (!text && imgs.length === 0)) return;
-    const finalQuery = text || 'Analyze uploaded satellite imagery';
+
+    const avMode = mode || activeMode;
+    const hint = MODE_TASK_HINT[avMode];
+    const alreadyHints = hint
+      ? hint.triggers.some((t) => text.toLowerCase().includes(t))
+      : true;
+    const finalQuery = `${hint && !alreadyHints ? hint.prefix : ''}${text || 'Analyze uploaded satellite imagery'}`;
+
     if (mode) setActiveMode(mode);
     setAttachedImages(imgs);
     setError(null);
     setSubmitted(finalQuery);
+    // Clear any previous/stale result up front: a completed-looking panel must
+    // never stay visible while the new request is still pending.
+    setResponse(null);
+    setActiveHistoryId(null);
+    setSubmittedTileIds([]);
     setIsLoading(true);
     try {
       // Only real backend Mongo tile IDs (24-hex) may be sent as imageRefs.
@@ -139,7 +186,12 @@ export default function App() {
         try {
           const files = imgs.map((i) => i.file).filter(Boolean);
           if (files.length > 0) {
-            const uploadRes = await uploadImages(files);
+            const uploadRes = await uploadImages(files, {
+              source: 'benchmark-upload',
+              // Declare per-file modality so "Optical + SAR" mode actually
+              // produces one optical + one SAR tile; other modes are optical.
+              modality: avMode === 'sar' ? files.map((_, i) => (i === 0 ? 'optical' : 'sar')) : 'optical',
+            });
             if (uploadRes) {
               const newIds = uploadRes.tileIds || (uploadRes.tileId ? [uploadRes.tileId] : []);
               if (newIds.length > 0) {
@@ -155,13 +207,25 @@ export default function App() {
         }
       }
 
+      // For temporal mode on plain rendered images (PNG/JPEG — no band
+      // metadata), the user must explicitly assert which band to compare;
+      // the ML service refuses to guess band meaning itself. Band 1 is the
+      // visible first channel of a plain image. Labelled/georeferenced
+      // rasters are left alone so the service can match bands by name.
+      const isPlainRaster = imgs.length >= 2
+        ? imgs.every((i) => /\.(png|jpe?g|webp)$/i.test((i && i.name) || (i?.file && i.file.name) || ''))
+        : false;
+      const parameters = { mode: avMode };
+      if (avMode === 'temporal' && isPlainRaster) parameters.band = 1;
+
       const payload = await submitQuery({
         queryText: finalQuery,
         imageRefs: activeTileIds,
-        parameters: { mode: mode || activeMode },
+        parameters,
         sessionId,
       });
       setResponse(payload);
+      setSubmittedTileIds(activeTileIds);
       refreshHistory();
     } catch (err) {
       setError((err && err.message) || 'Something went wrong.');
@@ -176,6 +240,7 @@ export default function App() {
     setResponse(null);
     setError(null);
     setActiveHistoryId(null);
+    setSubmittedTileIds([]);
   };
 
   const handleSelectHistory = (item) => {
@@ -183,6 +248,12 @@ export default function App() {
     setSubmitted(item.queryText || item.query || '');
     setError(null);
     setActiveHistoryId(item._id || item.id || null);
+    // Restore the SAME analytical context: source imagery (persisted tile ids),
+    // findings, evidence, trend state, trace, confidence.
+    const inputRefs = Array.isArray(item.inputRefs)
+      ? item.inputRefs
+      : (item.evidence && Array.isArray(item.evidence.images) ? item.evidence.images : []);
+    setSubmittedTileIds(inputRefs);
     if (item.result || item.answerText) {
       const { result, answerText, taskType, status, plan, toolResults, evidence, confidence,
         confidenceSignals, executionTrace, parameters } = item;
@@ -198,6 +269,7 @@ export default function App() {
         confidenceSignals,
         executionTrace,
         parameters,
+        _id: item._id,
       });
     }
   };
@@ -235,22 +307,6 @@ export default function App() {
               onClearRoi={handleClearRoi}
             />
 
-            {isLoading && !response && (
-              <div className="search-result search-result-loading">
-                <div className="search-result-header">
-                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <circle cx="11" cy="11" r="8" />
-                    <line x1="21" y1="21" x2="16.65" y2="16.65" />
-                  </svg>
-                  <span className="search-result-query">{submitted}</span>
-                  <span className="search-result-confidence">Analyzing</span>
-                </div>
-                <p className="search-result-text">
-                  Running the agent pipeline for "{submitted}"... Results will appear here.
-                </p>
-              </div>
-            )}
-
             {error && (
               <div className="search-result search-result-error">
                 <div className="search-result-header">
@@ -269,8 +325,9 @@ export default function App() {
           {submitted && (
             <ResultsPanel
               query={submitted}
-              resultData={response ? buildResultData(response, attachedImages) : (attachedImages.length > 0 ? { uploadedImages: attachedImages } : null)}
+              resultData={response ? buildResultData(response, attachedImages, submittedTileIds) : (attachedImages.length > 0 ? { uploadedImages: attachedImages } : null)}
               onClose={handleClear}
+              isAnalyzing={isLoading}
             />
           )}
         </div>

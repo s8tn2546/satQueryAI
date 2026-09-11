@@ -117,19 +117,29 @@ function mockClassify(queryText, imageCount) {
     return { taskType: 'CHANGE_ANALYSIS', toolNames: ['change', 'area'], parameters: {} };
   }
 
+  // ---- Pair-task queries take precedence over description ----
+  // A phrase like "identify land cover" also matches the CAPTION heuristic
+  // below; when change or optical+SAR fusion is also present, the pair task
+  // must win so the two uploaded images are actually compared.
+  if (q.includes('changed') || q.includes('change') || q.includes('between these two') || q.includes('bi-temporal') || q.includes('built-up area') || q.includes('increased') || q.includes('decreased')) {
+    return { taskType: 'CHANGE_ANALYSIS', toolNames: ['change'], parameters: {} };
+  }
+  if (q.includes('optical') && q.includes('sar') || q.includes('fus') || q.includes('built-up and water')) {
+    return { taskType: 'OPTICAL_SAR', toolNames: ['optical_sar'], parameters: {} };
+  }
+
   // ---- Single-tool classification ----
+  // Yes/no visual questions ("Is/Are/Does ... ?") are VQA even when they use
+  // descriptive words like "visible" that would otherwise match CAPTION.
+  if (/^\s*(?:is|are|does|do|was|were)\b/i.test(q.trim()) && /[?]$/.test(q.trim())) {
+    return { taskType: 'VQA', toolNames: ['vqa'], parameters: { question: queryText } };
+  }
   if (q.includes('caption') || q.includes('describe') || q.includes('land-cover') || q.includes('land cover') || q.includes('visible')) {
     return { taskType: 'CAPTION', toolNames: ['caption'], parameters: {} };
   }
   if (q.includes('highlight') || q.includes('locate') || q.includes('ground') || q.includes('where is') || q.includes('find the')) {
     const targetMatch = q.match(/highlight (?:the )?(.+?) (?:referred|in|on)/i);
     return { taskType: 'GROUNDING', toolNames: ['ground'], parameters: { target: targetMatch?.[1] || 'feature' } };
-  }
-  if (q.includes('changed') || q.includes('change') || q.includes('between these two') || q.includes('bi-temporal') || q.includes('built-up area') || q.includes('increased') || q.includes('decreased')) {
-    return { taskType: 'CHANGE_ANALYSIS', toolNames: ['change'], parameters: {} };
-  }
-  if (q.includes('optical') && q.includes('sar') || q.includes('fus') || q.includes('built-up and water')) {
-    return { taskType: 'OPTICAL_SAR', toolNames: ['optical_sar'], parameters: {} };
   }
   if (q.includes('ndvi') || q.includes('vegetation index')) {
     return { taskType: 'NDVI', toolNames: ['ndvi'], parameters: {} };

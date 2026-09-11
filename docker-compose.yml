@@ -62,7 +62,7 @@ services:
       PORT: 5000
       MONGODB_URI: mongodb://mongodb:27017/satquery
       ML_SERVICE_BASE_URL: http://ml:8000
-      ML_SERVICE_TIMEOUT_MS: ${ML_SERVICE_TIMEOUT_MS:-120000}
+      ML_SERVICE_TIMEOUT_MS: ${ML_SERVICE_TIMEOUT_MS:-600000}
       JWT_SECRET: ${JWT_SECRET:-satquery-dev-secret}
       LLM_API_KEY: ${LLM_API_KEY:-}
       LLM_PROVIDER: ${LLM_PROVIDER:-openai}
