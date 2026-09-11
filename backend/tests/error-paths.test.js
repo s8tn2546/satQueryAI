@@ -326,7 +326,7 @@ describe('Error Path Response Validation', () => {
           imageRefs: 'not-an-array'
         });
 
-      expect(res.status).toBe(200);
+      expect(res.status).toBe(400);
       assertValidResponseShape(res.body);
     });
 
@@ -338,7 +338,7 @@ describe('Error Path Response Validation', () => {
           imageRefs: ['invalid-id', 'also-invalid']
         });
 
-      expect(res.status).toBe(200);
+      expect(res.status).toBe(400);
       assertValidResponseShape(res.body);
     });
   });

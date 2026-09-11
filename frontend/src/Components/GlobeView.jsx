@@ -53,7 +53,7 @@ const CheckIcon = ({ size = 12, ...props }) => (
   </svg>
 );
 
-export default function GlobeView({ onCoordsChange, activeQuery, onRegionSelect }) {
+export default function GlobeView({ onCoordsChange, onRegionSelect }) {
   const [isLoading, setIsLoading] = useState(true);
   const [locationLabel, setLocationLabel] = useState(null);
   const [isDrawMode, setIsDrawMode] = useState(false);
@@ -63,13 +63,12 @@ export default function GlobeView({ onCoordsChange, activeQuery, onRegionSelect 
   const [searchQuery, setSearchQuery] = useState('');
   const [searchLoading, setSearchLoading] = useState(false);
   const [searchMsg, setSearchMsg] = useState(null);
+  const [baseLayersList, setBaseLayersList] = useState([]);
   const containerRef = useRef(null);
   const viewerRef = useRef(null);
   const lastTouchDist = useRef(null);
-  const markerRef = useRef(null);
   const roiEntityRef = useRef(null);
   const drawHandlerRef = useRef(null);
-  const baseLayersRef = useRef([]);
 
   // Helper to get ground Cartographic coordinate from mouse click/move
   const getGroundPosition = (position) => {
@@ -424,7 +423,9 @@ export default function GlobeView({ onCoordsChange, activeQuery, onRegionSelect 
       }),
     ];
 
-    baseLayersRef.current = baseLayers;
+    setTimeout(() => {
+      setBaseLayersList(baseLayers);
+    }, 0);
 
     const viewer = new Cesium.Viewer('cesiumContainer', {
       animation: false,
@@ -486,67 +487,6 @@ export default function GlobeView({ onCoordsChange, activeQuery, onRegionSelect 
     viewer.resolutionScale = window.devicePixelRatio;
     viewer.scene.globe.maximumScreenSpaceError = 1.2;
 
-    const reverseGeocode = async (lat, lon) => {
-      try {
-        const res = await fetch(
-          `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lon}&format=json`,
-          { headers: { 'Accept-Language': 'en' } }
-        );
-        const data = await res.json();
-        const a = data.address || {};
-        return a.city || a.town || a.village || a.county || a.state || data.display_name || null;
-      } catch {
-        return null;
-      }
-    };
-
-    const flyToLocation = (lon, lat, label) => {
-      if (viewer.isDestroyed()) return;
-      if (label) setLocationLabel(label);
-
-      viewer.camera.flyTo({
-        destination: Cesium.Cartesian3.fromDegrees(lon, lat, 28000000),
-        orientation: {
-          heading: Cesium.Math.toRadians(0.0),
-          pitch: Cesium.Math.toRadians(-90.0),
-          roll: 0.0,
-        },
-        duration: 1.2,
-        complete: () => {
-          if (viewer.isDestroyed()) return;
-          const camera = viewer.camera;
-          const shift = Cesium.Cartesian3.multiplyByScalar(camera.up, -6.0e5, new Cesium.Cartesian3());
-          camera.position = Cesium.Cartesian3.add(camera.position, shift, new Cesium.Cartesian3());
-
-          viewer.camera.flyTo({
-            destination: Cesium.Cartesian3.fromDegrees(lon, lat, 180000),
-            orientation: {
-              heading: Cesium.Math.toRadians(0.0),
-              pitch: Cesium.Math.toRadians(-55.0),
-              roll: 0.0,
-            },
-            duration: 2.2,
-            easingFunction: Cesium.EasingFunction.QUADRATIC_IN_OUT,
-            complete: () => {
-              if (viewer.scene.requestRenderMode) viewer.scene.requestRender();
-              setTimeout(() => setLocationLabel(null), 3000);
-            },
-          });
-        },
-      });
-    };
-
-    const geoAndFly = async () => {
-      navigator.geolocation.getCurrentPosition(
-        async (pos) => {
-          const { latitude: lat, longitude: lon } = pos.coords;
-          const label = await reverseGeocode(lat, lon);
-          flyToLocation(lon, lat, label);
-        },
-        () => flyToLocation(78.9629, 20.5937, null)
-      );
-    };
-
     viewer.camera.setView({
       destination: Cesium.Cartesian3.fromDegrees(78.9629, 20.5937, 24000000),
       orientation: {
@@ -555,20 +495,6 @@ export default function GlobeView({ onCoordsChange, activeQuery, onRegionSelect 
         roll: 0.0,
       },
     });
-
-    const resetToHomeView = () => {
-      if (viewer.isDestroyed()) return;
-      setLocationLabel(null);
-      viewer.camera.flyTo({
-        destination: Cesium.Cartesian3.fromDegrees(78.9629, 20.5937, 24000000),
-        orientation: {
-          heading: Cesium.Math.toRadians(0.0),
-          pitch: Cesium.Math.toRadians(-90.0),
-          roll: 0.0,
-        },
-        duration: 1.4,
-      });
-    };
 
     const removeCoordListener = viewer.scene.postRender.addEventListener(() => {
       if (!onCoordsChange) return;
@@ -765,7 +691,7 @@ export default function GlobeView({ onCoordsChange, activeQuery, onRegionSelect 
               </button>
             </div>
             <div className="basemap-popup-list">
-              {baseLayersRef.current.map((vm) => (
+              {baseLayersList.map((vm) => (
                 <button
                   key={vm.name}
                   type="button"

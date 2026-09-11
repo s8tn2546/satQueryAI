@@ -82,6 +82,21 @@ const useControlGlow = () => {
   return { controlRef, glowRef, onGlowMove, onGlowEnter, onGlowLeave };
 };
 
+function getRoiMeta(roi) {
+  if (!roi) return null;
+  const name = roi.name || 'Globe Region ROI';
+  let areaText = '';
+  if (roi.bounds && Array.isArray(roi.bounds) && roi.bounds.length === 4) {
+    const [w, s, e, n] = roi.bounds;
+    const latRad = ((s + n) / 2) * (Math.PI / 180);
+    const widthKm = Math.abs(e - w) * 111.32 * Math.cos(latRad);
+    const heightKm = Math.abs(n - s) * 111.32;
+    const area = (widthKm * heightKm).toFixed(2);
+    areaText = `${area} km²`;
+  }
+  return { name, areaText };
+}
+
 export default function SearchBar({ 
   onSubmit, 
   onClear, 
@@ -98,8 +113,21 @@ export default function SearchBar({
   const [uploadError, setUploadError] = useState(null);
   const inputRef = useRef(null);
   const fileInputRef = useRef(null);
-  const submitGlow = useControlGlow();
-  const plusGlow = useControlGlow();
+  const {
+    controlRef: submitControlRef,
+    glowRef: submitGlowRef,
+    onGlowMove: onSubmitGlowMove,
+    onGlowEnter: onSubmitGlowEnter,
+    onGlowLeave: onSubmitGlowLeave,
+  } = useControlGlow();
+
+  const {
+    controlRef: plusControlRef,
+    glowRef: plusGlowRef,
+    onGlowMove: onPlusGlowMove,
+    onGlowEnter: onPlusGlowEnter,
+    onGlowLeave: onPlusGlowLeave,
+  } = useControlGlow();
 
   const handleFileChange = (e) => {
     const files = Array.from(e.target.files || []);
@@ -175,16 +203,16 @@ export default function SearchBar({
       <div className="composer-row w-full">
         <button
           type="button"
-          ref={plusGlow.controlRef}
+          ref={plusControlRef}
           className="composer-plus"
-          onMouseMove={plusGlow.onGlowMove}
-          onMouseEnter={plusGlow.onGlowEnter}
-          onMouseLeave={plusGlow.onGlowLeave}
+          onMouseMove={onPlusGlowMove}
+          onMouseEnter={onPlusGlowEnter}
+          onMouseLeave={onPlusGlowLeave}
           onClick={() => fileInputRef.current && fileInputRef.current.click()}
           title="Upload imagery"
           disabled={disabled}
         >
-          <span ref={plusGlow.glowRef} className="composer-btn-glow" />
+          <span ref={plusGlowRef} className="composer-btn-glow" />
           <PlusIcon />
         </button>
 
@@ -225,16 +253,16 @@ export default function SearchBar({
 
         <button
           type="button"
-          ref={submitGlow.controlRef}
+          ref={submitControlRef}
           className="composer-submit"
-          onMouseMove={submitGlow.onGlowMove}
-          onMouseEnter={submitGlow.onGlowEnter}
-          onMouseLeave={submitGlow.onGlowLeave}
+          onMouseMove={onSubmitGlowMove}
+          onMouseEnter={onSubmitGlowEnter}
+          onMouseLeave={onSubmitGlowLeave}
           onMouseDown={(e) => { e.preventDefault(); handleSearch(); }}
           disabled={disabled}
           title="Search"
         >
-          <span ref={submitGlow.glowRef} className="composer-btn-glow" />
+          <span ref={submitGlowRef} className="composer-btn-glow" />
           <ArrowUpIcon />
         </button>
 
@@ -251,19 +279,24 @@ export default function SearchBar({
       {(images.length > 0 || roiAttachment) && (
         <div className="composer-files-wrap w-full">
           <div className="composer-files">
-            {roiAttachment && (
-              <span className="composer-file-chip roi-chip">
-                <span className="composer-file-name">{roiAttachment.name || 'Globe Region ROI'}</span>
-                <button
-                  type="button"
-                  className="composer-file-remove"
-                  onClick={onClearRoi}
-                  aria-label="Remove ROI region"
-                >
-                  <XIcon />
-                </button>
-              </span>
-            )}
+            {roiAttachment && (() => {
+              const meta = getRoiMeta(roiAttachment);
+              return (
+                <span className="composer-file-chip roi-chip flex items-center gap-1.5 px-2.5 py-1 bg-cyan-950/60 border border-cyan-500/40 rounded-full text-xs text-cyan-200">
+                  <span className="w-2 h-2 rounded-full bg-cyan-400 animate-pulse" />
+                  <span className="composer-file-name font-mono">{meta.name}</span>
+                  {meta.areaText && <span className="text-[10px] text-cyan-300/80 font-mono">({meta.areaText})</span>}
+                  <button
+                    type="button"
+                    className="composer-file-remove ml-1 hover:text-white"
+                    onClick={onClearRoi}
+                    aria-label="Remove ROI region"
+                  >
+                    <XIcon />
+                  </button>
+                </span>
+              );
+            })()}
             {images.map((img) => (
               <span key={img.id} className="composer-file-chip">
                 <span className="composer-file-name">{img.name}</span>

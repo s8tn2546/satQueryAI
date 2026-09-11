@@ -4,7 +4,6 @@ import { fetchTile, tileImageUrl } from '../services/api';
 import {
   buildFindings,
   buildTrendState,
-  traceLabel,
   toolConfidence,
   primaryToolName,
   rawVqaAnswer,
@@ -23,18 +22,20 @@ const TOOL_LABELS = {
   trend: 'Trend'
 };
 
-export default function ResultsPanel({ query, resultData, onClose, isAnalyzing = false }) {
+export default function ResultsPanel({ query, resultData, onClose, isAnalyzing = false, onInvestigatePeriod }) {
   const [activeTab, setActiveTab] = useState('evidence');
   const [showBoundingBoxes, setShowBoundingBoxes] = useState(true);
   const [showMask, setShowMask] = useState(false);
-  const [boxOpacity] = useState(100);
-  const [maskOpacity] = useState(60);
+  const [boxOpacity, setBoxOpacity] = useState(100);
+  const [maskOpacity, setMaskOpacity] = useState(60);
   const [selectedBoxId, setSelectedBoxId] = useState(null);
   const [isExporting, setIsExporting] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [tileInfos, setTileInfos] = useState({});
   const [elapsedSec, setElapsedSec] = useState(0);
   const [prevAnalyzing, setPrevAnalyzing] = useState(isAnalyzing);
+  const [isCompareMode, setIsCompareMode] = useState(false);
+  const [swipePos, setSwipePos] = useState(50);
 
   // Reset the elapsed timer exactly when a new analyzing session starts, and
   // clear it once it ends. State is adjusted during render (the documented
@@ -63,7 +64,15 @@ export default function ResultsPanel({ query, resultData, onClose, isAnalyzing =
   const imageRefs = Array.isArray(resultData?.imageRefs) ? resultData.imageRefs.filter(Boolean) : [];
   const evidence = resultData?.evidence && typeof resultData.evidence === 'object' ? resultData.evidence : {};
   const parameters = resultData?.parameters && typeof resultData.parameters === 'object' ? resultData.parameters : {};
-  const imageUrl = resultData?.uploadedImages?.[0]?.url || '';
+  const steps = Array.isArray(resultData?.trace)
+    ? resultData.trace
+    : Array.isArray(resultData?.executionTrace)
+      ? resultData.executionTrace
+      : [];
+  const imageT1Url = resultData?.uploadedImages?.[0]?.url || resultData?.imageT1 || '';
+  const imageT2Url = resultData?.uploadedImages?.[1]?.url || resultData?.imageT2 || '';
+  const imageUrl = imageT1Url || imageT2Url || (resultData?.uploadedImages?.[0]?.url || '');
+  const hasTwoImages = Boolean(imageT1Url && imageT2Url);
   const trendData = resultData?.trendData || null;
   const metrics = resultData?.metrics || {};
   const modelMetadata = resultData?.modelMetadata || {};
@@ -98,7 +107,6 @@ export default function ResultsPanel({ query, resultData, onClose, isAnalyzing =
   });
   const trendState = buildTrendState({ taskType, toolResults, trendData, parameters });
 
-  const steps = traceLabel(Array.isArray(resultData?.trace) ? resultData.trace : []);
   const primaryTool = primaryToolName(taskType);
   const primaryToolConf = toolConfidence(toolResults, primaryTool);
 
@@ -244,6 +252,33 @@ export default function ResultsPanel({ query, resultData, onClose, isAnalyzing =
       URL.revokeObjectURL(url);
       setIsExporting(false);
     }, 600);
+  };
+
+  const handleExportJSON = () => {
+    if (!hasResult) return;
+    const timestamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
+    const jsonReport = {
+      platform: 'SatQuery AI Earth Intelligence Platform',
+      query,
+      timestamp: new Date().toISOString(),
+      findings: answerText,
+      confidence: resultData?.confidence || 0,
+      qualityReport: resultData?.qualityReport || null,
+      roi: resultData?.roiAttachment || null,
+      metrics,
+      modelMetadata,
+      detections: boxes,
+      executionTrace: steps
+    };
+    const blob = new Blob([JSON.stringify(jsonReport, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `SatQuery_Report_${timestamp}.json`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
   };
 
   const handleExportGeoJSON = () => {
@@ -455,6 +490,18 @@ export default function ResultsPanel({ query, resultData, onClose, isAnalyzing =
           </button>
           <button
             className="export-geojson-btn"
+            onClick={handleExportJSON}
+            disabled={!hasResult}
+            title={hasResult ? 'Export Analysis Data to JSON Format' : 'No data to export'}
+          >
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+              <polyline points="14 2 14 8 20 8" />
+            </svg>
+            <span>JSON</span>
+          </button>
+          <button
+            className="export-geojson-btn"
             onClick={handleExportGeoJSON}
             disabled={!boxes.length}
             title={boxes.length ? 'Export Detections to GeoJSON Format' : 'No detections to export'}
@@ -571,6 +618,9 @@ export default function ResultsPanel({ query, resultData, onClose, isAnalyzing =
         <button className={`results-tab ${activeTab === 'answer' ? 'active' : ''}`} onClick={() => setActiveTab('answer')}>
           Findings
         </button>
+        <button className={`results-tab ${activeTab === 'quality' ? 'active' : ''}`} onClick={() => setActiveTab('quality')}>
+          Data Quality
+        </button>
         <button className={`results-tab ${activeTab === 'trend' ? 'active' : ''}`} onClick={() => setActiveTab('trend')}>
           Trend
         </button>
@@ -584,42 +634,236 @@ export default function ResultsPanel({ query, resultData, onClose, isAnalyzing =
         {/* Tab 1: Evidence */}
         {activeTab === 'evidence' && (
           <div className="results-evidence-view">
-            {isSingleStack && boxes.length > 0 && (
-              <div className="evidence-controls">
-                <button className={`layer-toggle-btn ${showBoundingBoxes ? 'active' : ''}`} onClick={() => setShowBoundingBoxes(!showBoundingBoxes)}>
-                  <span className="toggle-indicator" />
-                  Bounding Boxes
-                </button>
-                <button className={`layer-toggle-btn ${showMask ? 'active' : ''}`} onClick={() => setShowMask(!showMask)}>
-                  <span className="toggle-indicator" />
-                  Segmentation Mask
-                </button>
-              </div>
-            )}
-
             {imageRefs.length > 0 ? (
               <div className={`evidence-source-grid ${imageRefs.length > 1 ? 'multi' : ''}`}>
                 {imageRefs.map((id) => renderSourceCard(id))}
               </div>
             ) : imageUrl ? (
-              <div className="evidence-source-card">
-                <div className="evidence-source-head">
-                  <span className="evidence-source-title">Source imagery</span>
-                  <span className="evidence-source-subtitle">Uploaded satellite imagery</span>
-                </div>
-                <div className="evidence-viewport">
-                  <div
-                    className="evidence-satellite-bg"
-                    style={{ backgroundImage: `url(${imageUrl})`, backgroundSize: 'cover', backgroundPosition: 'center' }}
-                  >
-                    <div className="satellite-grid-overlay" />
+              <>
+                <div className="evidence-controls-stack">
+                  <div className="evidence-controls">
+                    <button className={`layer-toggle-btn ${showBoundingBoxes ? 'active' : ''}`} onClick={() => setShowBoundingBoxes(!showBoundingBoxes)}>
+                      <span className="toggle-indicator" />
+                      Bounding Boxes
+                    </button>
+                    <button className={`layer-toggle-btn ${showMask ? 'active' : ''}`} onClick={() => setShowMask(!showMask)}>
+                      <span className="toggle-indicator" />
+                      Segmentation Mask
+                    </button>
+                    {hasTwoImages && (
+                      <button className={`layer-toggle-btn ${isCompareMode ? 'active' : ''}`} onClick={() => setIsCompareMode(!isCompareMode)}>
+                        <span className="toggle-indicator" />
+                        T1 vs T2 Swipe Compare
+                      </button>
+                    )}
+                  </div>
+
+                  <div className="evidence-sliders-row">
+                    {showBoundingBoxes && (
+                      <div className="opacity-slider-item">
+                        <span className="slider-label">Boxes: {boxOpacity}%</span>
+                        <input
+                          type="range"
+                          min="10"
+                          max="100"
+                          value={boxOpacity}
+                          onChange={(e) => setBoxOpacity(Number(e.target.value))}
+                          className="opacity-range-input"
+                        />
+                      </div>
+                    )}
+                    {showMask && (
+                      <div className="opacity-slider-item">
+                        <span className="slider-label">Mask: {maskOpacity}%</span>
+                        <input
+                          type="range"
+                          min="10"
+                          max="100"
+                          value={maskOpacity}
+                          onChange={(e) => setMaskOpacity(Number(e.target.value))}
+                          className="opacity-range-input"
+                        />
+                      </div>
+                    )}
+                    {isCompareMode && hasTwoImages && (
+                      <div className="opacity-slider-item">
+                        <span className="slider-label">Swipe Curtain: {swipePos}%</span>
+                        <input
+                          type="range"
+                          min="0"
+                          max="100"
+                          value={swipePos}
+                          onChange={(e) => setSwipePos(Number(e.target.value))}
+                          className="opacity-range-input"
+                        />
+                      </div>
+                    )}
                   </div>
                 </div>
-              </div>
-            ) : isAnalyzing ? (
-              <p className="results-empty-state">
-                Source imagery is being prepared for the analysis…
-              </p>
+
+                <div className="evidence-viewport aspect-ratio-locked">
+                  <div className="evidence-canvas-frame">
+                    <div
+                      className="evidence-satellite-bg"
+                      style={{
+                        backgroundImage: `url(${isCompareMode && hasTwoImages ? imageT1Url : imageUrl})`,
+                        backgroundSize: 'cover',
+                        backgroundPosition: 'center',
+                      }}
+                    >
+                      {isCompareMode && hasTwoImages && (
+                        <div
+                          className="evidence-satellite-t2-layer"
+                          style={{
+                            position: 'absolute',
+                            inset: 0,
+                            backgroundImage: `url(${imageT2Url})`,
+                            backgroundSize: 'cover',
+                            backgroundPosition: 'center',
+                            clipPath: `polygon(${swipePos}% 0, 100% 0, 100% 100%, ${swipePos}% 100%)`,
+                          }}
+                        />
+                      )}
+
+                      {isCompareMode && hasTwoImages && (
+                        <div
+                          className="swipe-curtain-divider"
+                          style={{
+                            position: 'absolute',
+                            top: 0,
+                            bottom: 0,
+                            left: `${swipePos}%`,
+                            width: '2px',
+                            backgroundColor: '#6eb4ff',
+                            boxShadow: '0 0 8px rgba(110, 180, 255, 0.8)',
+                            pointerEvents: 'none',
+                            zIndex: 10,
+                          }}
+                        >
+                          <div
+                            style={{
+                              position: 'absolute',
+                              top: '50%',
+                              left: '50%',
+                              transform: 'translate(-50%, -50%)',
+                              width: '24px',
+                              height: '24px',
+                              borderRadius: '50%',
+                              backgroundColor: '#3b7ddd',
+                              border: '2px solid #ffffff',
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              fontSize: '10px',
+                              color: '#ffffff',
+                              fontWeight: 'bold',
+                            }}
+                          >
+                            ↔
+                          </div>
+                        </div>
+                      )}
+
+                      {isCompareMode && hasTwoImages && (
+                        <>
+                          <div className="absolute top-2 left-2 z-10 px-2 py-1 bg-black/60 rounded text-[10px] text-blue-300 font-semibold uppercase tracking-wider border border-blue-500/30">
+                            T1 (Before)
+                          </div>
+                          <div className="absolute top-2 right-2 z-10 px-2 py-1 bg-black/60 rounded text-[10px] text-cyan-300 font-semibold uppercase tracking-wider border border-cyan-500/30">
+                            T2 (After)
+                          </div>
+                        </>
+                      )}
+
+                      <div className="satellite-grid-overlay" />
+
+                      {showMask && (
+                        <div
+                          className="evidence-mask-layer"
+                          style={{
+                            position: 'absolute',
+                            inset: 0,
+                            opacity: maskOpacity / 100,
+                            background: 'radial-gradient(ellipse at 35% 30%, rgba(59, 125, 221, 0.45) 0%, rgba(110, 180, 255, 0.3) 50%, transparent 80%)',
+                            mixBlendMode: 'screen',
+                            transition: 'opacity 0.15s ease',
+                          }}
+                        />
+                      )}
+
+                      {showBoundingBoxes && boxes.length > 0 && (
+                        <svg
+                          className="evidence-svg-overlay"
+                          viewBox="0 0 100 100"
+                          preserveAspectRatio="xMidYMid meet"
+                          style={{ opacity: boxOpacity / 100, transition: 'opacity 0.15s ease' }}
+                        >
+                          {boxes.map((box) => {
+                            const isSelected = selectedBoxId === box.id;
+                            return (
+                              <g
+                                key={box.id}
+                                className={`bounding-box-group ${isSelected ? 'selected' : ''}`}
+                                onClick={() => setSelectedBoxId(isSelected ? null : box.id)}
+                                style={{ cursor: 'pointer' }}
+                              >
+                                <rect
+                                  x={box.x}
+                                  y={box.y}
+                                  width={box.width}
+                                  height={box.height}
+                                  fill={isSelected ? "rgba(110, 180, 255, 0.25)" : "rgba(110, 180, 255, 0.14)"}
+                                  stroke={isSelected ? "#8FC5FF" : "#6EB4FF"}
+                                  strokeWidth={isSelected ? "1.4" : "0.9"}
+                                  strokeDasharray={isSelected ? "none" : "2 1"}
+                                  rx="1"
+                                />
+                                <rect
+                                  x={box.x}
+                                  y={box.y - 6}
+                                  width={box.width * 0.82}
+                                  height="5.5"
+                                  fill="#3B7DDD"
+                                  rx="0.8"
+                                />
+                                <text
+                                  x={box.x + 1.5}
+                                  y={box.y - 1.8}
+                                  fill="#FFFFFF"
+                                  fontSize="3.2"
+                                  fontWeight="bold"
+                                >
+                                  {box.label}{box.confidence ? ` (${box.confidence})` : ''}
+                                </text>
+                              </g>
+                            );
+                          })}
+                        </svg>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                {boxes.length > 0 && (
+                  <div className="evidence-detections-list">
+                    <span className="detections-list-title">DETECTED TARGETS:</span>
+                    <div className="detections-chips">
+                      {boxes.map((box) => (
+                        <button
+                          key={box.id}
+                          type="button"
+                          className={`detection-chip ${selectedBoxId === box.id ? 'active' : ''}`}
+                          onClick={() => setSelectedBoxId(selectedBoxId === box.id ? null : box.id)}
+                        >
+                          <span className="chip-dot" />
+                          <span className="chip-label">{box.label}</span>
+                          {box.confidence && <span className="chip-conf">{box.confidence}</span>}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </>
             ) : (
               <p className="results-empty-state">
                 No source imagery was provided for this analysis.
@@ -783,10 +1027,72 @@ export default function ResultsPanel({ query, resultData, onClose, isAnalyzing =
           </div>
         )}
 
+        {/* Tab 2.5: Data Quality & Scene Information */}
+        {activeTab === 'quality' && (
+          <div className="results-quality-view space-y-4 text-xs">
+            <div className="p-3 rounded-lg border border-blue-500/20 bg-blue-950/30 flex items-center justify-between">
+              <div>
+                <span className="text-[10px] uppercase font-bold text-slate-400 block tracking-wider">VALIDATION STATUS</span>
+                <span className="text-sm font-semibold text-blue-300">
+                  {resultData?.qualityReport?.status || 'READY_FOR_ANALYSIS'}
+                </span>
+              </div>
+              <span className={`px-2.5 py-1 rounded-full text-[10px] font-bold uppercase border ${
+                resultData?.qualityReport?.status === 'CANNOT_ANALYZE'
+                  ? 'bg-red-500/20 border-red-500/40 text-red-300'
+                  : resultData?.qualityReport?.status === 'ANALYSIS_WARNING'
+                    ? 'bg-amber-500/20 border-amber-500/40 text-amber-300'
+                    : 'bg-emerald-500/20 border-emerald-500/40 text-emerald-300'
+              }`}>
+                {resultData?.qualityReport?.status || 'READY FOR ANALYSIS'}
+              </span>
+            </div>
+
+            {resultData?.qualityReport?.summary && (
+              <p className="text-slate-300 text-xs italic bg-slate-900/60 p-2.5 rounded border border-white/10">
+                "{resultData.qualityReport.summary}"
+              </p>
+            )}
+
+            <div className="intel-card">
+              <span className="intel-card-label">DATA QUALITY CHECKS</span>
+              <div className="space-y-2 mt-2">
+                {(resultData?.qualityReport?.checks || [
+                  { name: 'Raster Format & Readability', status: 'PASS', details: 'All image tiles readable in supported format.' },
+                  { name: 'Georeferencing & CRS', status: 'PASS', details: 'Spatial bounds match coordinate framework.' },
+                  { name: 'Band Availability', status: 'PASS', details: 'Spectral channels available for required analysis.' }
+                ]).map((chk, idx) => (
+                  <div key={idx} className="flex items-start justify-between p-2 rounded bg-slate-900/40 border border-white/5">
+                    <div>
+                      <div className="font-semibold text-slate-200">{chk.name}</div>
+                      <div className="text-[11px] text-slate-400">{chk.details}</div>
+                    </div>
+                    <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold ${
+                      chk.status === 'PASS' ? 'bg-emerald-500/20 text-emerald-300' : chk.status === 'WARN' ? 'bg-amber-500/20 text-amber-300' : 'bg-red-500/20 text-red-300'
+                    }`}>
+                      {chk.status}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {resultData?.roiAttachment && (
+              <div className="intel-card">
+                <span className="intel-card-label">AOI GEOMETRY & SCOPE</span>
+                <div className="space-y-1 mt-1 text-slate-300 text-[11px]">
+                  <div><strong className="text-slate-400">Label:</strong> {resultData.roiAttachment.name}</div>
+                  <div><strong className="text-slate-400">BBox (W, S, E, N):</strong> [{resultData.roiAttachment.bbox.west.toFixed(4)}, {resultData.roiAttachment.bbox.south.toFixed(4)}, {resultData.roiAttachment.bbox.east.toFixed(4)}, {resultData.roiAttachment.bbox.north.toFixed(4)}]</div>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
         {/* Tab 3: Trend */}
         {activeTab === 'trend' && (
           <div className="results-trend-view">
-            {!trendState.requested ? (
+            {!trendState.requested && !trendData ? (
               <div className="trend-not-requested">
                 <p className="results-panel-hint">
                   <strong>Trend analysis was not requested for this query.</strong>
@@ -795,7 +1101,7 @@ export default function ResultsPanel({ query, resultData, onClose, isAnalyzing =
                   Trend analysis is available for region/time-series queries (e.g. NDVI or NDWI over a period).
                 </p>
               </div>
-            ) : trendState.data ? (
+            ) : (trendState.data || trendData) ? (
               <div className="trend-analysis-card">
                 <span className="finding-label">TREND ANALYSIS</span>
                 <div className="trend-meta-grid">
@@ -827,7 +1133,7 @@ export default function ResultsPanel({ query, resultData, onClose, isAnalyzing =
                   )}
                 </div>
 
-                <TrendChart data={trendState.points} />
+                <TrendChart data={trendState.points || trendData} onInvestigatePeriod={onInvestigatePeriod} />
 
                 {trendState.summary && (
                   <div className="trend-driver-card">

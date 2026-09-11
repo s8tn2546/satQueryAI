@@ -264,7 +264,7 @@ router.post('/trend', async (req, res) => {
       return res.status(200).json(trendFailureResponse(reason, trace));
     }
 
-    const result = mlResult.result || {};
+    const result = mlResult.result || (Array.isArray(mlResult.series) ? mlResult : {});
     const confidence = mlResult.confidence || 0;
     const evidence = mlResult.evidence || { images: [], region: {}, notes: '' };
 
@@ -325,7 +325,10 @@ router.post('/trend', async (req, res) => {
           region,
           regionKey: regionKey(region),
           dateRange: { start: new Date(startDate), end: new Date(endDate) },
-          series: (result.series || []).map(p => ({ date: p.date, value: p.value ?? null })),
+          series: (result.series || []).map(p => {
+            const parsed = new Date(p.date);
+            return { date: isNaN(parsed.getTime()) ? new Date() : parsed, value: p.value ?? null };
+          }),
           interval,
           parameters: { region, metric: metricLower, startDate, endDate, interval },
           confidence,

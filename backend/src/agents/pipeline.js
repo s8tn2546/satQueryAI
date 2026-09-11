@@ -24,13 +24,19 @@ function normalizeSessionId(value) {
   return s ? s.slice(0, 128) : null;
 }
 
+function clampConfidence(val) {
+  if (typeof val !== 'number' || Number.isNaN(val)) return 0;
+  return Math.min(1, Math.max(0, val));
+}
+
 function persistableToolResults(toolResults) {
+  const validStatuses = new Set(['success', 'partial', 'failed', 'skipped']);
   return toolResults.map(tr => ({
-    tool: tr.tool,
-    status: tr.status,
+    tool: tr.tool || 'unknown',
+    status: validStatuses.has(tr.status) ? tr.status : 'failed',
     result: tr.result || {},
     evidence: tr.evidence || {},
-    confidence: typeof tr.confidence === 'number' ? tr.confidence : 0,
+    confidence: clampConfidence(tr.confidence),
     error: tr.error || '',
     metadata: tr.metadata || {}
   }));
@@ -110,21 +116,27 @@ export async function runAgentPipeline(queryText, imageRefIds, parameters = {}, 
     trace.push(makeTraceEntry('out_of_scope', reason));
     const response = makeRejectedResponse(reason, trace);
 
-    const queryDoc = await Query.create({
-      queryText,
-      inputRefs: sanitizedRefs,
-      sessionId,
-      taskType: 'VQA',
-      toolsInvoked: [],
-      toolResults: [],
-      parameters: mergedParams,
-      result: {},
-      evidence: response.evidence,
-      confidence: 0,
-      executionTrace: response.executionTrace,
-      answerText: response.answerText,
-      status: 'rejected'
-    });
+    let queryDoc;
+    try {
+      queryDoc = await Query.create({
+        queryText,
+        inputRefs: sanitizedRefs,
+        sessionId,
+        taskType: 'VQA',
+        toolsInvoked: [],
+        toolResults: [],
+        parameters: mergedParams,
+        result: {},
+        evidence: response.evidence,
+        confidence: 0,
+        executionTrace: response.executionTrace,
+        answerText: response.answerText,
+        status: 'rejected'
+      });
+    } catch (err) {
+      console.error('REJECTED QUERY CREATE ERROR 1:', err);
+      throw err;
+    }
 
     return { _id: queryDoc._id, toolResults: [], ...response };
   }
@@ -135,21 +147,27 @@ export async function runAgentPipeline(queryText, imageRefIds, parameters = {}, 
   if (!validationResult.valid) {
     const response = makeRejectedResponse(validationResult.reason, trace, resolvedTaskType);
 
-    const queryDoc = await Query.create({
-      queryText,
-      inputRefs: sanitizedRefs,
-      sessionId,
-      taskType: resolvedTaskType,
-      toolsInvoked: [],
-      toolResults: [],
-      parameters: mergedParams,
-      result: {},
-      evidence: response.evidence,
-      confidence: 0,
-      executionTrace: response.executionTrace,
-      answerText: response.answerText,
-      status: 'rejected'
-    });
+    let queryDoc;
+    try {
+      queryDoc = await Query.create({
+        queryText,
+        inputRefs: sanitizedRefs,
+        sessionId,
+        taskType: resolvedTaskType,
+        toolsInvoked: [],
+        toolResults: [],
+        parameters: mergedParams,
+        result: {},
+        evidence: response.evidence,
+        confidence: 0,
+        executionTrace: response.executionTrace,
+        answerText: response.answerText,
+        status: 'rejected'
+      });
+    } catch (err) {
+      console.error('REJECTED QUERY CREATE ERROR 2:', err);
+      throw err;
+    }
 
     return { _id: queryDoc._id, toolResults: [], ...response };
   }
@@ -166,27 +184,33 @@ export async function runAgentPipeline(queryText, imageRefIds, parameters = {}, 
     trace.push(makeTraceEntry('tool_execution_failed', reason));
     const response = makeFailedResponse(reason, resolvedTaskType, trace);
 
-    const queryDoc = await Query.create({
-      queryText,
-      inputRefs: sanitizedRefs,
-      sessionId,
-      taskType: resolvedTaskType,
-      toolsInvoked: tools.map(t => t.name),
-      toolResults: [],
-      parameters: mergedParams,
-      plan,
-      result: {},
-      evidence: response.evidence,
-      confidence: 0,
-      executionTrace: response.executionTrace,
-      answerText: response.answerText,
-      status: 'failed'
-    });
+    let queryDoc;
+    try {
+      queryDoc = await Query.create({
+        queryText,
+        inputRefs: sanitizedRefs,
+        sessionId,
+        taskType: resolvedTaskType,
+        toolsInvoked: tools.map(t => t.name),
+        toolResults: [],
+        parameters: mergedParams,
+        plan,
+        result: {},
+        evidence: response.evidence,
+        confidence: 0,
+        executionTrace: response.executionTrace,
+        answerText: response.answerText,
+        status: 'failed'
+      });
+    } catch (err) {
+      console.error('QUERY CREATE ERROR AT EMPTY TOOLS:', err.message, err.errors);
+      throw err;
+    }
 
     return { _id: queryDoc._id, toolResults: [], plan, ...response };
   }
 
-  const successResults = toolResults.filter(r => r.status === 'success');
+  const successResults = toolResults.filter(r => r.status === 'success' || r.status === 'partial');
   const allFailed = successResults.length === 0 && toolResults.length > 0;
 
   if (allFailed) {
@@ -194,22 +218,28 @@ export async function runAgentPipeline(queryText, imageRefIds, parameters = {}, 
     const response = makeFailedResponse(reasons, resolvedTaskType, trace);
     const persistedToolResults = persistableToolResults(toolResults);
 
-    const queryDoc = await Query.create({
-      queryText,
-      inputRefs: sanitizedRefs,
-      sessionId,
-      taskType: resolvedTaskType,
-      toolsInvoked: tools.map(t => t.name),
-      toolResults: persistedToolResults,
-      parameters: mergedParams,
-      plan,
-      result: {},
-      evidence: response.evidence,
-      confidence: 0,
-      executionTrace: response.executionTrace,
-      answerText: response.answerText,
-      status: 'failed'
-    });
+    let queryDoc;
+    try {
+      queryDoc = await Query.create({
+        queryText,
+        inputRefs: sanitizedRefs,
+        sessionId,
+        taskType: resolvedTaskType,
+        toolsInvoked: tools.map(t => t.name),
+        toolResults: persistedToolResults,
+        parameters: mergedParams,
+        plan,
+        result: {},
+        evidence: response.evidence,
+        confidence: 0,
+        executionTrace: response.executionTrace,
+        answerText: response.answerText,
+        status: 'failed'
+      });
+    } catch (err) {
+      console.error('QUERY CREATE ERROR AT ALL FAILED:', err.message, err.errors);
+      throw err;
+    }
 
     return { _id: queryDoc._id, toolResults: persistedToolResults, plan, ...response };
   }
@@ -224,37 +254,44 @@ export async function runAgentPipeline(queryText, imageRefIds, parameters = {}, 
 
   trace.push(makeTraceEntry('execution_trace_assembly', 'Pipeline complete'));
 
-  const overallStatus = toolResults.some(r => r.status === 'failed' || r.status === 'skipped') ? 'partial' : 'success';
+  const overallStatus = toolResults.some(r => r.status === 'failed' || r.status === 'skipped' || r.status === 'partial') ? 'partial' : 'success';
   const persistedToolResults = persistableToolResults(toolResults);
 
-  const queryDoc = await Query.create({
-    queryText,
-    inputRefs: sanitizedRefs,
+  let queryDoc;
+  try {
+    queryDoc = await Query.create({
+      queryText,
+      inputRefs: sanitizedRefs,
       sessionId,
-    taskType: resolvedTaskType,
-    toolsInvoked: tools.map(t => t.name),
-    toolResults: persistedToolResults,
-    parameters: mergedParams,
-    plan,
-    result: primaryResult.result || {},
-    evidence,
-    confidence,
-    confidenceSignals,
-    executionTrace: trace,
-    answerText,
-    status: overallStatus
-  });
+      taskType: resolvedTaskType,
+      toolsInvoked: tools.map(t => t.name),
+      toolResults: persistedToolResults,
+      parameters: mergedParams,
+      plan,
+      result: primaryResult?.result || {},
+      evidence,
+      confidence: clampConfidence(confidence),
+      confidenceSignals,
+      executionTrace: trace,
+      answerText,
+      status: overallStatus
+    });
+  } catch (err) {
+    console.error('QUERY CREATE ERROR:', err);
+    throw err;
+  }
 
   return {
     _id: queryDoc._id,
     answerText,
     taskType: resolvedTaskType,
-    result: primaryResult.result || {},
+    result: primaryResult?.result || {},
     plan,
     toolResults: persistedToolResults,
     evidence,
     confidence,
     confidenceSignals,
+    qualityReport: validationResult.qualityReport,
     executionTrace: trace,
     status: overallStatus
   };

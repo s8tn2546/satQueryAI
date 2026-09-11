@@ -1,5 +1,6 @@
 export function makeTraceEntry(step, detail) {
-  return { step, detail, timestamp: new Date().toISOString() };
+  const detailStr = typeof detail === 'string' ? detail : (detail != null ? String(detail) : '');
+  return { step: String(step), detail: detailStr, details: detailStr, timestamp: new Date().toISOString() };
 }
 
 export function makeRejectedResponse(reason, trace = [], taskType = 'VQA') {

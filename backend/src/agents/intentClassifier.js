@@ -121,11 +121,11 @@ function mockClassify(queryText, imageCount) {
   // A phrase like "identify land cover" also matches the CAPTION heuristic
   // below; when change or optical+SAR fusion is also present, the pair task
   // must win so the two uploaded images are actually compared.
+  if ((q.includes('optical') && q.includes('sar')) || q.includes('fus') || q.includes('built-up and water') || (q.includes('built-up') && q.includes('water'))) {
+    return { taskType: 'OPTICAL_SAR', toolNames: ['optical_sar'], parameters: {} };
+  }
   if (q.includes('changed') || q.includes('change') || q.includes('between these two') || q.includes('bi-temporal') || q.includes('built-up area') || q.includes('increased') || q.includes('decreased')) {
     return { taskType: 'CHANGE_ANALYSIS', toolNames: ['change'], parameters: {} };
-  }
-  if (q.includes('optical') && q.includes('sar') || q.includes('fus') || q.includes('built-up and water')) {
-    return { taskType: 'OPTICAL_SAR', toolNames: ['optical_sar'], parameters: {} };
   }
 
   // ---- Single-tool classification ----
@@ -141,6 +141,15 @@ function mockClassify(queryText, imageCount) {
     const targetMatch = q.match(/highlight (?:the )?(.+?) (?:referred|in|on)/i);
     return { taskType: 'GROUNDING', toolNames: ['ground'], parameters: { target: targetMatch?.[1] || 'feature' } };
   }
+  if (q.includes('optical') && q.includes('sar') || q.includes('fus') || (q.includes('built-up') && q.includes('water'))) {
+    return { taskType: 'OPTICAL_SAR', toolNames: ['optical_sar'], parameters: {} };
+  }
+  if (q.includes('changed') || q.includes('change') || q.includes('between these two') || q.includes('bi-temporal') || q.includes('built-up area') || q.includes('increased') || q.includes('decreased')) {
+    return { taskType: 'CHANGE_ANALYSIS', toolNames: ['change'], parameters: {} };
+  }
+  if (q.includes('trend') || q.includes('historical') || q.includes('time series') || q.includes('over time')) {
+    return { taskType: 'TREND', toolNames: ['trend'], parameters: {} };
+  }
   if (q.includes('ndvi') || q.includes('vegetation index')) {
     return { taskType: 'NDVI', toolNames: ['ndvi'], parameters: {} };
   }
@@ -149,9 +158,6 @@ function mockClassify(queryText, imageCount) {
   }
   if (q.includes('area') || q.includes('surface area') || q.includes('how large') || q.includes('how big')) {
     return { taskType: 'AREA', toolNames: ['area'], parameters: {} };
-  }
-  if (q.includes('trend') || q.includes('historical') || q.includes('time series') || q.includes('over time')) {
-    return { taskType: 'TREND', toolNames: ['trend'], parameters: {} };
   }
   return { taskType: 'VQA', toolNames: ['vqa'], parameters: { question: queryText } };
 }
@@ -162,8 +168,8 @@ export async function classifyIntent(queryText, tiles, trace) {
 
   trace.push(makeTraceEntry('intent_classification_start', `Classifying query with ${imageCount} image(s)`));
 
-  const llmApiKey = process.env.LLM_API_KEY;
-  const llmProvider = process.env.LLM_PROVIDER || 'anthropic';
+  const llmApiKey = process.env.GROQ_API_KEY || process.env.LLM_API_KEY;
+  const llmProvider = process.env.GROQ_API_KEY ? 'groq' : (process.env.LLM_PROVIDER || 'anthropic');
 
   const isMock = !llmApiKey || llmApiKey === 'mock-llm-key' || llmApiKey.startsWith('mock');
 
@@ -192,13 +198,16 @@ export async function classifyIntent(queryText, tiles, trace) {
       classified = toolUse.input;
     } else {
       const { default: OpenAI } = await import('openai');
-      const client = new OpenAI({ apiKey: llmApiKey });
+      const isGroq = llmProvider === 'groq';
+      const baseURL = isGroq ? 'https://api.groq.com/openai/v1' : undefined;
+      const model = process.env.GROQ_MODEL || (isGroq ? 'gptoss-120b' : 'gpt-4o-mini');
+      const client = new OpenAI({ apiKey: llmApiKey, baseURL });
       const openaiTools = TOOL_DEFINITIONS.map(t => ({
         type: 'function',
         function: { name: t.name, description: t.description, parameters: t.input_schema }
       }));
       const response = await client.chat.completions.create({
-        model: 'gpt-4o-mini',
+        model,
         messages: [
           { role: 'system', content: buildSystemPrompt(imageCount, modalities) },
           { role: 'user', content: queryText }

@@ -50,7 +50,7 @@ describe('Input Validator', () => {
       ];
       const result = validateInputs('CHANGE_ANALYSIS', tiles, trace);
       expect(result.valid).toBe(true);
-      expect(result.warnings).toContain(expect.stringContaining('bounding box metadata is absent'));
+      expect(result.warnings).toEqual(expect.arrayContaining([expect.stringContaining('bounding box metadata is absent')]));
     });
   });
 

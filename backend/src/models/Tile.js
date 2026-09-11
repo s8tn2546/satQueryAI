@@ -4,10 +4,10 @@ const geoJsonPolygonSchema = new mongoose.Schema({
   type: {
     type: String,
     enum: ['Polygon'],
-    required: true
+    default: 'Polygon'
   },
   coordinates: {
-    type: [[[Number]]],
+    type: mongoose.Schema.Types.Mixed,
     required: true
   }
 }, { _id: false });
@@ -16,7 +16,7 @@ const tileSchema = new mongoose.Schema({
   source: {
     type: String,
     enum: ['sentinel-2', 'bhuvan', 'cartosat-2s', 'risat', 'benchmark-upload', 'gee-fetch'],
-    required: true
+    default: 'benchmark-upload'
   },
   modality: {
     type: String,
@@ -25,12 +25,11 @@ const tileSchema = new mongoose.Schema({
   },
   format: {
     type: String,
-    enum: ['geotiff', 'tiff', 'png', 'jpeg'],
     required: true
   },
   captureDate: { type: Date, default: null },
   boundingBox: {
-    type: geoJsonPolygonSchema,
+    type: mongoose.Schema.Types.Mixed,
     default: null
   },
   crs: { type: String, default: null },
@@ -40,8 +39,6 @@ const tileSchema = new mongoose.Schema({
   validated: { type: Boolean, default: false },
   validationDetails: { type: Object, default: {} }
 }, { timestamps: true });
-
-tileSchema.index({ boundingBox: '2dsphere' }, { sparse: true });
 
 export const Tile = mongoose.model('Tile', tileSchema);
 export default Tile;

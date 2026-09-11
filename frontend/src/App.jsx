@@ -88,6 +88,8 @@ export default function App() {
       isMockResult: Array.isArray(res?.toolResults)
         ? res.toolResults.some((t) => Boolean(t && t.metadata && t.metadata.mock === true))
         : false,
+      qualityReport: res?.qualityReport || null,
+      roiAttachment,
     };
   };
 
@@ -116,6 +118,9 @@ export default function App() {
   };
 
   const handleClearRoi = () => {
+    if (roiTileIds.length > 0) {
+      setTileIds((prev) => prev.filter((id) => !roiTileIds.includes(id)));
+    }
     setRoiAttachment(null);
     setRoiTileIds([]);
   };
@@ -294,6 +299,11 @@ export default function App() {
     }
   };
 
+  const handleInvestigatePeriod = (pt1, pt2) => {
+    const periodQuery = `Analyze change from ${pt1.label} to ${pt2.label}`;
+    handleSubmit({ prompt: periodQuery, mode: 'change' });
+  };
+
   return (
     <div className="satquery-app">
       <main className="main-stage">
@@ -348,6 +358,7 @@ export default function App() {
               resultData={response ? buildResultData(response, attachedImages, submittedTileIds) : (attachedImages.length > 0 ? { uploadedImages: attachedImages } : null)}
               onClose={handleClear}
               isAnalyzing={isLoading}
+              onInvestigatePeriod={handleInvestigatePeriod}
             />
           )}
         </div>

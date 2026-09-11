@@ -1,5 +1,8 @@
 import mlServiceClient from '../services/mlServiceClient.js';
 import { makeTraceEntry } from '../utils/responseBuilder.js';
+import ResultsCache from '../models/ResultsCache.js';
+import { isMockTrendResult } from '../services/demoTrendService.js';
+import crypto from 'crypto';
 
 const MOCK_NO_FILE = 'mock-no-file';
 
@@ -8,6 +11,9 @@ function buildPayload(tool, tiles, parameters) {
   const sarTile = tiles.find(t => t.modality === 'sar');
 
   const payload = { ...parameters };
+  if (parameters.roi || parameters.region || parameters.aoi) {
+    payload.aoi_geometry = parameters.roi || parameters.region || parameters.aoi;
+  }
 
   switch (tool.name) {
     case 'vqa':
@@ -297,7 +303,44 @@ export async function executeTools(tools, tiles = [], parameters = {}, trace = [
       }
     }
 
-    // ---- 5. execute --------------------------------------------------------
+    // ---- 5. cache lookup (for trend) --------------------------------------
+    if (tool.name === 'trend' && payload.metric && payload.region) {
+      const metric = (payload.metric || 'ndvi').toLowerCase();
+      const rKey = JSON.stringify({ type: payload.region.type, coordinates: payload.region.coordinates });
+      const startDate = payload.start_date || payload.startDate;
+      const endDate = payload.end_date || payload.endDate;
+
+      const queryCond = {
+        tool: 'trend',
+        metric,
+        expiresAt: { $gt: new Date() }
+      };
+
+      if (rKey) queryCond.regionKey = rKey;
+      if (startDate && endDate) {
+        queryCond['dateRange.start'] = { $lte: new Date(startDate) };
+        queryCond['dateRange.end'] = { $gte: new Date(endDate) };
+      }
+
+      const cached = await ResultsCache.findOne(queryCond);
+
+      if (cached) {
+        trace.push(makeTraceEntry('trend_cache_hit', `[trend] cache hit for ${metric}`));
+        const cachedEntry = {
+          tool: 'trend',
+          status: 'success',
+          result: cached.result,
+          evidence: cached.evidence || {},
+          confidence: cached.confidence || 0,
+          metadata: { ...(cached.metadata || {}), cacheHit: true }
+        };
+        results.push(cachedEntry);
+        executionContext.previousResults.set('trend', cachedEntry);
+        continue;
+      }
+    }
+
+    // ---- 6. execute --------------------------------------------------------
     trace.push(makeTraceEntry('tool_execution_start', `Calling tool "${tool.name}" at ${tool.endpoint}${dependencyNote ? ` — ${dependencyNote}` : ''}`));
 
     let mlResult;
@@ -331,7 +374,7 @@ export async function executeTools(tools, tiles = [], parameters = {}, trace = [
       results.push({ tool: tool.name, status: 'failed', result: {}, evidence: {}, error: reason, confidence: 0 });
     } else {
       trace.push(makeTraceEntry('tool_execution_success', `Tool "${tool.name}" completed successfully${dependencyNote ? ` — ${dependencyNote}` : ''}`));
-      const successEntry = { tool: tool.name, status: 'success', ...mlResult };
+      const successEntry = { tool: tool.name, status: mlResult.status || 'success', ...mlResult };
       if (dependencyNote) {
         successEntry.metadata = {
           ...(successEntry.metadata || {}),
@@ -339,6 +382,40 @@ export async function executeTools(tools, tiles = [], parameters = {}, trace = [
           dependencyNote
         };
       }
+
+      if (tool.name === 'trend' && ['success', 'partial'].includes(mlResult.status) && !isMockTrendResult(mlResult)) {
+        const metric = (payload.metric || 'ndvi').toLowerCase();
+        const paramHash = crypto.createHash('sha256').update(JSON.stringify({
+          metric,
+          region: payload.region,
+          startDate: payload.start_date || payload.startDate,
+          endDate: payload.end_date || payload.endDate
+        })).digest('hex');
+        const expiresAt = new Date();
+        expiresAt.setDate(expiresAt.getDate() + 7);
+        const sDate = payload.start_date || payload.startDate;
+        const eDate = payload.end_date || payload.endDate;
+        const rKey = payload.region ? JSON.stringify({ type: payload.region.type, coordinates: payload.region.coordinates }) : null;
+        try {
+          await ResultsCache.create({
+            tool: 'trend',
+            metric,
+            region: payload.region,
+            regionKey: rKey,
+            dateRange: (sDate && eDate) ? { start: new Date(sDate), end: new Date(eDate) } : undefined,
+            interval: payload.interval || 'monthly',
+            parameters: { metric, region: payload.region, startDate: sDate, endDate: eDate, interval: payload.interval || 'monthly', hash: paramHash },
+            result: mlResult.result || mlResult,
+            evidence: mlResult.evidence || {},
+            confidence: mlResult.confidence || 0,
+            metadata: mlResult.metadata || {},
+            expiresAt
+          });
+        } catch {
+          // ignore duplicate key or indexing warning
+        }
+      }
+
       results.push(successEntry);
       executionContext.previousResults.set(tool.name, successEntry);
     }

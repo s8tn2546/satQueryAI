@@ -16,8 +16,8 @@ export function regionKey(region) {
 export function isMockTrendResult(mlResult) {
   return Boolean(
     mlResult?.metadata?.mock === true ||
-    mlResult?.metadata?.data_source === 'mock' ||
-    mlResult?.result?.source === 'mock'
+    mlResult?.result?.source === 'mock' ||
+    mlResult?.isMock === true
   );
 }
 

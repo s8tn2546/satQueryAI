@@ -82,8 +82,8 @@ function buildFallbackAnswer(queryText, taskType, toolResults) {
 export async function composeAnswer(queryText, taskType, toolResults, trace) {
   trace.push(makeTraceEntry('answer_generation_start', 'Composing natural-language answer'));
 
-  const llmApiKey = process.env.LLM_API_KEY;
-  const llmProvider = process.env.LLM_PROVIDER || 'anthropic';
+  const llmApiKey = process.env.GROQ_API_KEY || process.env.LLM_API_KEY;
+  const llmProvider = process.env.GROQ_API_KEY ? 'groq' : (process.env.LLM_PROVIDER || 'anthropic');
   const isMock = !llmApiKey || llmApiKey === 'mock-llm-key' || llmApiKey.startsWith('mock');
 
   if (isMock) {
@@ -107,9 +107,12 @@ export async function composeAnswer(queryText, taskType, toolResults, trace) {
       answerText = response.content.find(b => b.type === 'text')?.text || buildFallbackAnswer(queryText, taskType, toolResults);
     } else {
       const { default: OpenAI } = await import('openai');
-      const client = new OpenAI({ apiKey: llmApiKey });
+      const isGroq = llmProvider === 'groq';
+      const baseURL = isGroq ? 'https://api.groq.com/openai/v1' : undefined;
+      const model = process.env.GROQ_MODEL || (isGroq ? 'gptoss-120b' : 'gpt-4o-mini');
+      const client = new OpenAI({ apiKey: llmApiKey, baseURL });
       const response = await client.chat.completions.create({
-        model: 'gpt-4o-mini',
+        model,
         messages: [{ role: 'user', content: prompt }],
         max_tokens: 512
       });
