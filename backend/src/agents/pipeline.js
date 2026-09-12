@@ -281,12 +281,26 @@ export async function runAgentPipeline(queryText, imageRefIds, parameters = {}, 
     throw err;
   }
 
+  const interpretedPlan = {
+    query: queryText,
+    intent: resolvedTaskType.toLowerCase(),
+    taskType: resolvedTaskType,
+    metric: mergedParams.metric || (resolvedTaskType === 'NDVI' ? 'NDVI' : resolvedTaskType === 'NDWI' ? 'NDWI' : null),
+    aoi: mergedParams.roi || mergedParams.region || 'selected_context',
+    dateRange: {
+      start: mergedParams.startDate || mergedParams.start_date || null,
+      end: mergedParams.endDate || mergedParams.end_date || null
+    },
+    operations: ['validate', 'fetch', ...tools.map(t => `calculate_${t.name}`), 'map']
+  };
+
   return {
     _id: queryDoc._id,
     answerText,
     taskType: resolvedTaskType,
     result: primaryResult?.result || {},
     plan,
+    interpretedPlan,
     toolResults: persistedToolResults,
     evidence,
     confidence,

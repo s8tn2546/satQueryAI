@@ -74,12 +74,12 @@ function mockClassify(queryText, imageCount) {
 
   // ---- Deterministic multi-tool detection (explicit combined intent) ----
   const explicitFetch = /(?:^|\b)(fetch|acquire|download|pull)\b.{0,25}\bimager/i.test(q);
-  const wantsNdvI = /(^|[^a-z])ndvi([^a-z]|$)|vegetation index/i.test(q);
-  const wantsNdwI = /(^|[^a-z])ndwi([^a-z]|$)|water index/i.test(q);
-  const wantsChange = /changed|bi-temporal|between (these|the) two|built-up area|increased|decreased/.test(q);
-  const wantsOpticalSar = /optical.{0,20}sar|sar.{0,20}optical|fus(e|ion)/.test(q);
-  const wantsArea = /changed area|area\s+of\s+(the\s+)?change|(calculate|measure|compute|estimate)\b.{0,30}\b(surface\s+)?area\b/.test(q);
-  const wantsTrend = /historical trend|trend over|time series/.test(q);
+  const wantsNdvI = /(^|[^a-z])ndvi([^a-z]|$)|vegetation index|vegetation health/i.test(q);
+  const wantsNdwI = /(^|[^a-z])ndwi([^a-z]|$)|water index|water coverage/i.test(q);
+  const wantsChange = /changed|change|bi-temporal|between|built-up area|increased|decreased|decline|expansion|investigate|anomal/i.test(q);
+  const wantsOpticalSar = /optical.{0,20}sar|sar.{0,20}optical|fus(e|ion)/i.test(q);
+  const wantsArea = /changed area|area\s+of|(calculate|measure|compute|estimate)\b.{0,30}\b(surface\s+)?area\b|surface area|how large|how big/i.test(q);
+  const wantsTrend = /historical trend|trend over|time series|monitor|over the last|anomalies over|trend/i.test(q);
 
   const TASK_FOR_TOOL = {
     ndvi: 'NDVI',
@@ -141,23 +141,23 @@ function mockClassify(queryText, imageCount) {
     const targetMatch = q.match(/highlight (?:the )?(.+?) (?:referred|in|on)/i);
     return { taskType: 'GROUNDING', toolNames: ['ground'], parameters: { target: targetMatch?.[1] || 'feature' } };
   }
-  if (q.includes('optical') && q.includes('sar') || q.includes('fus') || (q.includes('built-up') && q.includes('water'))) {
+  if (wantsArea) {
+    return { taskType: 'AREA', toolNames: ['area'], parameters: {} };
+  }
+  if (wantsOpticalSar) {
     return { taskType: 'OPTICAL_SAR', toolNames: ['optical_sar'], parameters: {} };
   }
-  if (q.includes('changed') || q.includes('change') || q.includes('between these two') || q.includes('bi-temporal') || q.includes('built-up area') || q.includes('increased') || q.includes('decreased')) {
+  if (wantsTrend) {
+    return { taskType: 'TREND', toolNames: ['trend'], parameters: { metric: wantsNdwI ? 'ndwi' : 'ndvi' } };
+  }
+  if (wantsChange && (imageCount > 1 || q.includes('change') || q.includes('decline') || q.includes('increased') || q.includes('decreased') || q.includes('between'))) {
     return { taskType: 'CHANGE_ANALYSIS', toolNames: ['change'], parameters: {} };
   }
-  if (q.includes('trend') || q.includes('historical') || q.includes('time series') || q.includes('over time')) {
-    return { taskType: 'TREND', toolNames: ['trend'], parameters: {} };
-  }
-  if (q.includes('ndvi') || q.includes('vegetation index')) {
+  if (wantsNdvI) {
     return { taskType: 'NDVI', toolNames: ['ndvi'], parameters: {} };
   }
-  if (q.includes('ndwi') || q.includes('water index')) {
+  if (wantsNdwI) {
     return { taskType: 'NDWI', toolNames: ['ndwi'], parameters: {} };
-  }
-  if (q.includes('area') || q.includes('surface area') || q.includes('how large') || q.includes('how big')) {
-    return { taskType: 'AREA', toolNames: ['area'], parameters: {} };
   }
   return { taskType: 'VQA', toolNames: ['vqa'], parameters: { question: queryText } };
 }

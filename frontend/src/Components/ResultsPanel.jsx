@@ -1251,6 +1251,74 @@ export default function ResultsPanel({ query, resultData, onClose, isAnalyzing =
                     </div>
                   </div>
                 )}
+                {/* Interpreted Natural Language Task Plan Card */}
+                {(resultData?.interpretedPlan || resultData?.plan) && (
+                  <div className="intel-card border-blue-500/40 bg-blue-950/20 p-3 rounded-lg space-y-2">
+                    <div className="flex items-center justify-between border-b border-blue-500/30 pb-1.5">
+                      <span className="text-[10px] font-bold uppercase tracking-wider text-blue-300">INTERPRETED QUERY PLAN</span>
+                      <span className="px-1.5 py-0.5 rounded text-[9px] font-mono bg-blue-900/60 text-blue-200 border border-blue-700">
+                        {resultData?.interpretedPlan?.taskType || taskType}
+                      </span>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-2 text-[11px]">
+                      <div>
+                        <span className="text-slate-400 text-[10px] block font-semibold">TASK TYPE:</span>
+                        <span className="text-slate-200 font-mono">{resultData?.interpretedPlan?.taskType || taskType}</span>
+                      </div>
+                      <div>
+                        <span className="text-slate-400 text-[10px] block font-semibold">TARGET METRIC:</span>
+                        <span className="text-slate-200 font-mono">{resultData?.interpretedPlan?.metric || 'N/A'}</span>
+                      </div>
+                    </div>
+
+                    <div className="text-[11px] text-slate-300">
+                      <span className="font-semibold text-slate-400 block text-[10px]">EXECUTED OPERATIONS:</span>
+                      <div className="flex flex-wrap gap-1 mt-1">
+                        {(resultData?.interpretedPlan?.operations || ['validate', 'fetch', 'execute_tools', 'map']).map((op, i) => (
+                          <span key={i} className="px-1.5 py-0.5 rounded bg-slate-800 text-slate-300 font-mono text-[9.5px] border border-slate-700">
+                            {op}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Candidate Semantic Change Interpretation Card */}
+                {(resultData?.toolResults?.find(t => t.tool === 'change')?.result?.candidateInterpretation || (taskType === 'CHANGE_ANALYSIS')) && (
+                  <div className="intel-card border-amber-500/40 bg-amber-950/20 p-3 rounded-lg space-y-2">
+                    <div className="flex items-center justify-between border-b border-amber-500/30 pb-1.5">
+                      <span className="text-[10px] font-bold uppercase tracking-wider text-amber-300">CANDIDATE SEMANTIC CHANGE INTERPRETATION</span>
+                      <span className="px-1.5 py-0.5 rounded text-[9px] font-mono bg-amber-900/60 text-amber-200 border border-amber-700">
+                        {resultData?.toolResults?.find(t => t.tool === 'change')?.result?.candidateInterpretation?.confidenceLabel || 'Moderate Confidence'}
+                      </span>
+                    </div>
+
+                    <div className="space-y-1.5">
+                      <h4 className="text-xs font-semibold text-amber-200">
+                        {resultData?.toolResults?.find(t => t.tool === 'change')?.result?.candidateInterpretation?.candidateTitle || 'Candidate Vegetation / Surface Change'}
+                      </h4>
+
+                      <div className="text-[11px] text-slate-300 space-y-1">
+                        <span className="font-semibold text-slate-400 block text-[10px]">SUPPORTING EVIDENCE:</span>
+                        <ul className="list-disc list-inside space-y-0.5 text-slate-300 font-mono text-[10px]">
+                          {(resultData?.toolResults?.find(t => t.tool === 'change')?.result?.candidateInterpretation?.evidence || [
+                            `Change mask overlap = ${changeToolResult?.change_percentage || 0}%`,
+                            changeToolResult?.changed_area_km2 ? `Changed area = ${changeToolResult.changed_area_km2} km²` : null
+                          ].filter(Boolean)).map((ev, i) => (
+                            <li key={i}>{ev}</li>
+                          ))}
+                        </ul>
+                      </div>
+
+                      <p className="text-[10px] text-amber-300/80 italic border-t border-amber-500/20 pt-1.5 mt-2">
+                        {resultData?.toolResults?.find(t => t.tool === 'change')?.result?.candidateInterpretation?.caveat ||
+                          'Candidate interpretation based on computed spectral/change signals. Semantic cause cannot be established from satellite measurements alone without ground truth.'}
+                      </p>
+                    </div>
+                  </div>
+                )}
 
                 {boxes.length > 0 && (
                   <div className="intel-card">

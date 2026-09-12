@@ -2,6 +2,8 @@ import mlServiceClient from '../services/mlServiceClient.js';
 import { makeTraceEntry } from '../utils/responseBuilder.js';
 import ResultsCache from '../models/ResultsCache.js';
 import { isMockTrendResult } from '../services/demoTrendService.js';
+import { analyzeMultiTemporalSeries } from '../utils/multiTemporalAnalyzer.js';
+import { interpretCandidateSemanticChange } from '../utils/semanticChangeInterpreter.js';
 import crypto from 'crypto';
 
 const MOCK_NO_FILE = 'mock-no-file';
@@ -326,10 +328,11 @@ export async function executeTools(tools, tiles = [], parameters = {}, trace = [
 
       if (cached) {
         trace.push(makeTraceEntry('trend_cache_hit', `[trend] cache hit for ${metric}`));
+        const analysis = analyzeMultiTemporalSeries(cached.result?.series || cached.result?.observations || [], { metric });
         const cachedEntry = {
           tool: 'trend',
           status: 'success',
-          result: cached.result,
+          result: { ...cached.result, ...analysis },
           evidence: cached.evidence || {},
           confidence: cached.confidence || 0,
           metadata: { ...(cached.metadata || {}), cacheHit: true }
@@ -374,7 +377,28 @@ export async function executeTools(tools, tiles = [], parameters = {}, trace = [
       results.push({ tool: tool.name, status: 'failed', result: {}, evidence: {}, error: reason, confidence: 0 });
     } else {
       trace.push(makeTraceEntry('tool_execution_success', `Tool "${tool.name}" completed successfully${dependencyNote ? ` — ${dependencyNote}` : ''}`));
-      const successEntry = { tool: tool.name, status: mlResult.status || 'success', ...mlResult };
+      let finalResult = mlResult.result;
+      if (tool.name === 'trend' && mlResult.result) {
+        const metric = (payload.metric || 'ndvi').toLowerCase();
+        const analysis = analyzeMultiTemporalSeries(mlResult.result.series || mlResult.result.observations || [], { metric });
+        finalResult = { ...mlResult.result, ...analysis };
+      } else if (tool.name === 'change' && mlResult.result) {
+        const ndviRes = executionContext.previousResults.get('ndvi')?.result;
+        const ndwiRes = executionContext.previousResults.get('ndwi')?.result;
+        const sarRes = executionContext.previousResults.get('optical_sar')?.result;
+        const candidateInterpretation = interpretCandidateSemanticChange({
+          changeResult: mlResult.result,
+          supportingSignals: {
+            ndviT1: ndviRes?.meanT1 ?? ndviRes?.t1,
+            ndviT2: ndviRes?.meanT2 ?? ndviRes?.t2,
+            ndwiT1: ndwiRes?.meanT1 ?? ndwiRes?.t1,
+            ndwiT2: ndwiRes?.meanT2 ?? ndwiRes?.t2,
+            sarRatio: sarRes?.backscatterRatio
+          }
+        });
+        finalResult = { ...mlResult.result, candidateInterpretation };
+      }
+      const successEntry = { tool: tool.name, status: mlResult.status || 'success', ...mlResult, result: finalResult };
       if (dependencyNote) {
         successEntry.metadata = {
           ...(successEntry.metadata || {}),

@@ -215,26 +215,44 @@ export function buildTrendState({ taskType, toolResults, trendData, parameters }
   }
 
   const trend = successfulToolResult(toolResults, 'trend');
-  const raw = (trend && trend.result && Array.isArray(trend.result.series))
+  const raw = (trend && trend.result && (Array.isArray(trend.result.series) || Array.isArray(trend.result.observations)))
     ? trend.result
-    : (trendData && typeof trendData === 'object' && Array.isArray(trendData.series) ? trendData : null);
+    : (trendData && typeof trendData === 'object' && (Array.isArray(trendData.series) || Array.isArray(trendData.observations)) ? trendData : null);
 
-  if (!raw || !Array.isArray(raw.series) || raw.series.length === 0) {
+  if (!raw) {
     return {
       requested: true,
       data: false
     };
   }
 
-  const points = raw.series
+  const observations = Array.isArray(raw.observations)
+    ? raw.observations
+    : (Array.isArray(raw.series) ? raw.series.map((p, i) => ({
+        date: String(p.date || p.label || `T${i + 1}`).slice(0, 10),
+        source: p.source || 'Sentinel-2',
+        sensor: p.sensor || 'MSI',
+        tileId: p.tileId || `TILE-${i + 1}`,
+        metric: raw.metric || parameters?.metric || 'NDVI',
+        value: isFiniteNumber(p.value) ? p.value : null,
+        validPixels: p.validPixels ?? null,
+        validPercent: p.validPercent ?? 100,
+        quality: p.quality || (isFiniteNumber(p.value) ? 'GOOD' : 'EXCLUDED'),
+        qualityReason: p.qualityReason || null,
+        metadata: p.metadata || {}
+      })) : []);
+
+  const points = (raw.series || observations)
     .filter((p) => p && isFiniteNumber(p.value))
     .map((p) => ({
       label: String(p.date || p.label || p.month || '').slice(0, 10),
       value: p.value,
-      metric: raw.metric || (trendData && trendData.metric)
+      metric: raw.metric || (trendData && trendData.metric),
+      quality: p.quality || 'GOOD',
+      source: p.source || 'Sentinel-2'
     }));
 
-  const metric = raw.metric || parameters?.metric || null;
+  const metric = raw.metric || parameters?.metric || 'NDVI';
   const region = (parameters && parameters.region)
     ? (typeof parameters.region === 'string' ? parameters.region : (parameters.region.name || 'Provided region'))
     : (raw.region ? (typeof raw.region === 'string' ? raw.region : (raw.region.name || 'Provided region')) : null);
@@ -243,11 +261,29 @@ export function buildTrendState({ taskType, toolResults, trendData, parameters }
     ? `${points[0].label} → ${points[points.length - 1].label}`
     : (points[0] ? points[0].label : null);
 
-  let direction = null;
-  if (points.length >= 2) {
-    const delta = points[points.length - 1].value - points[0].value;
-    direction = delta > 0 ? 'Increasing' : delta < 0 ? 'Decreasing' : 'Stable';
-  }
+  const trendStats = raw.trendStats || {
+    validObservationsCount: points.length,
+    totalObservationsCount: observations.length,
+    firstValue: points.length > 0 ? points[0].value : null,
+    lastValue: points.length > 0 ? points[points.length - 1].value : null,
+    absoluteChange: points.length >= 2 ? points[points.length - 1].value - points[0].value : null,
+    relativeChange: points.length >= 2 && points[0].value !== 0 ? ((points[points.length - 1].value - points[0].value) / Math.abs(points[0].value)) * 100 : null,
+    slope: points.length >= 2 ? (points[points.length - 1].value - points[0].value) / (points.length - 1) : null,
+    trendDirection: points.length >= 3 ? (points[points.length - 1].value > points[0].value ? 'Increasing' : points[points.length - 1].value < points[0].value ? 'Decreasing' : 'Stable') : 'Insufficient data',
+    trendStatus: points.length >= 3
+      ? 'Valid trend calculated'
+      : (points.length === 2
+        ? 'Temporal comparison available; insufficient observations for trend.'
+        : 'Insufficient temporal observations.')
+  };
+
+  const qualityCounts = raw.qualityCounts || {
+    good: observations.filter(o => o.quality === 'GOOD').length,
+    warning: observations.filter(o => o.quality === 'WARNING').length,
+    excluded: observations.filter(o => o.quality === 'EXCLUDED').length
+  };
+
+  const anomalies = Array.isArray(raw.anomalies) ? raw.anomalies : [];
 
   return {
     requested: true,
@@ -255,9 +291,13 @@ export function buildTrendState({ taskType, toolResults, trendData, parameters }
     metric,
     region,
     period,
-    direction,
+    direction: trendStats.trendDirection,
     summary: typeof raw.summary === 'string' ? raw.summary : null,
-    points
+    points,
+    observations,
+    trendStats,
+    qualityCounts,
+    anomalies
   };
 }
 

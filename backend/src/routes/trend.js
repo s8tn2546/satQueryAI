@@ -2,6 +2,7 @@ import express from 'express';
 import ResultsCache from '../models/ResultsCache.js';
 import mlServiceClient from '../services/mlServiceClient.js';
 import crypto from 'crypto';
+import { analyzeMultiTemporalSeries } from '../utils/multiTemporalAnalyzer.js';
 
 const router = express.Router();
 
@@ -32,10 +33,11 @@ router.post('/', async (req, res) => {
     });
 
     if (cached) {
+      const analysis = analyzeMultiTemporalSeries(cached.result?.series || cached.result?.observations || [], { metric });
       return res.status(200).json({
         tool: 'trend',
         status: 'success',
-        result: cached.result,
+        result: { ...cached.result, ...analysis },
         evidence: cached.evidence,
         confidence: cached.confidence,
         metadata: {
@@ -54,6 +56,9 @@ router.post('/', async (req, res) => {
     });
 
     if (mlResult.status === 'success' && mlResult.result) {
+      const analysis = analyzeMultiTemporalSeries(mlResult.result.series || mlResult.result.observations || [], { metric });
+      mlResult.result = { ...mlResult.result, ...analysis };
+
       const expiresAt = new Date();
       expiresAt.setDate(expiresAt.getDate() + CACHE_TTL_DAYS);
 
