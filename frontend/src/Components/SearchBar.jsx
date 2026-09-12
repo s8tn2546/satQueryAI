@@ -1,6 +1,7 @@
 import { useState, useRef } from 'react';
 import { gsap } from 'gsap';
 import { ShaderSearchIcon } from './ui/ShaderSearchIcon';
+import { calculateGeographicAreaKm2, formatGeographicArea } from '../lib/utils';
 
 const modes = [
   ['single', 'Single scene'],
@@ -85,15 +86,12 @@ const useControlGlow = () => {
 function getRoiMeta(roi) {
   if (!roi) return null;
   const name = roi.name || 'Globe Region ROI';
-  let areaText = '';
-  if (roi.bounds && Array.isArray(roi.bounds) && roi.bounds.length === 4) {
-    const [w, s, e, n] = roi.bounds;
-    const latRad = ((s + n) / 2) * (Math.PI / 180);
-    const widthKm = Math.abs(e - w) * 111.32 * Math.cos(latRad);
-    const heightKm = Math.abs(n - s) * 111.32;
-    const area = (widthKm * heightKm).toFixed(2);
-    areaText = `${area} km²`;
+  let bbox = roi.bbox;
+  if (!bbox && Array.isArray(roi.bounds) && roi.bounds.length === 4) {
+    bbox = { west: roi.bounds[0], south: roi.bounds[1], east: roi.bounds[2], north: roi.bounds[3] };
   }
+  const areaKm2 = calculateGeographicAreaKm2(bbox);
+  const areaText = formatGeographicArea(areaKm2);
   return { name, areaText };
 }
 

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import * as Cesium from 'cesium';
+import { calculateGeographicAreaKm2, formatGeographicArea } from '../lib/utils';
 
 const HomeIcon = ({ size = 16, ...props }) => (
   <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
@@ -53,7 +54,7 @@ const CheckIcon = ({ size = 12, ...props }) => (
   </svg>
 );
 
-export default function GlobeView({ onCoordsChange, onRegionSelect }) {
+export default function GlobeView({ onCoordsChange, onRegionSelect, roiAttachment, onClearRoi }) {
   const [isLoading, setIsLoading] = useState(true);
   const [locationLabel, setLocationLabel] = useState(null);
   const [isDrawMode, setIsDrawMode] = useState(false);
@@ -70,6 +71,12 @@ export default function GlobeView({ onCoordsChange, onRegionSelect }) {
   const lastTouchDist = useRef(null);
   const roiEntityRef = useRef(null);
   const drawHandlerRef = useRef(null);
+  const activeBboxRef = useRef(null);
+
+  const onCoordsChangeRef = useRef(onCoordsChange);
+  useEffect(() => {
+    onCoordsChangeRef.current = onCoordsChange;
+  }, [onCoordsChange]);
 
   // Helper to get ground Cartographic coordinate from mouse click/move
   const getGroundPosition = (position) => {
@@ -98,19 +105,69 @@ export default function GlobeView({ onCoordsChange, onRegionSelect }) {
 
     if (!bbox) return;
 
+    const areaKm2 = calculateGeographicAreaKm2(bbox);
+    const areaStr = formatGeographicArea(areaKm2);
+    const labelText = areaStr ? `AOI\n${areaStr}` : 'AOI Selected';
+
+    const centerLon = (bbox.west + bbox.east) / 2;
+    const centerLat = (bbox.south + bbox.north) / 2;
+
     roiEntityRef.current = viewer.entities.add({
-      name: 'Selected Region (ROI)',
+      name: 'Selected Region (AOI)',
+      position: Cesium.Cartesian3.fromDegrees(centerLon, centerLat, 0),
       rectangle: {
         coordinates: Cesium.Rectangle.fromDegrees(bbox.west, bbox.south, bbox.east, bbox.north),
-        material: Cesium.Color.fromCssColorString('#3B7DDD').withAlpha(0.35),
-        outline: true,
-        outlineColor: Cesium.Color.fromCssColorString('#6EB4FF'),
-        outlineWidth: 3,
+        material: Cesium.Color.fromCssColorString('#06B6D4').withAlpha(0.25),
         height: 0,
+      },
+      polyline: {
+        positions: Cesium.Cartesian3.fromDegreesArray([
+          bbox.west, bbox.south,
+          bbox.east, bbox.south,
+          bbox.east, bbox.north,
+          bbox.west, bbox.north,
+          bbox.west, bbox.south,
+        ]),
+        width: 3,
+        material: Cesium.Color.fromCssColorString('#22D3EE'),
+        clampToGround: true,
+      },
+      label: {
+        text: labelText,
+        font: 'bold 12px monospace, sans-serif',
+        style: Cesium.LabelStyle.FILL_AND_OUTLINE,
+        fillColor: Cesium.Color.fromCssColorString('#ECFEFF'),
+        outlineColor: Cesium.Color.fromCssColorString('#083344'),
+        outlineWidth: 4,
+        showBackground: true,
+        backgroundColor: Cesium.Color.fromCssColorString('#083344').withAlpha(0.85),
+        backgroundPadding: new Cesium.Cartesian2(8, 5),
+        horizontalOrigin: Cesium.HorizontalOrigin.CENTER,
+        verticalOrigin: Cesium.VerticalOrigin.CENTER,
+        disableDepthTestDistance: Number.POSITIVE_INFINITY,
       },
     });
     viewer.scene.requestRender();
   };
+
+  // Synchronize internal selectedBbox / Cesium entity with external roiAttachment prop
+  useEffect(() => {
+    const viewer = viewerRef.current;
+    if (!roiAttachment) {
+      activeBboxRef.current = null;
+      if (roiEntityRef.current && viewer && !viewer.isDestroyed()) {
+        viewer.entities.remove(roiEntityRef.current);
+        roiEntityRef.current = null;
+        viewer.scene.requestRender();
+      }
+      queueMicrotask(() => setSelectedBbox(null));
+    } else if (roiAttachment.bbox) {
+      const b = roiAttachment.bbox;
+      activeBboxRef.current = b;
+      updateRoiEntity(b);
+      queueMicrotask(() => setSelectedBbox(b));
+    }
+  }, [roiAttachment]);
 
   // Toggle Draw ROI Mode
   const toggleDrawMode = () => {
@@ -129,9 +186,11 @@ export default function GlobeView({ onCoordsChange, onRegionSelect }) {
       // Activate draw mode
       setIsDrawMode(true);
       setSelectedBbox(null);
+      activeBboxRef.current = null;
       if (roiEntityRef.current) {
         viewer.entities.remove(roiEntityRef.current);
         roiEntityRef.current = null;
+        viewer.scene.requestRender();
       }
 
       let isDrawing = false;
@@ -159,6 +218,7 @@ export default function GlobeView({ onCoordsChange, onRegionSelect }) {
             east: Math.max(firstPoint.lon, currentPoint.lon),
             north: Math.max(firstPoint.lat, currentPoint.lat),
           };
+          activeBboxRef.current = bbox;
           setSelectedBbox(bbox);
           updateRoiEntity(bbox);
         }
@@ -173,6 +233,9 @@ export default function GlobeView({ onCoordsChange, onRegionSelect }) {
             drawHandlerRef.current = null;
           }
           setIsDrawMode(false);
+          if (activeBboxRef.current && onRegionSelect) {
+            onRegionSelect(activeBboxRef.current);
+          }
         }
       }, Cesium.ScreenSpaceEventType.LEFT_UP);
     }
@@ -192,7 +255,11 @@ export default function GlobeView({ onCoordsChange, onRegionSelect }) {
         north: Cesium.Math.toDegrees(rect.north),
       };
       setSelectedBbox(bbox);
+      activeBboxRef.current = bbox;
       updateRoiEntity(bbox);
+      if (onRegionSelect) {
+        onRegionSelect(bbox);
+      }
     }
   };
 
@@ -210,9 +277,14 @@ export default function GlobeView({ onCoordsChange, onRegionSelect }) {
   const handleClearRoi = () => {
     const viewer = viewerRef.current;
     setSelectedBbox(null);
+    activeBboxRef.current = null;
     if (roiEntityRef.current && viewer && !viewer.isDestroyed()) {
       viewer.entities.remove(roiEntityRef.current);
       roiEntityRef.current = null;
+      viewer.scene.requestRender();
+    }
+    if (onClearRoi) {
+      onClearRoi();
     }
   };
 
@@ -530,11 +602,11 @@ export default function GlobeView({ onCoordsChange, onRegionSelect }) {
     });
 
     const removeCoordListener = viewer.scene.postRender.addEventListener(() => {
-      if (!onCoordsChange) return;
+      if (!onCoordsChangeRef.current) return;
       const camera = viewer.camera;
       const pos = camera.positionCartographic;
       if (pos) {
-        onCoordsChange({
+        onCoordsChangeRef.current({
           lat: Cesium.Math.toDegrees(pos.latitude),
           lon: Cesium.Math.toDegrees(pos.longitude),
         });
@@ -660,9 +732,21 @@ export default function GlobeView({ onCoordsChange, onRegionSelect }) {
 
         {selectedBbox && (
           <div className="roi-bbox-badge">
-            <span className="bbox-label">
-              ROI: {selectedBbox.south.toFixed(2)}°N, {selectedBbox.west.toFixed(2)}°E
-            </span>
+            <div className="flex flex-col text-[11px] font-mono leading-tight pr-1">
+              <span className="text-cyan-300 font-bold flex items-center gap-1.5">
+                <span>AOI Active</span>
+                {calculateGeographicAreaKm2(selectedBbox) ? (
+                  <span className="text-cyan-100 text-[10px] bg-cyan-900/60 px-1.5 py-0.5 rounded border border-cyan-700 font-normal">
+                    {formatGeographicArea(calculateGeographicAreaKm2(selectedBbox))}
+                  </span>
+                ) : (
+                  <span className="text-slate-400 text-[10px]">Selected</span>
+                )}
+              </span>
+              <span className="text-slate-300 text-[10px] tracking-tight">
+                W: {selectedBbox.west.toFixed(3)}° • S: {selectedBbox.south.toFixed(3)}° • E: {selectedBbox.east.toFixed(3)}° • N: {selectedBbox.north.toFixed(3)}°
+              </span>
+            </div>
             <button type="button" className="confirm-roi-btn" onClick={handleConfirmRoi} title="Fetch Satellite Imagery for Region">
               Fetch Region
             </button>

@@ -317,6 +317,8 @@ export default function App() {
             onCoordsChange={handleCoords} 
             activeQuery={submitted} 
             onRegionSelect={handleRegionSelect}
+            roiAttachment={roiAttachment}
+            onClearRoi={handleClearRoi}
           />
 
           <TopBar coords={coords} activeQuery={submitted} />

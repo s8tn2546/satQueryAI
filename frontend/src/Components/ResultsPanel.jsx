@@ -1123,6 +1123,12 @@ export default function ResultsPanel({ query, resultData, onClose, isAnalyzing =
             <div className="evidence-context-card">
               <span className="intel-card-label">ANALYSIS CONTEXT</span>
               <div className="evidence-context-rows">
+                <div className="evidence-context-row">
+                  <span className="evidence-context-name">Analysis Scope</span>
+                  <span className="evidence-context-val font-semibold text-cyan-300">
+                    {resultData?.roiAttachment ? `AOI (${resultData.roiAttachment.name || 'Drawn region'})` : 'Full Scene'}
+                  </span>
+                </div>
                 {taskType === 'VQA' && query && (
                   <div className="evidence-context-row">
                     <span className="evidence-context-name">Question</span>
@@ -1219,8 +1225,20 @@ export default function ResultsPanel({ query, resultData, onClose, isAnalyzing =
         {/* Tab 2: Findings */}
         {activeTab === 'answer' && (
           <div className="results-findings-view">
-            {(boxes.length > 0 || Object.keys(metrics).length > 0 || Object.keys(modelMetadata).length > 0 || severity || vqaFinding) ? (
+            {(boxes.length > 0 || Object.keys(metrics).length > 0 || Object.keys(modelMetadata).length > 0 || severity || vqaFinding || resultData?.roiAttachment) ? (
               <div className="intel-cards-grid">
+                {resultData?.roiAttachment && (
+                  <div className="p-2.5 rounded bg-cyan-950/40 border border-cyan-500/40 flex items-center justify-between text-xs text-cyan-200">
+                    <span className="font-bold flex items-center gap-1.5 uppercase tracking-wider text-[10.5px] text-cyan-300">
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg>
+                      Analysis Scope: AOI
+                    </span>
+                    <span className="font-mono text-[10px] text-cyan-200/80">
+                      {resultData.roiAttachment.name || 'Drawn bounding box'}
+                    </span>
+                  </div>
+                )}
+
                 {severity && (
                   <div className={`intel-severity-banner severity-${severity.level || 'medium'}`}>
                     <div className="severity-badge">{severity.label || severity.level || 'INFO'}</div>
