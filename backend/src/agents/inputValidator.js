@@ -6,6 +6,40 @@ const SINGLE_IMAGE_TASKS = new Set(['VQA', 'CAPTION', 'GROUNDING', 'NDVI', 'NDWI
 const ALLOWED_FORMATS = new Set(['geotiff', 'tiff', 'png', 'jpeg']);
 const BENCHMARK_FORMATS = new Set(['png', 'jpeg']);
 
+const OVERLAP_EPS_DEG = 1e-6;
+
+/**
+ * Extract the axis-aligned lon/lat extent of a canonical GeoJSON Polygon.
+ * Returns null for any malformed geometry so callers fail honest rather than
+ * invent a footprint.
+ */
+function geojsonExtents(polygon) {
+  if (!polygon || polygon.type !== 'Polygon' || !Array.isArray(polygon.coordinates) || !Array.isArray(polygon.coordinates[0])) {
+    return null;
+  }
+  const ring = polygon.coordinates[0];
+  let minLon = Infinity;
+  let minLat = Infinity;
+  let maxLon = -Infinity;
+  let maxLat = -Infinity;
+  for (const p of ring) {
+    if (!Array.isArray(p) || p.length < 2 || typeof p[0] !== 'number' || typeof p[1] !== 'number'
+        || !Number.isFinite(p[0]) || !Number.isFinite(p[1])) {
+      return null;
+    }
+    minLon = Math.min(minLon, p[0]);
+    maxLon = Math.max(maxLon, p[0]);
+    minLat = Math.min(minLat, p[1]);
+    maxLat = Math.max(maxLat, p[1]);
+  }
+  return { minLon, minLat, maxLon, maxLat };
+}
+
+function extentsOverlap(a, b, eps = OVERLAP_EPS_DEG) {
+  return a.minLon <= b.maxLon + eps && b.minLon <= a.maxLon + eps
+    && a.minLat <= b.maxLat + eps && b.minLat <= a.maxLat + eps;
+}
+
 export function validateInputs(taskType, tiles, trace) {
   const warnings = [];
   const checks = [];
@@ -104,7 +138,16 @@ export function validateInputs(taskType, tiles, trace) {
         validationStatus = 'ANALYSIS_WARNING';
         checks.push({ name: 'Spatial Co-registration', status: 'WARN', details: bboxWarn });
       } else {
-        checks.push({ name: 'Spatial Co-registration', status: 'PASS', details: 'Spatial bounds match for temporal pair.' });
+        const extents = tiles.map(t => geojsonExtents(t.boundingBox));
+        const footprintsKnown = tiles.length >= 2 && extents.every(Boolean);
+        if (footprintsKnown && extentsOverlap(extents[0], extents[1])) {
+          checks.push({ name: 'Spatial Co-registration', status: 'PASS', details: 'Spatial bounds match for temporal pair.' });
+        } else {
+          const coRegWarn = 'Detected spatial footprints do not overlap; co-registration cannot be verified structurally.';
+          warnings.push(coRegWarn);
+          validationStatus = 'ANALYSIS_WARNING';
+          checks.push({ name: 'Spatial Co-registration', status: 'WARN', details: coRegWarn });
+        }
       }
     }
   } else if (SINGLE_IMAGE_TASKS.has(taskType)) {

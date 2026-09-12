@@ -46,6 +46,30 @@ class FileTooLargeError(UploadError):
     """Raised when an uploaded file exceeds the size limit."""
 
 
+def parse_aoi_geometry(value: str | None) -> dict:
+    """Echo an AOI scope that arrived as a form field into tool metadata.
+
+    The frontend sends the drawn region of interest as a JSON-stringified
+    GeoJSON geometry in the ``aoi_geometry`` form field. Endpoints record it
+    (unmodified) in ``metadata`` so the requested scope demonstrably reaches
+    the analysis tool and is visible in evidence/trace. It never alters the
+    deterministic measurement algorithms: absent or unparseable values simply
+    produce no metadata entry ({}), and malformed JSON is preserved verbatim
+    rather than guessed.
+    """
+    import json
+
+    if not value:
+        return {}
+    try:
+        parsed = json.loads(value)
+    except (TypeError, ValueError):
+        return {"aoi_geometry": value}
+    if isinstance(parsed, (dict, list)):
+        return {"aoi_geometry": parsed}
+    return {"aoi_geometry": value}
+
+
 async def read_upload_file(file: UploadFile) -> bytes:
     """Read and validate an uploaded file's size."""
     try:

@@ -36,6 +36,9 @@ function publicTile(tile) {
     resolution: tile.resolution,
     bands: tile.bands || [],
     validated: tile.validated,
+    boundingBox: tile.boundingBox || null,
+    validationDetails: tile.validationDetails || {},
+    metadata: tile.metadata || {},
     storedFile: Boolean(storedFile),
     renderable: Boolean(storedFile) && BROWSER_RENDERABLE.has(tile.format)
   };

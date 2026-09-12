@@ -27,6 +27,7 @@ from fastapi import APIRouter, File, Form, UploadFile
 from app.common.http_utils import (
     InvalidFileError,
     error_output,
+    parse_aoi_geometry,
     read_upload_file,
     save_to_temp,
     validate_upload_ext,
@@ -98,6 +99,10 @@ def _offline_vqa_output(
 async def vqa_endpoint(
     image: UploadFile = File(..., description="Input image (GeoTIFF, TIFF, PNG, or JPEG)"),
     question: str = Form(..., description="Question about the image (plain English)"),
+    aoi_geometry: str | None = Form(
+        default=None,
+        description="Optional JSON-stringified GeoJSON AOI scope (recorded in metadata only)",
+    ),
 ):
     """Run Visual Question Answering on an uploaded image.
 
@@ -167,6 +172,7 @@ async def vqa_endpoint(
             "size_bytes": len(content),
             "model": DEFAULT_VQA_MODEL,
             "adapter_used": _adapter_detected(),
+            **parse_aoi_geometry(aoi_geometry),
         },
     )
 

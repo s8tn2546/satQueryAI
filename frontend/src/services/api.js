@@ -147,15 +147,17 @@ export function uploadImages(files, { source, modality, modalityHint } = {}) {
 }
 
 /**
- * POST /api/images/fetch-by-region
- * Region-based imagery acquisition (Sentinel-2 optical + Sentinel-1 SAR).
- * Bbox: { west, south, east, north }. Accepted option: dateRange
- * ({ start, end } ISO strings or [start, end]).
- * Returns the same shape as POST /api/images/upload: { status, tileId, tileIds, tiles }.
+ * Convert the app's AOI bbox { west, south, east, north } into the canonical
+ * GeoJSON Polygon used by region-based acquisition. Same shape is sent as the
+ * analysis request's `aoi` parameter so a drawn region of interest actually
+ * reaches the analysis tool.
  */
-// eslint-disable-next-line no-unused-vars -- destructured caller option kept for symmetry
-export function fetchRegionImagery(bbox, { mode = 'single', dateRange = null } = {}) {
-  const polygon = {
+export function bboxToGeoJSONPolygon(bbox) {
+  if (!bbox || !Number.isFinite(bbox.west) || !Number.isFinite(bbox.south) ||
+      !Number.isFinite(bbox.east) || !Number.isFinite(bbox.north)) {
+    return null;
+  }
+  return {
     type: 'Polygon',
     coordinates: [[
       [bbox.west, bbox.south],
@@ -165,6 +167,18 @@ export function fetchRegionImagery(bbox, { mode = 'single', dateRange = null } =
       [bbox.west, bbox.south],
     ]],
   };
+}
+
+/**
+ * POST /api/images/fetch-by-region
+ * Region-based imagery acquisition (Sentinel-2 optical + Sentinel-1 SAR).
+ * Bbox: { west, south, east, north }. Accepted option: dateRange
+ * ({ start, end } ISO strings or [start, end]).
+ * Returns the same shape as POST /api/images/upload: { status, tileId, tileIds, tiles }.
+ */
+// eslint-disable-next-line no-unused-vars -- destructured caller option kept for symmetry
+export function fetchRegionImagery(bbox, { mode = 'single', dateRange = null } = {}) {
+  const polygon = bboxToGeoJSONPolygon(bbox);
   const startDate = (dateRange && (dateRange.start || dateRange[0])) || undefined;
   const endDate = (dateRange && (dateRange.end || dateRange[1])) || undefined;
   return post('/api/images/fetch-by-region', { boundingBox: polygon, startDate, endDate });

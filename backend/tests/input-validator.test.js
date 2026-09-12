@@ -52,6 +52,36 @@ describe('Input Validator', () => {
       expect(result.valid).toBe(true);
       expect(result.warnings).toEqual(expect.arrayContaining([expect.stringContaining('bounding box metadata is absent')]));
     });
+
+    test('co-registerated pair with overlapping bounds passes', () => {
+      const tiles = [
+        { format: 'geotiff', modality: 'optical', boundingBox: { west: 0, south: 0, east: 1, north: 1 } },
+        { format: 'geotiff', modality: 'optical', boundingBox: { west: 0.5, south: 0.5, east: 1.5, north: 1.5 } }
+      ];
+      const result = validateInputs('CHANGE_ANALYSIS', tiles, trace);
+      expect(result.valid).toBe(true);
+      expect(result.warnings).not.toEqual(expect.arrayContaining([expect.stringContaining('Spatial bounds')]));
+    });
+
+    test('warns when pair bounds do not overlap', () => {
+      const tiles = [
+        { format: 'geotiff', modality: 'optical', boundingBox: { west: 0, south: 0, east: 1, north: 1 } },
+        { format: 'geotiff', modality: 'optical', boundingBox: { west: 5, south: 5, east: 6, north: 6 } }
+      ];
+      const result = validateInputs('CHANGE_ANALYSIS', tiles, trace);
+      expect(result.valid).toBe(true);
+      expect(result.warnings).toEqual(expect.arrayContaining([expect.stringContaining('footprints do not overlap')]));
+    });
+
+    test('warns when only one tile carries a bounding box', () => {
+      const tiles = [
+        { format: 'geotiff', modality: 'optical', boundingBox: { west: 0, south: 0, east: 1, north: 1 } },
+        { format: 'geotiff', modality: 'optical' }
+      ];
+      const result = validateInputs('CHANGE_ANALYSIS', tiles, trace);
+      expect(result.valid).toBe(true);
+      expect(result.warnings).toEqual(expect.arrayContaining([expect.stringContaining('bounding box metadata is absent')]));
+    });
   });
 
   describe('Single image tasks', () => {

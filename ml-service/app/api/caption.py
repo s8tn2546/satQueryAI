@@ -23,11 +23,12 @@ import logging
 import os
 from pathlib import Path
 
-from fastapi import APIRouter, File, UploadFile
+from fastapi import APIRouter, File, Form, UploadFile
 
 from app.common.http_utils import (
     InvalidFileError,
     error_output,
+    parse_aoi_geometry,
     read_upload_file,
     save_to_temp,
     validate_upload_ext,
@@ -91,6 +92,10 @@ def _offline_caption_output(
 @router.post("/caption")
 async def caption_endpoint(
     image: UploadFile = File(..., description="Input image (GeoTIFF, TIFF, PNG, or JPEG)"),
+    aoi_geometry: str | None = Form(
+        default=None,
+        description="Optional JSON-stringified GeoJSON AOI scope (recorded in metadata only)",
+    ),
 ):
     """Generate a caption for an uploaded satellite image.
 
@@ -150,5 +155,6 @@ async def caption_endpoint(
             "size_bytes": len(content),
             "model": DEFAULT_CAPTION_MODEL,
             "adapter_used": _adapter_detected(),
+            **parse_aoi_geometry(aoi_geometry),
         },
     )

@@ -273,6 +273,19 @@ body.app-route #root {
   background-color: var(--bg-primary, #060913) !important;
 }
 
+/* The globe wrapper is the fullscreen element so the top-right ROI toolbar
+   (Draw ROI / Fullscreen / Capture View) stays reachable while the map fills
+   the screen. */
+.satquery-globe:fullscreen,
+.satquery-globe:-webkit-full-screen {
+  width: 100vw !important;
+  height: 100vh !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  background: var(--bg-primary, #060913) !important;
+  overflow: hidden !important;
+}
+
 #cesiumContainer:fullscreen,
 #cesiumContainer:-webkit-full-screen,
 .cesium-viewer:fullscreen,
@@ -1838,6 +1851,56 @@ html.light .composer-btn-glow {
   display: block;
   margin-bottom: 8px;
 }
+/* VQA finding card in the Findings tab (reuses the header finding output) */
+.vqa-finding-card {
+  border: 1px solid rgba(110, 180, 255, 0.25);
+  background: rgba(15, 23, 42, 0.8);
+}
+.vqa-finding-primary {
+  font-size: 14px;
+  line-height: 1.4;
+  font-weight: 600;
+  color: var(--glass-text);
+  letter-spacing: 0.2px;
+}
+.vqa-finding-context {
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--glass-muted);
+  line-height: 1.5;
+}
+.vqa-finding-question {
+  margin-top: 6px;
+  font-size: 11px;
+  color: #a5b4fc;
+  line-height: 1.5;
+  border-left: 2px solid rgba(110, 180, 255, 0.4);
+  padding-left: 8px;
+}
+.vqa-finding-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(148, 163, 184, 0.15);
+}
+.vqa-meta-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 9px;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  color: #94a3b8;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 8px;
+  padding: 2px 8px;
+}
+.vqa-meta-chip em { font-style: normal; opacity: 0.4; }
+.adapter-status-ok { color: #34D399; border-color: rgba(52, 211, 153, 0.3); }
+.adapter-status-warn { color: #F59E0B; border-color: rgba(245, 158, 11, 0.3); }
 .intel-detections-list {
   list-style: none; padding: 0; margin: 0;
   display: flex; flex-direction: column; gap: 6px;

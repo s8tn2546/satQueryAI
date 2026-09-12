@@ -14,6 +14,7 @@ from fastapi import APIRouter, File, Form, UploadFile
 from app.common.http_utils import (
     InvalidFileError,
     error_output,
+    parse_aoi_geometry,
     read_upload_file,
     save_to_temp,
     validate_upload_ext,
@@ -36,6 +37,10 @@ async def ndvi_endpoint(
     nir_band: int | None = Form(
         default=None,
         description="Optional explicit 1-based NIR band index (overrides auto-detection)",
+    ),
+    aoi_geometry: str | None = Form(
+        default=None,
+        description="Optional JSON-stringified GeoJSON AOI scope (recorded in metadata only)",
     ),
 ):
     """Compute NDVI for an uploaded multispectral image."""
@@ -88,5 +93,9 @@ async def ndvi_endpoint(
             "bands_used": result["bands"],
         },
         confidence=confidence,
-        metadata={"filename": filename, "size_bytes": len(content)},
+        metadata={
+            "filename": filename,
+            "size_bytes": len(content),
+            **parse_aoi_geometry(aoi_geometry),
+        },
     )

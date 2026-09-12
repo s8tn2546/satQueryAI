@@ -119,10 +119,49 @@ function rejectedUpload(res, error) {
 }
 
 /**
+ * Extract a persisted, exposed metadata object from the ML /validate result.
+ * Every field is taken verbatim from the ML response (never invented); fields
+ * the ML service did not return are omitted so the UI only shows real values.
+ */
+function extractValidateMetadata(mlResult) {
+  const v = (mlResult && mlResult.result) || {};
+  const meta = {};
+  for (const [key, value] of Object.entries(v)) {
+    if (value === null || value === undefined) continue;
+    meta[key] = value;
+  }
+  return meta;
+}
+
+/**
+ * Derive the smaller backward-compatible tiles fields (crs, resolution,
+ * bands) from the full /validate metadata.
+ */
+function deriveTileFields(v) {
+  const bands = Array.isArray(v?.bands)
+    ? v.bands
+        .map((b) => (b && typeof b === 'object') ? (b.detected_name || b.description || (b.index != null ? String(b.index) : '')) : '')
+        .filter(Boolean)
+    : [];
+  let resolution = null;
+  const res = v?.resolution;
+  if (res && typeof res === 'object' && Number.isFinite(res.x)) {
+    resolution = Number(res.x);
+  } else if (Number.isFinite(res)) {
+    resolution = Number(res);
+  }
+  return {
+    crs: typeof v?.crs === 'string' ? v.crs : null,
+    resolution,
+    bands
+  };
+}
+
+/**
  * Ask the ML service's /validate endpoint for a real validation verdict. Returns
- * { validated, validationDetails } using the ML response when available; falls
- * back to a lenient local check (format + extension) when the ML service is
- * unreachable/offline so the demo never hard-fails on upload.
+ * { validated, validationDetails, metadata } using the ML response when
+ * available; falls back to a lenient local check (format + extension) when the
+ * ML service is unreachable/offline so the demo never hard-fails on upload.
  */
 async function validateWithMlService(file, modalityHint, format) {
   const fallback = {
@@ -132,7 +171,8 @@ async function validateWithMlService(file, modalityHint, format) {
       mimeType: file.mimetype,
       sizeBytes: file.size,
       validationSource: 'local-fallback'
-    }
+    },
+    metadata: {}
   };
 
   let mlResult;
@@ -152,8 +192,9 @@ async function validateWithMlService(file, modalityHint, format) {
   }
 
   const v = mlResult.result || {};
+  const metadata = extractValidateMetadata(mlResult);
   return {
-    validated: Boolean(v.valid) && v.valid !== undefined ? Boolean(v.valid) : true,
+    validated: v.valid !== undefined ? Boolean(v.valid) : true,
     validationDetails: {
       formatValid: v.formatValid ?? true,
       mimeType: file.mimetype,
@@ -163,7 +204,8 @@ async function validateWithMlService(file, modalityHint, format) {
       warnings: v.warnings ?? [],
       confidence: mlResult.confidence,
       validationSource: 'ml-service'
-    }
+    },
+    metadata
   };
 }
 
@@ -230,11 +272,14 @@ router.post('/upload', (req, res) => {
           fileModality = String(modality).toLowerCase();
         }
 
-        const { validated, validationDetails } = await validateWithMlService(
+        const { validated, validationDetails, metadata } = await validateWithMlService(
           file,
           req.body.modality_hint || fileModality,
           format
         );
+
+        const derived = deriveTileFields(metadata);
+        const boundingBox = normalizeBoundingBox(metadata.wgs84_bounds || metadata.bounds) || null;
 
         const tile = await Tile.create({
           source: source || 'benchmark-upload',
@@ -242,7 +287,12 @@ router.post('/upload', (req, res) => {
           format: format,
           filePath: file.path,
           validated,
-          validationDetails
+          validationDetails,
+          ...(boundingBox ? { boundingBox } : {}),
+          crs: derived.crs || null,
+          resolution: derived.resolution,
+          bands: derived.bands,
+          metadata
         });
 
         tileIds.push(tile._id);
@@ -340,6 +390,16 @@ router.post('/fetch-by-region', async (req, res) => {
           dataSource: mlResult.result?.source || mlResult.metadata?.data_source || null,
           downloaded: Boolean(img.downloaded),
           geometryFollows: Boolean(imageBbox)
+        },
+        metadata: {
+          modality: img.modality || null,
+          source: img.source || null,
+          satellite: img.satellite || null,
+          captureDate: img.captureDate || null,
+          crs: img.crs || null,
+          resolution: img.resolution ?? null,
+          bands: Array.isArray(img.bands) ? img.bands : [],
+          validationStatus: img.validation_status ?? null
         }
       });
 

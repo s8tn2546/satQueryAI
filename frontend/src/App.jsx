@@ -6,7 +6,7 @@ import Sidebar from './Components/Sidebar';
 import TopBar from './Components/TopBar';
 import ResultsPanel from './Components/ResultsPanel';
 import SidebarIcon from './Components/SidebarIcon';
-import { submitQuery, fetchQueryHistory, uploadImages, fetchRegionImagery, warmupVlm } from './services/api';
+import { submitQuery, fetchQueryHistory, uploadImages, fetchRegionImagery, warmupVlm, bboxToGeoJSONPolygon } from './services/api';
 
 const SESSION_KEY = 'satquery.sessionId';
 
@@ -229,6 +229,11 @@ export default function App() {
         : false;
       const parameters = { mode: avMode };
       if (avMode === 'temporal' && isPlainRaster) parameters.band = 1;
+      // A drawn region of interest is the analysis's AOI scope. It reaches the
+      // tool as a GeoJSON geometry (same canonical polygon used for region-based
+      // acquisition) so the region is part of the request, not decorative.
+      const aoi = bboxToGeoJSONPolygon(roiAttachment?.bbox);
+      if (aoi) parameters.aoi = aoi;
 
       const payload = await submitQuery({
         queryText: finalQuery,
@@ -301,7 +306,7 @@ export default function App() {
 
   const handleInvestigatePeriod = (pt1, pt2) => {
     const periodQuery = `Analyze change from ${pt1.label} to ${pt2.label}`;
-    handleSubmit({ prompt: periodQuery, mode: 'change' });
+    handleSubmit(periodQuery, 'temporal');
   };
 
   return (

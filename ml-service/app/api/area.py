@@ -14,6 +14,7 @@ from fastapi import APIRouter, File, Form, UploadFile
 from app.common.http_utils import (
     InvalidFileError,
     error_output,
+    parse_aoi_geometry,
     read_upload_file,
     save_to_temp,
     validate_upload_ext,
@@ -32,6 +33,10 @@ async def area_endpoint(
     feature_type: str | None = Form(
         default=None,
         description="Optional label describing the feature being measured",
+    ),
+    aoi_geometry: str | None = Form(
+        default=None,
+        description="Optional JSON-stringified GeoJSON AOI scope (recorded in metadata only)",
     ),
 ):
     """Compute the surface area covered by valid pixels in an uploaded raster."""
@@ -84,5 +89,9 @@ async def area_endpoint(
             "crs": result.get("crs"),
         },
         confidence=float(result.get("confidence", 1.0)),
-        metadata={"filename": filename, "size_bytes": len(content)},
+        metadata={
+            "filename": filename,
+            "size_bytes": len(content),
+            **parse_aoi_geometry(aoi_geometry),
+        },
     )

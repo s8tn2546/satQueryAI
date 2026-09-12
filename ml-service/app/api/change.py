@@ -15,6 +15,7 @@ from fastapi import APIRouter, File, Form, UploadFile
 from app.common.http_utils import (
     InvalidFileError,
     error_output,
+    parse_aoi_geometry,
     read_upload_file,
     save_to_temp,
     validate_upload_ext,
@@ -55,6 +56,10 @@ async def change_endpoint(
     band_t2: int | None = Form(
         default=None,
         description="Optional explicit 1-based band index in image2.",
+    ),
+    aoi_geometry: str | None = Form(
+        default=None,
+        description="Optional JSON-stringified GeoJSON AOI scope (recorded in metadata only)",
     ),
 ):
     """Run bi-temporal change detection between two uploaded images."""
@@ -142,5 +147,6 @@ async def change_endpoint(
             "size_bytes_1": len(content1),
             "size_bytes_2": len(content2),
             "comparison_band": result.get("comparison_band"),
+            **parse_aoi_geometry(aoi_geometry),
         },
     )

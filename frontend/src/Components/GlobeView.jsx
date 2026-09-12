@@ -64,6 +64,7 @@ export default function GlobeView({ onCoordsChange, onRegionSelect }) {
   const [searchLoading, setSearchLoading] = useState(false);
   const [searchMsg, setSearchMsg] = useState(null);
   const [baseLayersList, setBaseLayersList] = useState([]);
+  const [isFullscreen, setIsFullscreen] = useState(false);
   const containerRef = useRef(null);
   const viewerRef = useRef(null);
   const lastTouchDist = useRef(null);
@@ -214,6 +215,38 @@ export default function GlobeView({ onCoordsChange, onRegionSelect }) {
       roiEntityRef.current = null;
     }
   };
+
+  // Fullscreen toggle for the globe wrapper. The wrapper (not just the canvas)
+  // is put in fullscreen so the top-right ROI toolbar stays reachable while the
+  // map fills the screen. Reuses the existing fullscreenchange resize handler.
+  const toggleFullscreen = async () => {
+    const el = containerRef.current;
+    if (!el) return;
+    try {
+      if (document.fullscreenElement) {
+        await (document.exitFullscreen ? document.exitFullscreen() : Promise.resolve());
+      } else if (el.requestFullscreen) {
+        await el.requestFullscreen();
+      } else if (el.webkitRequestFullscreen) {
+        el.webkitRequestFullscreen();
+      }
+    } catch (err) {
+      console.warn('Fullscreen request could not be completed:', err);
+    }
+  };
+
+  useEffect(() => {
+    const syncFullscreen = () => {
+      setIsFullscreen(Boolean(document.fullscreenElement || document.webkitFullscreenElement));
+      if (viewerRef.current && !viewerRef.current.isDestroyed()) viewerRef.current.resize();
+    };
+    document.addEventListener('fullscreenchange', syncFullscreen);
+    document.addEventListener('webkitfullscreenchange', syncFullscreen);
+    return () => {
+      document.removeEventListener('fullscreenchange', syncFullscreen);
+      document.removeEventListener('webkitfullscreenchange', syncFullscreen);
+    };
+  }, []);
 
   const homeView = () => {
     const viewer = viewerRef.current;
@@ -578,7 +611,7 @@ export default function GlobeView({ onCoordsChange, onRegionSelect }) {
   }, []);
 
   return (
-    <div ref={containerRef} className="absolute inset-0 w-full h-full">
+    <div ref={containerRef} className="satquery-globe absolute inset-0 w-full h-full">
       <div id="cesiumContainer" className="w-full h-full" />
 
       {/* Globe Region ROI Selection Toolbar */}
@@ -594,6 +627,23 @@ export default function GlobeView({ onCoordsChange, onRegionSelect }) {
             <path d="M9 3v18M15 3v18M3 9h18M3 15h18" />
           </svg>
           <span>{isDrawMode ? 'Drawing ROI...' : 'Draw ROI'}</span>
+        </button>
+
+        <button
+          type="button"
+          className={`roi-tool-btn ${isFullscreen ? 'active' : ''}`}
+          onClick={toggleFullscreen}
+          title={isFullscreen ? 'Exit Fullscreen' : 'Enter Fullscreen'}
+          aria-label={isFullscreen ? 'Exit Fullscreen' : 'Enter Fullscreen'}
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            {isFullscreen ? (
+              <path d="M9 3H3v6M15 3h6v6M9 21H3v-6M15 21h6v-6" />
+            ) : (
+              <path d="M3 3h6M3 3v6M21 3h-6M21 3v6M3 21h6M3 21v-6M21 21h-6M21 21v-6" />
+            )}
+          </svg>
+          <span>{isFullscreen ? 'Exit Fullscreen' : 'Fullscreen'}</span>
         </button>
 
         <button

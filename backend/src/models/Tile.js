@@ -37,7 +37,8 @@ const tileSchema = new mongoose.Schema({
   bands: { type: [String], default: [] },
   filePath: { type: String, required: true },
   validated: { type: Boolean, default: false },
-  validationDetails: { type: Object, default: {} }
+  validationDetails: { type: Object, default: {} },
+  metadata: { type: Object, default: {} }
 }, { timestamps: true });
 
 export const Tile = mongoose.model('Tile', tileSchema);

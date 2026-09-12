@@ -7,7 +7,8 @@ import {
   toolConfidence,
   primaryToolName,
   rawVqaAnswer,
-  isFiniteNumber
+  isFiniteNumber,
+  traceLabel
 } from '../lib/results';
 
 const TOOL_LABELS = {
@@ -21,6 +22,25 @@ const TOOL_LABELS = {
   area: 'Area',
   trend: 'Trend'
 };
+
+// Minimal HTML escaping for locally generated report content.
+function esc(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+function fmtCoord(v) {
+  return isFiniteNumber(v) ? Number(v).toFixed(4) : '—';
+}
+
+// A raster is georeferenced only when actual CRS/geographic bounds metadata is
+// present. Absence of that metadata must never be presented as georeferenced.
+function hasSpatialReference(meta) {
+  return Boolean(meta && (meta.crs || meta.bounds || meta.wgs84_bounds));
+}
 
 export default function ResultsPanel({ query, resultData, onClose, isAnalyzing = false, onInvestigatePeriod }) {
   const [activeTab, setActiveTab] = useState('evidence');
@@ -64,19 +84,65 @@ export default function ResultsPanel({ query, resultData, onClose, isAnalyzing =
   const imageRefs = Array.isArray(resultData?.imageRefs) ? resultData.imageRefs.filter(Boolean) : [];
   const evidence = resultData?.evidence && typeof resultData.evidence === 'object' ? resultData.evidence : {};
   const parameters = resultData?.parameters && typeof resultData.parameters === 'object' ? resultData.parameters : {};
-  const steps = Array.isArray(resultData?.trace)
+  const rawSteps = Array.isArray(resultData?.trace)
     ? resultData.trace
     : Array.isArray(resultData?.executionTrace)
       ? resultData.executionTrace
       : [];
+  // Display traces through the existing traceLabel() normalizer so each step
+  // gets a real number + title (mirror steps collapsed). The raw trace is kept
+  // for the JSON export so no fidelity is lost there.
+  const steps = traceLabel(rawSteps);
   const imageT1Url = resultData?.uploadedImages?.[0]?.url || resultData?.imageT1 || '';
   const imageT2Url = resultData?.uploadedImages?.[1]?.url || resultData?.imageT2 || '';
   const imageUrl = imageT1Url || imageT2Url || (resultData?.uploadedImages?.[0]?.url || '');
   const hasTwoImages = Boolean(imageT1Url && imageT2Url);
+  // Browsers cannot render TIFF previews, so the interactive T1/T2 Swipe /
+  // Opacity viewport is only available when both uploaded previews are
+  // browser-renderable (PNG/JPEG). TIFF pairs keep the labelled source cards.
+  const uploadPreviewName = (i) => {
+    const u = (resultData?.uploadedImages && resultData.uploadedImages[i]) || {};
+    return u.name || (u.file && u.file.name) || '';
+  };
+  const renderablePair = hasTwoImages && Array.isArray(resultData?.uploadedImages)
+    && resultData.uploadedImages.length >= 2
+    && [0, 1].every((i) => /\.(png|jpe?g|webp)$/i.test(uploadPreviewName(i)));
   const trendData = resultData?.trendData || null;
   const metrics = resultData?.metrics || {};
   const modelMetadata = resultData?.modelMetadata || {};
   const severity = resultData?.severity || null;
+
+  // Scene validation metadata, resolved from persisted tiles (publicTile now
+  // exposes the full /validate metadata object per image).
+  const sceneEntries = imageRefs.map((id) => {
+    const info = tileInfos[id] || null;
+    const meta = info && info.metadata && typeof info.metadata === 'object' ? info.metadata : null;
+    const hasBands = Boolean(meta && Array.isArray(meta.bands) && meta.bands.length > 0);
+    const hasSceneInfo = Boolean(meta && (
+      meta.crs || meta.bounds || meta.wgs84_bounds || meta.resolution || meta.width || meta.height
+      || meta.band_count || meta.dtype || meta.nodata !== undefined || hasBands
+    ));
+    const res = meta && meta.resolution && isFiniteNumber(meta.resolution.x) && isFiniteNumber(meta.resolution.y)
+      ? meta.resolution : null;
+    const dims = meta && isFiniteNumber(meta.width) && isFiniteNumber(meta.height)
+      ? { width: meta.width, height: meta.height } : null;
+    return {
+      id, info, meta, hasBands, hasSceneInfo,
+      name: (info && (info.name || info.filename)) || String(id).slice(0, 8),
+      crs: meta?.crs || null,
+      bands: hasBands ? meta.bands.length : null,
+      bandIds: hasBands ? meta.bands.map((b) => b?.index ?? b?.detected_name ?? '?') : [],
+      format: meta && meta.format ? String(meta.format) : null,
+      georeferenced: hasSpatialReference(meta),
+      warnings: meta && Array.isArray(meta.warnings) ? meta.warnings : [],
+      resolution: res,
+      dimensions: dims,
+      valid: meta ? !(meta.valid === false || meta.validation_status === 'invalid') : null,
+    };
+  });
+  const sceneMetadataVisible = sceneEntries.some((e) => e.hasSceneInfo);
+  const anySceneMeta = sceneEntries.some((e) => e.meta);
+  const anyGeoreferenced = sceneEntries.some((e) => e.georeferenced);
 
   // Resolve persisted tile metadata so History restores the same source imagery.
   const imageRefKey = imageRefs.join('|');
@@ -133,6 +199,7 @@ export default function ResultsPanel({ query, resultData, onClose, isAnalyzing =
     ? (firstTileInfo.source ? `${firstTileInfo.modality.toUpperCase()} · ${firstTileInfo.source}` : firstTileInfo.modality.toUpperCase())
     : null;
   const modelName = findings.modelName;
+
   const changeToolResult = (() => {
     const ch = toolResults.find((t) => t && t.tool === 'change' && t.status === 'success');
     return ch && ch.result && typeof ch.result === 'object' ? ch.result : null;
@@ -157,6 +224,28 @@ export default function ResultsPanel({ query, resultData, onClose, isAnalyzing =
     : status === 'failed' ? 'failed' :
       status === 'rejected' ? 'rejected' :
       status === 'partial' ? 'partial' : 'ready';
+
+  // Successful single-scene VQA results carry their conclusion in the header
+  // (buildFindings primary). The Findings tab surfaces that SAME canonical
+  // output — never a second, independent VQA result — plus the factual
+  // metadata already attached to the tool result. Defined after status /
+  // confidence so there is no temporal-dead-zone reference.
+  const vqaFinding = (taskType === 'VQA' && status !== 'failed' && status !== 'rejected' && findings.primary)
+    ? {
+        primary: findings.primary,
+        context: findings.explanation,
+        question: query,
+        model: findings.modelName,
+        adapter: findings.adapterActive,
+        hasAdapterInfo: findings.adapterActive !== null,
+        tool: primaryTool ? (TOOL_LABELS[primaryTool] || primaryTool) : null,
+        toolConf: primaryToolConf,
+        confidence,
+        inputType,
+        modalityLabel
+      }
+    : null;
+
   const statusLabel = isAnalyzing
     ? 'Analyzing'
     : status === 'failed' ? 'Analysis Failed' :
@@ -165,6 +254,88 @@ export default function ResultsPanel({ query, resultData, onClose, isAnalyzing =
       (hasResult ? 'Analysis Complete' : 'Awaiting Data');
   const isMock = Boolean(resultData?.isMockResult) || answerText === 'offline-placeholder';
   const rawAnswer = rawVqaAnswer(toolResults, answerText);
+
+  // Data Quality status always mirrors the real analysis outcome: a failed or
+  // rejected query must never read as "READY_FOR_ANALYSIS". The backend's
+  // qualityReport is authoritative when present; otherwise status drives it.
+  const qualityReport = resultData?.qualityReport || null;
+  const qualityStatus = qualityReport?.status || (
+    status === 'failed' || status === 'rejected' ? 'CANNOT_ANALYZE'
+      : status === 'partial' ? 'ANALYSIS_WARNING'
+        : 'READY_FOR_ANALYSIS'
+  );
+
+  // A VQA query over an unreferenced PNG/JPEG is analysis-ready for VISUAL
+  // work, but it is factually NOT georeferenced and has NO usable
+  // CRS/resolution/bounds. Surface that distinction honestly while leaving
+  // the underlying status semantics unchanged for geospatial tasks.
+  const visualOnlyReady = qualityStatus === 'READY_FOR_ANALYSIS' && taskType === 'VQA' && anySceneMeta && !anyGeoreferenced;
+  const qualityStatusLabel = qualityStatus === 'CANNOT_ANALYZE'
+    ? 'CANNOT ANALYZE'
+    : qualityStatus === 'ANALYSIS_WARNING'
+      ? 'ANALYSIS WARNING'
+      : visualOnlyReady
+        ? 'READY FOR VISUAL ANALYSIS'
+        : 'READY FOR ANALYSIS';
+  const qualitySummary = visualOnlyReady
+    ? 'Raster validated and ready for visual analysis. No CRS/transform metadata was provided — georeferencing, spatial resolution and geographic bounds are not available.'
+    : qualityReport?.summary || null;
+
+  // Build Data Quality checks from the resolved tile metadata (authoritative
+  // facts), not from assertions. A non-georeferenced PNG therefore shows
+  // "Georeferencing & CRS -> NOT AVAILABLE" instead of a fabricated PASS, while
+  // a real GeoTIFF keeps its actual CRS/resolution/bounds. Backend checks that
+  // are not covered by the fact sheet are preserved.
+  const buildDataQualityChecks = (scenes) => {
+    if (!scenes.length) return null;
+    const first = scenes[0];
+    const count = scenes.length;
+    const bandWarn = (first.warnings || []).find((w) => /band desc/i.test(w));
+    const na = 'NOT_AVAILABLE';
+    const checks = [
+      {
+        name: 'Raster Format & Readability',
+        status: 'PASS',
+        details: `All ${count} tile(s) readable in ${first.format ? first.format.toUpperCase() : 'supported raster'} format.`
+      },
+      first.georeferenced
+        ? {
+            name: 'Georeferencing & CRS',
+            status: 'PASS',
+            details: `Georeferenced${first.crs ? ` in ${first.crs}` : ''}; spatial bounds match coordinate framework.`
+          }
+        : {
+            name: 'Georeferencing & CRS',
+            status: na,
+            details: 'No CRS/transform metadata provided — image is not georeferenced. Geospatial operations are unavailable (visual analysis is unaffected).'
+          },
+      first.resolution
+        ? { name: 'Spatial Resolution', status: 'PASS', details: `${first.resolution.x} × ${first.resolution.y} m per pixel.` }
+        : { name: 'Spatial Resolution', status: na, details: 'No ground sample distance / resolution metadata provided.' },
+      first.bands
+        ? { name: 'Band Availability', status: 'PASS', details: `${first.bands} spectral channel(s) available${bandWarn ? ' — band identities not determinable from metadata alone' : ''}.` }
+        : { name: 'Band Availability', status: 'LIMITED', details: 'Band metadata unavailable.' },
+      first.dimensions
+        ? { name: 'Image Dimensions', status: 'PASS', details: `${first.dimensions.width} × ${first.dimensions.height} px.` }
+        : { name: 'Image Dimensions', status: na, details: 'No pixel dimensions provided.' }
+    ];
+    return checks;
+  };
+
+  const reportChecks = qualityReport?.checks && Array.isArray(qualityReport.checks) ? qualityReport.checks : [];
+  const factualChecks = buildDataQualityChecks(sceneEntries) || [];
+  for (const c of reportChecks) {
+    if (!factualChecks.some((f) => f.name === c.name)) factualChecks.push(c);
+  }
+  // A hard-failed/rejected query must keep its failure presentation even when
+  // tile metadata exists; the fact sheet only applies to analyses that ran.
+  const qualityChecks = (qualityStatus === 'CANNOT_ANALYZE')
+    ? [{ name: 'Analysis Completion', status: 'FAIL', details: answerText || 'Analysis could not be completed.' }]
+    : factualChecks.length
+      ? factualChecks
+      : qualityStatus === 'ANALYSIS_WARNING'
+        ? [{ name: 'Analysis Completion', status: 'WARN', details: answerText || 'Analysis completed with warnings.' }]
+        : reportChecks;
 
   const handleDownloadReport = () => {
     if (!hasResult) return;
@@ -176,12 +347,65 @@ export default function ResultsPanel({ query, resultData, onClose, isAnalyzing =
         <li class="step-item">
           <div class="step-num">${s.failed ? '!' : '✓'}</div>
           <div>
-            <div class="step-title">${s.number} &middot; ${s.title}</div>
-            <div class="step-desc">${s.detail || ''}</div>
+            <div class="step-title">${esc(s.number)} &middot; ${esc(s.title)}</div>
+            <div class="step-desc">${esc(s.detail)}</div>
           </div>
         </li>
       `).join('')
         : '<li class="step-item"><div class="step-desc">No execution trace recorded.</div></li>';
+
+      // Result measurements: only values actually returned by a successful tool.
+      const resultRows = [];
+      for (const tr of toolResults) {
+        if (tr && (tr.status === 'success' || tr.status === 'partial') && tr.result && typeof tr.result === 'object') {
+          const skip = new Set(['warnings', 'change_mask_path', 'change_mask_url', 'map_image_path', 'error']);
+          const entries = Object.entries(tr.result).filter(([k, v]) => !skip.has(k) && v !== undefined && v !== null);
+          for (const [k, v] of entries.slice(0, 14)) {
+            const display = typeof v === 'object' ? JSON.stringify(v) : String(v);
+            resultRows.push(`<tr><td class="k">${esc(TOOL_LABELS[tr.tool] || tr.tool)} · ${esc(k)}</td><td class="v">${esc(display)}</td></tr>`);
+          }
+        }
+      }
+      const metricsRows = Object.entries(metrics || {}).slice(0, 14)
+        .map(([k, v]) => `<tr><td class="k">${esc(k)}</td><td class="v">${esc(typeof v === 'object' ? JSON.stringify(v) : String(v))}</td></tr>`);
+
+      const qualityRows = (qualityChecks || []).map((c) =>
+        `<li class="q-item"><span class="q-status ${esc((c.status || 'WARN').toLowerCase())}">${esc(c.status)}</span><span class="q-name">${esc(c.name)}</span><span class="q-detail">${esc(c.details)}</span></li>`
+      ).join('');
+
+      const aoiBlock = resultData?.roiAttachment && resultData.roiAttachment.bbox
+        ? `
+  <div class="section-title">AOI Scope</div>
+  <div class="card">
+    <div class="label">Region of Interest</div>
+    <p class="query-text" style="font-size:15px;">${esc(resultData.roiAttachment.name || 'Drawn region')}</p>
+    <div style="margin-top:10px; font-size:13px; color:#cbd5e1;">
+      BBox (W, S, E, N): [${esc(resultData.roiAttachment.bbox.west)}, ${esc(resultData.roiAttachment.bbox.south)}, ${esc(resultData.roiAttachment.bbox.east)}, ${esc(resultData.roiAttachment.bbox.north)}]
+    </div>
+  </div>`
+        : '';
+
+      const evidenceBlock = `
+  <div class="card">
+    <div class="label">Evidence Sources</div>
+    ${imageRefs.length ? `<ul class="src-list">${imageRefs.map((id) => {
+      const info = tileInfos[id] || null;
+      const label = info
+        ? [info.modality && info.modality.toUpperCase(), info.source, info.format && info.format.toUpperCase()].filter(Boolean).join(' · ')
+        : id;
+      return `<li>${esc(label)} <span class="muted">${esc(id)}</span></li>`;
+    }).join('')}</ul>` : '<div class="muted">No source imagery recorded.</div>'}
+    ${evidence && evidence.notes ? `<p class="muted" style="margin-top:8px;">${esc(evidence.notes)}</p>` : ''}
+  </div>`;
+
+      const detectionsBlock = boxes.length
+        ? `
+  <div class="section-title">Detections</div>
+  <div class="card">
+    <ul class="src-list">
+      ${boxes.map((b) => `<li><strong>${esc(b.label)}</strong>${b.confidence ? ` <span class="muted">conf ${esc(b.confidence)}</span>` : ''}${b.area ? ` <span class="muted">area ${esc(b.area)}</span>` : ''}</li>`).join('')}
+    </ul>
+  </div>` : '';
 
       const reportContent = `
 <!DOCTYPE html>
@@ -199,11 +423,26 @@ export default function ResultsPanel({ query, resultData, onClose, isAnalyzing =
     .query-text { font-size: 18px; font-weight: 600; color: #ffffff; margin: 0; }
     .section-title { font-size: 14px; font-weight: 700; color: #8fc5ff; letter-spacing: 0.5px; margin: 28px 0 14px; text-transform: uppercase; border-left: 3px solid #3b7ddd; padding-left: 10px; }
     .answer-body { font-size: 15px; line-height: 1.7; color: #cbd5e1; }
-    .step-list { list-style: none; padding: 0; margin: 0; }
-    .step-item { display: flex; align-items: flex-start; gap: 12px; padding: 12px 0; border-bottom: 1px solid rgba(255, 255, 255, 0.06); }
+    .meta-grid { display: flex; flex-wrap: wrap; gap: 16px 32px; margin-top: 14px; font-size: 13px; color: #cbd5e1; }
+    .meta-name { font-size: 10px; font-weight: 700; text-transform: uppercase; color: #94a3b8; letter-spacing: 1px; display: block; }
+    .meta-val { font-weight: 600; color: #f1f5f9; }
+    .step-list, .src-list, .q-list { list-style: none; padding: 0; margin: 0; }
+    .step-item, .q-item { display: flex; align-items: flex-start; gap: 12px; padding: 12px 0; border-bottom: 1px solid rgba(255, 255, 255, 0.06); }
     .step-num { width: 22px; height: 22px; border-radius: 50%; background: #3b7ddd; color: #ffffff; font-weight: bold; font-size: 12px; display: grid; place-items: center; flex: none; }
     .step-title { font-size: 14px; font-weight: 600; color: #f1f5f9; }
     .step-desc { font-size: 12px; color: #94a3b8; margin-top: 2px; }
+    .q-status { font-size: 10px; font-weight: 800; text-transform: uppercase; border-radius: 6px; padding: 2px 8px; }
+    .q-status.pass { background: rgba(16,185,129,0.18); color: #6ee7b7; }
+    .q-status.warn { background: rgba(245,158,11,0.18); color: #fcd34d; }
+    .q-status.fail { background: rgba(239,68,68,0.18); color: #fca5a5; }
+    .q-name { font-size: 13px; font-weight: 600; color: #f1f5f9; width: 260px; flex: none; }
+    .q-detail { font-size: 12px; color: #94a3b8; }
+    .muted { color: #64748b; font-size: 12px; }
+    .src-list li { padding: 8px 0; border-bottom: 1px solid rgba(255,255,255,0.06); font-size: 13px; color: #cbd5e1; }
+    .kv-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    .kv-table td { padding: 8px 12px; border-bottom: 1px solid rgba(255,255,255,0.06); vertical-align: top; }
+    .kv-table td.k { color: #94a3b8; width: 45%; font-weight: 600; }
+    .kv-table td.v { color: #e2e8f0; word-break: break-word; }
     .footer { margin-top: 60px; font-size: 11px; color: #64748b; text-align: center; border-top: 1px solid rgba(255, 255, 255, 0.08); padding-top: 20px; }
   </style>
 </head>
@@ -215,17 +454,40 @@ export default function ResultsPanel({ query, resultData, onClose, isAnalyzing =
 
   <div class="card">
     <div class="label">Target Analysis Query</div>
-    <p class="query-text">"${query}"</p>
-    <div style="margin-top: 14px; font-size: 12px; color: #94a3b8;">
-      Generated: ${new Date().toLocaleString()}
+    <p class="query-text">"${esc(query)}"</p>
+    <div class="meta-grid">
+      ${taskType ? `<div><span class="meta-name">Task Type</span><span class="meta-val">${esc(taskType)}</span></div>` : ''}
+      ${status ? `<div><span class="meta-name">Status</span><span class="meta-val">${esc(status)}</span></div>` : ''}
+      ${confidence ? `<div><span class="meta-name">Overall Confidence</span><span class="meta-val">${esc(confidence)}</span></div>` : ''}
+      <div><span class="meta-name">Generated</span><span class="meta-val">${new Date().toLocaleString()}</span></div>
     </div>
   </div>
 
   <div class="section-title">Executive Summary & Findings</div>
   <div class="card answer-body">
-    ${findings.primary || answerText || 'No findings available for this query.'}
-    ${findings.explanation ? `<p style="margin:8px 0 0;color:#94a3b8;font-size:12px;">${findings.explanation}</p>` : ''}
+    ${esc(findings.primary || answerText || 'No findings available for this query.')}
+    ${findings.explanation ? `<p style="margin:8px 0 0;color:#94a3b8;font-size:12px;">${esc(findings.explanation)}</p>` : ''}
   </div>
+
+  <div class="section-title">Data Quality</div>
+  <div class="card">
+    <div class="label">Validation Status — ${esc(qualityStatus)}</div>
+    ${qualityReport && qualityReport.summary ? `<p class="muted" style="margin-bottom:6px;">"${esc(qualityReport.summary)}"</p>` : ''}
+    <ul class="q-list">
+      ${qualityRows}
+    </ul>
+  </div>
+
+  ${aoiBlock}
+
+  <div class="section-title">Result Values</div>
+  <div class="card">
+    ${(resultRows.length || metricsRows.length) ? `<table class="kv-table">${resultRows.concat(metricsRows).join('')}</table>` : '<div class="muted">No quantitative values were returned for this query.</div>'}
+  </div>
+
+  ${detectionsBlock}
+
+  ${evidenceBlock}
 
   <div class="section-title">Execution Trace & Verification Pipeline</div>
   <div class="card">
@@ -254,6 +516,7 @@ export default function ResultsPanel({ query, resultData, onClose, isAnalyzing =
     }, 600);
   };
 
+  // eslint-disable-next-line no-unused-vars
   const handleExportJSON = () => {
     if (!hasResult) return;
     const timestamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
@@ -268,7 +531,7 @@ export default function ResultsPanel({ query, resultData, onClose, isAnalyzing =
       metrics,
       modelMetadata,
       detections: boxes,
-      executionTrace: steps
+      executionTrace: rawSteps
     };
     const blob = new Blob([JSON.stringify(jsonReport, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
@@ -281,6 +544,7 @@ export default function ResultsPanel({ query, resultData, onClose, isAnalyzing =
     URL.revokeObjectURL(url);
   };
 
+  // eslint-disable-next-line no-unused-vars
   const handleExportGeoJSON = () => {
     if (!boxes.length) return;
     const timestamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
@@ -461,187 +725,14 @@ export default function ResultsPanel({ query, resultData, onClose, isAnalyzing =
     );
   }
 
-  // --- Render ---------------------------------------------------------------
-
-  return (
-    <div className={`results-panel ${isFullscreen ? 'fullscreen' : ''}`}>
-      {/* Header */}
-      <div className="results-panel-header">
-        <div className="results-panel-title">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <circle cx="11" cy="11" r="8" />
-            <line x1="21" y1="21" x2="16.65" y2="16.65" />
-          </svg>
-          Analysis Result
-        </div>
-        <div className="results-panel-header-actions">
-          <button
-            className="download-report-btn"
-            onClick={handleDownloadReport}
-            disabled={isExporting || !hasResult}
-            title={hasResult ? 'Export Satellite Intelligence Report (HTML)' : 'No data to export'}
-          >
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-              <polyline points="7 10 12 15 17 10" />
-              <line x1="12" y1="15" x2="12" y2="3" />
-            </svg>
-            <span>{isExporting ? 'Exporting...' : 'HTML Report'}</span>
-          </button>
-          <button
-            className="export-geojson-btn"
-            onClick={handleExportJSON}
-            disabled={!hasResult}
-            title={hasResult ? 'Export Analysis Data to JSON Format' : 'No data to export'}
-          >
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-              <polyline points="14 2 14 8 20 8" />
-            </svg>
-            <span>JSON</span>
-          </button>
-          <button
-            className="export-geojson-btn"
-            onClick={handleExportGeoJSON}
-            disabled={!boxes.length}
-            title={boxes.length ? 'Export Detections to GeoJSON Format' : 'No detections to export'}
-          >
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <polygon points="12 2 2 7 12 12 22 7 12 2" />
-              <polyline points="2 17 12 22 22 17" />
-              <polyline points="12 2 22 12 12 22" />
-              <polyline points="2 12 12 17 22 12" />
-            </svg>
-            <span>GeoJSON</span>
-          </button>
-          <button
-            className="results-panel-fullscreen-btn"
-            onClick={() => setIsFullscreen(!isFullscreen)}
-            title={isFullscreen ? 'Downsize / Exit Fullscreen' : 'Fullscreen'}
-          >
-            {isFullscreen ? (
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-                <polyline points="4 14 10 14 10 20" />
-                <polyline points="20 10 14 10 14 4" />
-                <line x1="14" y1="10" x2="21" y2="3" />
-                <line x1="10" y1="14" x2="3" y2="21" />
-              </svg>
-            ) : (
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-                <polyline points="15 3 21 3 21 9" />
-                <polyline points="9 21 3 21 3 15" />
-                <line x1="21" y1="3" x2="14" y2="10" />
-                <line x1="3" y1="21" x2="10" y2="14" />
-              </svg>
-            )}
-          </button>
-          <button className="results-panel-close" onClick={onClose} title="Close">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <line x1="18" y1="6" x2="6" y2="18" />
-              <line x1="6" y1="6" x2="18" y2="18" />
-            </svg>
-          </button>
-        </div>
-      </div>
-
-      {/* Query Title */}
-      <div className="results-panel-query">
-        <span className="results-panel-query-label">TARGET QUERY</span>
-        <p className="results-panel-query-text">"{query}"</p>
-      </div>
-
-      {/* FINDING header — the main answer is never buried */}
-      <div className="finding-hero">
-        <span className="finding-label">FINDING</span>
-        <h2 className="finding-primary">{isAnalyzing ? 'Analyzing satellite imagery…' : findings.primary}</h2>
-        {!isAnalyzing && findings.explanation && <p className="finding-explanation">{findings.explanation}</p>}
-
-        <div className="finding-meta">
-          <span className={`results-panel-badge ${statusClass}`}>
-            <span className="results-panel-badge-dot" />
-            {statusLabel}
-          </span>
-          {confidence && (
-            <span className="confidence-chip">
-              Overall confidence: <strong>{confidence}</strong>
-            </span>
-          )}
-          {primaryTool && (
-            <span className="tool-chip">
-              {TOOL_LABELS[primaryTool] || primaryTool}
-              {primaryToolConf && <em>· {primaryToolConf}</em>}
-            </span>
-          )}
-          {findings.modelName && (
-            <span className="model-chip">
-              {findings.modelName}
-              {findings.adapterActive !== null && (
-                <span className={findings.adapterActive ? 'adapter-active' : 'adapter-inactive'}>
-                  LoRA Adapter: {findings.adapterActive ? 'Active' : 'Inactive'}
-                </span>
-              )}
-            </span>
-          )}
-        </div>
-      </div>
-
-      {isAnalyzing && (
-        <div className="analysis-progress">
-          <ol className="analysis-stages">
-            {analysisStages.map((st) => (
-              <li key={st.id} className={`analysis-stage ${st.state}`}>
-                <span className="analysis-stage-mark">{st.state === 'done' ? '✓' : st.state === 'active' ? '●' : '○'}</span>
-                <span className="analysis-stage-label">{st.label}</span>
-              </li>
-            ))}
-          </ol>
-          <p className="analysis-progress-note">
-            CPU vision-model inference is in progress — this typically takes 1–2 minutes for one image.
-            The request is still running and will complete on its own.
-          </p>
-          <p className="analysis-progress-elapsed">Elapsed {elapsedLabel}</p>
-        </div>
-      )}
-
-      {isMock && (
-        <div className="result-mock-note">
-          <strong>Mock / offline result — live ML inference was unavailable.</strong>{' '}
-          The answer and confidence above are labeled substitutes, not measurements.
-        </div>
-      )}
-
-      {/* Navigation Tabs */}
-      <div className="results-tabs">
-        <button className={`results-tab ${activeTab === 'evidence' ? 'active' : ''}`} onClick={() => setActiveTab('evidence')}>
-          Evidence
-        </button>
-        <button className={`results-tab ${activeTab === 'answer' ? 'active' : ''}`} onClick={() => setActiveTab('answer')}>
-          Findings
-        </button>
-        <button className={`results-tab ${activeTab === 'quality' ? 'active' : ''}`} onClick={() => setActiveTab('quality')}>
-          Data Quality
-        </button>
-        <button className={`results-tab ${activeTab === 'trend' ? 'active' : ''}`} onClick={() => setActiveTab('trend')}>
-          Trend
-        </button>
-        <button className={`results-tab ${activeTab === 'trace' ? 'active' : ''}`} onClick={() => setActiveTab('trace')}>
-          Trace
-        </button>
-      </div>
-
-      {/* Body Content */}
-      <div className="results-panel-body">
-        {/* Tab 1: Evidence */}
-        {activeTab === 'evidence' && (
-          <div className="results-evidence-view">
-            {imageRefs.length > 0 ? (
-              <div className={`evidence-source-grid ${imageRefs.length > 1 ? 'multi' : ''}`}>
-                {imageRefs.map((id) => renderSourceCard(id))}
-              </div>
-            ) : imageUrl ? (
-              <>
-                <div className="evidence-controls-stack">
-                  <div className="evidence-controls">
+  // Interactive evidence viewport: T1/T2 Swipe Compare + opacity layers. Used
+  // for a pre-result preview (imageUrl) and, once results are in, for any pair
+  // of browser-renderable uploaded previews so Swipe/Opacity remain reachable.
+  function renderCompareViewport() {
+    return (
+      <>
+        <div className="evidence-controls-stack">
+            <div className="evidence-controls">
                     <button className={`layer-toggle-btn ${showBoundingBoxes ? 'active' : ''}`} onClick={() => setShowBoundingBoxes(!showBoundingBoxes)}>
                       <span className="toggle-indicator" />
                       Bounding Boxes
@@ -699,9 +790,9 @@ export default function ResultsPanel({ query, resultData, onClose, isAnalyzing =
                       </div>
                     )}
                   </div>
-                </div>
+        </div>
 
-                <div className="evidence-viewport aspect-ratio-locked">
+        <div className="evidence-viewport aspect-ratio-locked">
                   <div className="evidence-canvas-frame">
                     <div
                       className="evidence-satellite-bg"
@@ -842,9 +933,9 @@ export default function ResultsPanel({ query, resultData, onClose, isAnalyzing =
                       )}
                     </div>
                   </div>
-                </div>
+        </div>
 
-                {boxes.length > 0 && (
+        {boxes.length > 0 && (
                   <div className="evidence-detections-list">
                     <span className="detections-list-title">DETECTED TARGETS:</span>
                     <div className="detections-chips">
@@ -863,7 +954,166 @@ export default function ResultsPanel({ query, resultData, onClose, isAnalyzing =
                     </div>
                   </div>
                 )}
-              </>
+      </>
+    );
+  }
+
+  // --- Render ---------------------------------------------------------------
+
+  return (
+    <div className={`results-panel ${isFullscreen ? 'fullscreen' : ''}`}>
+      {/* Header */}
+      <div className="results-panel-header">
+        <div className="results-panel-title">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <circle cx="11" cy="11" r="8" />
+            <line x1="21" y1="21" x2="16.65" y2="16.65" />
+          </svg>
+          Analysis Result
+        </div>
+        <div className="results-panel-header-actions">
+          <button
+            className="download-report-btn"
+            onClick={handleDownloadReport}
+            disabled={isExporting || !hasResult}
+            title={hasResult ? 'Export Satellite Intelligence Report (HTML)' : 'No data to export'}
+          >
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+              <polyline points="7 10 12 15 17 10" />
+              <line x1="12" y1="15" x2="12" y2="3" />
+            </svg>
+            <span>{isExporting ? 'Exporting...' : 'HTML Report'}</span>
+          </button>
+          <button
+            className="results-panel-fullscreen-btn"
+            onClick={() => setIsFullscreen(!isFullscreen)}
+            title={isFullscreen ? 'Downsize / Exit Fullscreen' : 'Fullscreen'}
+          >
+            {isFullscreen ? (
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                <polyline points="4 14 10 14 10 20" />
+                <polyline points="20 10 14 10 14 4" />
+                <line x1="14" y1="10" x2="21" y2="3" />
+                <line x1="10" y1="14" x2="3" y2="21" />
+              </svg>
+            ) : (
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                <polyline points="15 3 21 3 21 9" />
+                <polyline points="9 21 3 21 3 15" />
+                <line x1="21" y1="3" x2="14" y2="10" />
+                <line x1="3" y1="21" x2="10" y2="14" />
+              </svg>
+            )}
+          </button>
+          <button className="results-panel-close" onClick={onClose} title="Close">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <line x1="18" y1="6" x2="6" y2="18" />
+              <line x1="6" y1="6" x2="18" y2="18" />
+            </svg>
+          </button>
+        </div>
+      </div>
+
+      {/* Query Title */}
+      <div className="results-panel-query">
+        <span className="results-panel-query-label">TARGET QUERY</span>
+        <p className="results-panel-query-text">"{query}"</p>
+      </div>
+
+      {/* FINDING header — the main answer is never buried */}
+      <div className="finding-hero">
+        <span className="finding-label">FINDING</span>
+        <h2 className="finding-primary">{isAnalyzing ? 'Analyzing satellite imagery…' : findings.primary}</h2>
+        {!isAnalyzing && findings.explanation && <p className="finding-explanation">{findings.explanation}</p>}
+
+        <div className="finding-meta">
+          <span className={`results-panel-badge ${statusClass}`}>
+            <span className="results-panel-badge-dot" />
+            {statusLabel}
+          </span>
+          {confidence && (
+            <span className="confidence-chip">
+              Overall confidence: <strong>{confidence}</strong>
+            </span>
+          )}
+          {primaryTool && (
+            <span className="tool-chip">
+              {TOOL_LABELS[primaryTool] || primaryTool}
+              {primaryToolConf && <em>· {primaryToolConf}</em>}
+            </span>
+          )}
+          {findings.modelName && (
+            <span className="model-chip">
+              {findings.modelName}
+              {findings.adapterActive !== null && (
+                <span className={findings.adapterActive ? 'adapter-active' : 'adapter-inactive'}>
+                  LoRA Adapter: {findings.adapterActive ? 'Active' : 'Inactive'}
+                </span>
+              )}
+            </span>
+          )}
+        </div>
+      </div>
+
+      {isAnalyzing && (
+        <div className="analysis-progress">
+          <ol className="analysis-stages">
+            {analysisStages.map((st) => (
+              <li key={st.id} className={`analysis-stage ${st.state}`}>
+                <span className="analysis-stage-mark">{st.state === 'done' ? '✓' : st.state === 'active' ? '●' : '○'}</span>
+                <span className="analysis-stage-label">{st.label}</span>
+              </li>
+            ))}
+          </ol>
+          <p className="analysis-progress-note">
+            CPU vision-model inference is in progress — this typically takes 1–2 minutes for one image.
+            The request is still running and will complete on its own.
+          </p>
+          <p className="analysis-progress-elapsed">Elapsed {elapsedLabel}</p>
+        </div>
+      )}
+
+      {isMock && (
+        <div className="result-mock-note">
+          <strong>Mock / offline result — live ML inference was unavailable.</strong>{' '}
+          The answer and confidence above are labeled substitutes, not measurements.
+        </div>
+      )}
+
+      {/* Navigation Tabs */}
+      <div className="results-tabs">
+        <button className={`results-tab ${activeTab === 'evidence' ? 'active' : ''}`} onClick={() => setActiveTab('evidence')}>
+          Evidence
+        </button>
+        <button className={`results-tab ${activeTab === 'answer' ? 'active' : ''}`} onClick={() => setActiveTab('answer')}>
+          Findings
+        </button>
+        <button className={`results-tab ${activeTab === 'quality' ? 'active' : ''}`} onClick={() => setActiveTab('quality')}>
+          Data Quality
+        </button>
+        <button className={`results-tab ${activeTab === 'trend' ? 'active' : ''}`} onClick={() => setActiveTab('trend')}>
+          Trend
+        </button>
+        <button className={`results-tab ${activeTab === 'trace' ? 'active' : ''}`} onClick={() => setActiveTab('trace')}>
+          Trace
+        </button>
+      </div>
+
+      {/* Body Content */}
+      <div className="results-panel-body">
+        {/* Tab 1: Evidence */}
+        {activeTab === 'evidence' && (
+          <div className="results-evidence-view">
+            {imageRefs.length > 0 ? (
+              <div className="evidence-source-stack">
+                <div className={`evidence-source-grid ${imageRefs.length > 1 ? 'multi' : ''}`}>
+                  {imageRefs.map((id) => renderSourceCard(id))}
+                </div>
+                {renderablePair && renderCompareViewport()}
+              </div>
+            ) : imageUrl ? (
+              renderCompareViewport()
             ) : (
               <p className="results-empty-state">
                 No source imagery was provided for this analysis.
@@ -969,12 +1219,36 @@ export default function ResultsPanel({ query, resultData, onClose, isAnalyzing =
         {/* Tab 2: Findings */}
         {activeTab === 'answer' && (
           <div className="results-findings-view">
-            {(boxes.length > 0 || Object.keys(metrics).length > 0 || Object.keys(modelMetadata).length > 0 || severity) ? (
+            {(boxes.length > 0 || Object.keys(metrics).length > 0 || Object.keys(modelMetadata).length > 0 || severity || vqaFinding) ? (
               <div className="intel-cards-grid">
                 {severity && (
                   <div className={`intel-severity-banner severity-${severity.level || 'medium'}`}>
                     <div className="severity-badge">{severity.label || severity.level || 'INFO'}</div>
                     {severity.description && <span className="severity-sub">{severity.description}</span>}
+                  </div>
+                )}
+
+                {vqaFinding && (
+                  <div className="intel-card vqa-finding-card">
+                    <span className="intel-card-label">KEY FINDING</span>
+                    <div className="vqa-finding-primary">{vqaFinding.primary}</div>
+                    {vqaFinding.context && <p className="vqa-finding-context">{vqaFinding.context}</p>}
+                    {vqaFinding.question && (
+                      <p className="vqa-finding-question">
+                        <span className="text-slate-400">Question:</span> "{vqaFinding.question}"
+                      </p>
+                    )}
+                    <div className="vqa-finding-meta">
+                      {vqaFinding.tool && <span className="vqa-meta-chip">{vqaFinding.tool} <em>·</em> {vqaFinding.toolConf || 'no tool confidence'}</span>}
+                      {vqaFinding.inputType && <span className="vqa-meta-chip">Input: {vqaFinding.inputType}</span>}
+                      {vqaFinding.modalityLabel && <span className="vqa-meta-chip">{vqaFinding.modalityLabel}</span>}
+                      {vqaFinding.hasAdapterInfo && (
+                        <span className={`vqa-meta-chip ${vqaFinding.adapter ? 'adapter-status-ok' : 'adapter-status-warn'}`}>
+                          LoRA Adapter: {vqaFinding.adapter ? 'Active' : 'Inactive'}
+                        </span>
+                      )}
+                      {vqaFinding.model && <span className="vqa-meta-chip">Model: {vqaFinding.model}</span>}
+                    </div>
                   </div>
                 )}
 
@@ -1034,43 +1308,42 @@ export default function ResultsPanel({ query, resultData, onClose, isAnalyzing =
               <div>
                 <span className="text-[10px] uppercase font-bold text-slate-400 block tracking-wider">VALIDATION STATUS</span>
                 <span className="text-sm font-semibold text-blue-300">
-                  {resultData?.qualityReport?.status || 'READY_FOR_ANALYSIS'}
+                  {qualityStatusLabel}
                 </span>
               </div>
               <span className={`px-2.5 py-1 rounded-full text-[10px] font-bold uppercase border ${
-                resultData?.qualityReport?.status === 'CANNOT_ANALYZE'
+                qualityStatus === 'CANNOT_ANALYZE'
                   ? 'bg-red-500/20 border-red-500/40 text-red-300'
-                  : resultData?.qualityReport?.status === 'ANALYSIS_WARNING'
+                  : qualityStatus === 'ANALYSIS_WARNING'
                     ? 'bg-amber-500/20 border-amber-500/40 text-amber-300'
                     : 'bg-emerald-500/20 border-emerald-500/40 text-emerald-300'
               }`}>
-                {resultData?.qualityReport?.status || 'READY FOR ANALYSIS'}
+                {qualityStatusLabel}
               </span>
             </div>
 
-            {resultData?.qualityReport?.summary && (
+            {qualitySummary && (
               <p className="text-slate-300 text-xs italic bg-slate-900/60 p-2.5 rounded border border-white/10">
-                "{resultData.qualityReport.summary}"
+                "{qualitySummary}"
               </p>
             )}
 
             <div className="intel-card">
               <span className="intel-card-label">DATA QUALITY CHECKS</span>
               <div className="space-y-2 mt-2">
-                {(resultData?.qualityReport?.checks || [
-                  { name: 'Raster Format & Readability', status: 'PASS', details: 'All image tiles readable in supported format.' },
-                  { name: 'Georeferencing & CRS', status: 'PASS', details: 'Spatial bounds match coordinate framework.' },
-                  { name: 'Band Availability', status: 'PASS', details: 'Spectral channels available for required analysis.' }
-                ]).map((chk, idx) => (
+                {qualityChecks.map((chk, idx) => (
                   <div key={idx} className="flex items-start justify-between p-2 rounded bg-slate-900/40 border border-white/5">
                     <div>
                       <div className="font-semibold text-slate-200">{chk.name}</div>
                       <div className="text-[11px] text-slate-400">{chk.details}</div>
                     </div>
-                    <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold ${
-                      chk.status === 'PASS' ? 'bg-emerald-500/20 text-emerald-300' : chk.status === 'WARN' ? 'bg-amber-500/20 text-amber-300' : 'bg-red-500/20 text-red-300'
+                    <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold whitespace-nowrap ${
+                      chk.status === 'PASS' ? 'bg-emerald-500/20 text-emerald-300'
+                        : chk.status === 'WARN' ? 'bg-amber-500/20 text-amber-300'
+                          : chk.status === 'NOT_AVAILABLE' || chk.status === 'LIMITED' ? 'bg-slate-600/30 text-slate-300'
+                            : 'bg-red-500/20 text-red-300'
                     }`}>
-                      {chk.status}
+                      {chk.status === 'NOT_AVAILABLE' ? 'NOT AVAILABLE' : chk.status}
                     </span>
                   </div>
                 ))}
@@ -1082,8 +1355,51 @@ export default function ResultsPanel({ query, resultData, onClose, isAnalyzing =
                 <span className="intel-card-label">AOI GEOMETRY & SCOPE</span>
                 <div className="space-y-1 mt-1 text-slate-300 text-[11px]">
                   <div><strong className="text-slate-400">Label:</strong> {resultData.roiAttachment.name}</div>
-                  <div><strong className="text-slate-400">BBox (W, S, E, N):</strong> [{resultData.roiAttachment.bbox.west.toFixed(4)}, {resultData.roiAttachment.bbox.south.toFixed(4)}, {resultData.roiAttachment.bbox.east.toFixed(4)}, {resultData.roiAttachment.bbox.north.toFixed(4)}]</div>
+                  <div><strong className="text-slate-400">BBox (W, S, E, N):</strong> [{fmtCoord(resultData.roiAttachment.bbox?.west)}, {fmtCoord(resultData.roiAttachment.bbox?.south)}, {fmtCoord(resultData.roiAttachment.bbox?.east)}, {fmtCoord(resultData.roiAttachment.bbox?.north)}]</div>
                 </div>
+              </div>
+            )}
+
+            {sceneEntries.length > 0 && sceneMetadataVisible && (
+              <div className="intel-card">
+                <span className="intel-card-label">SCENE METADATA (FROM ML VALIDATION)</span>
+                <div className="relative overflow-x-auto mt-1">
+                  <table className="w-full text-[11px] border-collapse">
+                    <thead>
+                      <tr className="text-left text-slate-400 border-b border-white/10">
+                        <th className="py-1 pr-2 font-semibold">Tile</th>
+                        <th className="py-1 pr-2 font-semibold">CRS</th>
+                        <th className="py-1 pr-2 font-semibold">Bands</th>
+                        <th className="py-1 pr-2 font-semibold">Resolution</th>
+                        <th className="py-1 pr-2 font-semibold">Dimensions</th>
+                        <th className="py-1 pr-2 font-semibold">Georeferenced</th>
+                        <th className="py-1 font-semibold">Valid</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {sceneEntries.map((sc, i) => (
+                        <tr key={i} className="border-b border-white/5 text-slate-300">
+                          <td className="py-1 pr-2 whitespace-nowrap text-blue-300">{sc.name}</td>
+                          <td className="py-1 pr-2 whitespace-nowrap">{sc.crs || <span className="text-slate-500 italic">Not available</span>}</td>
+                          <td className="py-1 pr-2 whitespace-nowrap">{sc.bands ? `${sc.bands} (${sc.bandIds.join('/')})` : <span className="text-slate-500 italic">Not available</span>}</td>
+                          <td className="py-1 pr-2 whitespace-nowrap">{sc.resolution ? `${sc.resolution.x} × ${sc.resolution.y} m` : <span className="text-slate-500 italic">Not available</span>}</td>
+                          <td className="py-1 pr-2 whitespace-nowrap">{sc.dimensions ? `${sc.dimensions.width} × ${sc.dimensions.height}` : <span className="text-slate-500 italic">Not available</span>}</td>
+                          <td className="py-1 pr-2 whitespace-nowrap">
+                            {sc.georeferenced ? <span className="text-emerald-300 font-semibold">Yes</span> : <span className="text-slate-500 font-semibold">No</span>}
+                          </td>
+                          <td className="py-1 whitespace-nowrap">
+                            <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold ${sc.valid ? 'bg-emerald-500/20 text-emerald-300' : 'bg-red-500/20 text-red-300'}`}>
+                              {sc.valid ? 'VALID' : 'INVALID'}
+                            </span>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                {sceneMetadataVisible === 'raw' && (
+                  <p className="text-[10px] text-slate-500 mt-1.5">Full ML validation result available in the exported JSON (rawExecutionTrace & tile metadata).</p>
+                )}
               </div>
             )}
           </div>
