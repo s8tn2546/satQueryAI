@@ -368,16 +368,16 @@ export function AuthForm({
                 aria-label="Email Address"
                 aria-describedby={errors.email ? 'email-error' : undefined}
               />
-              {errors.email && (
-                <p
-                  id="email-error"
-                  className="text-red-400 text-xs mt-1 flex items-center gap-1"
-                >
-                  <AlertTriangle className="h-3 w-3" />
-                  {errors.email}
-                </p>
-              )}
             </div>
+            {errors.email && (
+              <p
+                id="email-error"
+                className="text-red-400 text-xs mt-1 flex items-center gap-1"
+              >
+                <AlertTriangle className="h-3 w-3" />
+                {errors.email}
+              </p>
+            )}
           </div>
 
           <button
@@ -445,16 +445,16 @@ export function AuthForm({
                 aria-label="Verification Code"
                 aria-describedby={errors.verificationCode ? 'code-error' : undefined}
               />
-              {errors.verificationCode && (
-                <p
-                  id="code-error"
-                  className="text-red-400 text-xs mt-1 flex items-center gap-1 justify-center"
-                >
-                  <AlertTriangle className="h-3 w-3" />
-                  {errors.verificationCode}
-                </p>
-              )}
             </div>
+            {errors.verificationCode && (
+              <p
+                id="code-error"
+                className="text-red-400 text-xs mt-1 flex items-center gap-1 justify-center"
+              >
+                <AlertTriangle className="h-3 w-3" />
+                {errors.verificationCode}
+              </p>
+            )}
           </div>
 
           <button
@@ -534,35 +534,36 @@ export function AuthForm({
                 aria-label="Full Name"
                 aria-describedby={errors.name ? 'name-error' : undefined}
               />
-              {errors.name && (
-                <p
-                  id="name-error"
-                  className="text-red-400 text-xs mt-1 flex items-center gap-1"
-                >
-                  <AlertTriangle className="h-3 w-3" />
-                  {errors.name}
-                </p>
-              )}
             </div>
+            {errors.name && (
+              <p
+                id="name-error"
+                className="text-red-400 text-xs mt-1 flex items-center gap-1"
+              >
+                <AlertTriangle className="h-3 w-3" />
+                {errors.name}
+              </p>
+            )}
           </div>
         )}
 
         <div>
           <div className="relative">
-            <Mail className="absolute left-3 top-1/2 transform -translate-y-1/2 h-5 w-5 text-white/50" />
-            <input
-              type="email"
-              placeholder="Email Address"
-              value={formData.email}
-              onChange={(e) => handleInputChange('email', e.target.value)}
-              onBlur={() => handleFieldBlur('email')}
-              className={cn(
-                "w-full pl-10 pr-4 py-3 bg-white/10 backdrop-blur-md border border-white/15 rounded-xl placeholder:text-white/40 text-white focus:outline-none focus:ring-2 focus:ring-white/25 transition-all",
-                errors.email ? "border-red-400/70" : "border-white/15"
-              )}
-              aria-label="Email Address"
-              aria-describedby={errors.email ? 'email-error' : undefined}
-            />
+              <Mail className="absolute left-3 top-1/2 transform -translate-y-1/2 h-5 w-5 text-white/50" />
+              <input
+                type="email"
+                placeholder="Email Address"
+                value={formData.email}
+                onChange={(e) => handleInputChange('email', e.target.value)}
+                onBlur={() => handleFieldBlur('email')}
+                className={cn(
+                  "w-full pl-10 pr-4 py-3 bg-white/10 backdrop-blur-md border border-white/15 rounded-xl placeholder:text-white/40 text-white focus:outline-none focus:ring-2 focus:ring-white/25 transition-all",
+                  errors.email ? "border-red-400/70" : "border-white/15"
+                )}
+                aria-label="Email Address"
+                aria-describedby={errors.email ? 'email-error' : undefined}
+              />
+            </div>
             {errors.email && (
               <p
                 id="email-error"
@@ -573,7 +574,6 @@ export function AuthForm({
               </p>
             )}
           </div>
-        </div>
 
         <div>
           <div className="relative">
@@ -599,16 +599,16 @@ export function AuthForm({
             >
               {showPassword ? <EyeOff className="h-5 w-5" /> : <Eye className="h-5 w-5" />}
             </button>
-            {errors.password && (
-              <p
-                id="password-error"
-                className="text-red-400 text-xs mt-1 flex items-center gap-1"
-              >
-                <AlertTriangle className="h-3 w-3" />
-                {errors.password}
-              </p>
-            )}
           </div>
+          {errors.password && (
+            <p
+              id="password-error"
+              className="text-red-400 text-xs mt-1 flex items-center gap-1"
+            >
+              <AlertTriangle className="h-3 w-3" />
+              {errors.password}
+            </p>
+          )}
           {authMode === 'signup' && (
             <PasswordStrengthIndicator password={formData.password} />
           )}
@@ -639,16 +639,16 @@ export function AuthForm({
               >
                 {showConfirmPassword ? <EyeOff className="h-5 w-5" /> : <Eye className="h-5 w-5" />}
               </button>
-              {errors.confirmPassword && (
-                <p
-                  id="confirm-password-error"
-                  className="text-red-400 text-xs mt-1 flex items-center gap-1"
-                >
-                  <AlertTriangle className="h-3 w-3" />
-                  {errors.confirmPassword}
-                </p>
-              )}
             </div>
+            {errors.confirmPassword && (
+              <p
+                id="confirm-password-error"
+                className="text-red-400 text-xs mt-1 flex items-center gap-1"
+              >
+                <AlertTriangle className="h-3 w-3" />
+                {errors.confirmPassword}
+              </p>
+            )}
           </div>
         )}
 
@@ -669,16 +669,16 @@ export function AuthForm({
                 aria-label="Phone Number"
                 aria-describedby={errors.phone ? 'phone-error' : undefined}
               />
-              {errors.phone && (
-                <p
-                  id="phone-error"
-                  className="text-red-400 text-xs mt-1 flex items-center gap-1"
-                >
-                  <AlertTriangle className="h-3 w-3" />
-                  {errors.phone}
-                </p>
-              )}
             </div>
+            {errors.phone && (
+              <p
+                id="phone-error"
+                className="text-red-400 text-xs mt-1 flex items-center gap-1"
+              >
+                <AlertTriangle className="h-3 w-3" />
+                {errors.phone}
+              </p>
+            )}
           </div>
         )}
 

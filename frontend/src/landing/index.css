@@ -1,8 +1,8 @@
 @import "tailwindcss";
 
 :root {
-  --font-geist-sans: "Geist", ui-sans-serif, system-ui, -apple-system, sans-serif;
-  --font-geist-mono: "Geist Mono", ui-monospace, monospace;
+  --font-geometric-sans: "Poppins", ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-geometric-mono: "Poppins", ui-monospace, SFMono-Regular, Menlo, monospace;
   --background: #020617;
   --foreground: #ecf2ff;
   --card: #0e1c33;
@@ -53,8 +53,8 @@
   --color-accent-foreground: var(--accent-foreground);
   --color-border: var(--border);
   --color-ring: var(--ring);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --font-sans: var(--font-geometric-sans);
+  --font-mono: var(--font-geometric-mono);
 }
 
 @keyframes fade-out {
@@ -92,6 +92,65 @@
   100% {
     transform: translate(-50%, -50%) scale(1);
     opacity: 1;
+  }
+}
+
+/* Blinking typewriter caret for WELCOME */
+.welcome-caret {
+  display: inline-block;
+  width: 0.08em;
+  height: 0.95em;
+  margin-left: 0.12em;
+  vertical-align: -0.12em;
+  border-radius: 2px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.95), rgba(120, 165, 255, 0.6));
+  box-shadow: 0 0 12px rgba(47, 125, 255, 0.8), 0 0 28px rgba(47, 125, 255, 0.45);
+  animation: welcome-caret 0.8s steps(1, end) infinite;
+}
+
+@keyframes welcome-caret {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0;
+  }
+}
+
+/* Glassy WELCOME glyphs: reflective gradient clipped to the text. */
+.welcome-glass {
+  background-image: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.95) 0%,
+    rgba(210, 230, 255, 0.6) 42%,
+    rgba(120, 165, 255, 0.4) 68%,
+    rgba(255, 255, 255, 0.85) 100%
+  );
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  -webkit-text-stroke: 1px rgba(255, 255, 255, 0.28);
+}
+
+/* Breathing glass glow for the whole word.
+   Glow itself is static (cheap); only the layer opacity pulses, which the
+   GPU composites without re-rasterising the blurred shadows over the video. */
+.welcome-glow {
+  filter: drop-shadow(0 0 10px rgba(255, 255, 255, 0.5))
+    drop-shadow(0 0 22px rgba(47, 125, 255, 0.55))
+    drop-shadow(0 0 50px rgba(47, 125, 255, 0.35));
+  will-change: opacity;
+  animation: welcome-glow 3s ease-in-out infinite;
+}
+
+@keyframes welcome-glow {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.94;
   }
 }
 
@@ -178,7 +237,16 @@
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: var(--font-geist-sans), Arial, Helvetica, sans-serif;
+  font-family: var(--font-geometric-sans), Arial, Helvetica, sans-serif;
+}
+
+/* Form controls use the browser's default font unless told otherwise,
+   so make every button/input inherit the geometric sans-serif. */
+button,
+input,
+select,
+textarea {
+  font-family: inherit;
 }
 
 /* satQueryAI 3D model backdrop: deep space #020617 + Cesium-style starfield skybox

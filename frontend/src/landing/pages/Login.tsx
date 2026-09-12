@@ -69,7 +69,7 @@ export default function Login() {
             <Link
               to="/"
               onClick={handleBackToHome}
-              className="mb-5 inline-flex items-center gap-1.5 text-sm text-muted-foreground transition hover:text-foreground"
+              className="mb-5 inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/10 px-4 py-2 text-sm text-muted-foreground shadow-[0_4px_20px_rgba(0,0,0,0.25)] backdrop-blur-xl transition hover:border-white/30 hover:bg-white/20 hover:text-foreground"
             >
               <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <path d="m12 19-7-7 7-7" />

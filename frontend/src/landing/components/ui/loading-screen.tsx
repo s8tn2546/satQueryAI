@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
 
 interface LoadingScreenProps {
@@ -7,12 +7,29 @@ interface LoadingScreenProps {
   className?: string;
 }
 
+const WELCOME_TEXT = "WELCOME";
+
 const LoadingScreen: React.FC<LoadingScreenProps> = ({
   onComplete,
   duration = 4000,
   className,
 }) => {
   const videoRef = useRef<HTMLVideoElement>(null);
+  const [typed, setTyped] = useState(0);
+
+  // Typewriter: reveal one character at a time
+  useEffect(() => {
+    const interval = window.setInterval(() => {
+      setTyped((t) => {
+        if (t >= WELCOME_TEXT.length) {
+          window.clearInterval(interval);
+          return t;
+        }
+        return t + 1;
+      });
+    }, 360);
+    return () => window.clearInterval(interval);
+  }, []);
 
   // Auto-dismiss after duration
   useEffect(() => {
@@ -22,11 +39,11 @@ const LoadingScreen: React.FC<LoadingScreenProps> = ({
     return () => clearTimeout(timeout);
   }, [duration, onComplete]);
 
-  // Play the loop at a slightly faster speed
+  // Play the background loop at 3x speed
   useEffect(() => {
     const video = videoRef.current;
     if (video) {
-      video.playbackRate = 1.25;
+      video.playbackRate = 3;
     }
   }, []);
 
@@ -37,11 +54,11 @@ const LoadingScreen: React.FC<LoadingScreenProps> = ({
         className
       )}
     >
-      {/* Fullscreen earth-in-space video background */}
+      {/* Fullscreen background video at 3x speed */}
       <video
         ref={videoRef}
         className="absolute inset-0 h-full w-full object-cover"
-        src="/loading-earth.mp4"
+        src="/loading-welcome.mp4"
         poster="/loading-earth-poster.jpg"
         autoPlay
         muted
@@ -55,9 +72,17 @@ const LoadingScreen: React.FC<LoadingScreenProps> = ({
         className="absolute inset-0"
         style={{
           background:
-            "linear-gradient(to bottom, rgba(2,6,23,0.25) 0%, rgba(2,6,23,0.15) 40%, rgba(2,6,23,0.65) 100%)",
+            "radial-gradient(ellipse at center, rgba(2,6,23,0.15) 0%, rgba(2,6,23,0.55) 100%)",
         }}
       />
+
+      {/* Glassy, glowing WELCOME typing itself out */}
+      <div className="pointer-events-none absolute inset-0 z-10 flex items-end justify-center pb-[8vh]">
+        <h1 className="welcome-glow relative font-medium text-7xl sm:text-8xl md:text-9xl tracking-[0.06em]">
+          <span className="welcome-glass">{WELCOME_TEXT.slice(0, typed)}</span>
+          <span className="welcome-caret" aria-hidden="true" />
+        </h1>
+      </div>
     </div>
   );
 };

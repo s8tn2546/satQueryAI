@@ -227,13 +227,16 @@ const ScrollGlobe = forwardRef<ScrollGlobeHandle, ScrollGlobeProps>(function Scr
         >
           <div
             className={cn(
-              "w-full max-w-sm sm:max-w-lg md:max-w-2xl lg:max-w-4xl xl:max-w-5xl will-change-transform transition-all duration-700",
-              "opacity-100 translate-y-0"
+              "w-full will-change-transform transition-all duration-700",
+              "opacity-100 translate-y-0",
+              section.id === "hero"
+                ? "max-w-md sm:max-w-lg md:max-w-2xl lg:max-w-3xl xl:max-w-4xl pr-0 lg:pr-24 xl:pr-36"
+                : "max-w-sm sm:max-w-lg md:max-w-2xl lg:max-w-4xl xl:max-w-5xl"
             )}
           >
             <h1
               className={cn(
-                "font-bold mb-6 sm:mb-8 leading-[1.1] tracking-tight text-base sm:text-2lg md:text-3xl lg:text-4xl xl:text-5xl 2xl:text-6xl"
+                "font-thin uppercase tracking-[0.06em] mb-6 sm:mb-8 leading-[1.1] text-base sm:text-2lg md:text-3xl lg:text-4xl xl:text-5xl 2xl:text-6xl"
               )}
             >
               {section.subtitle ? (
@@ -241,7 +244,7 @@ const ScrollGlobe = forwardRef<ScrollGlobeHandle, ScrollGlobeProps>(function Scr
                   <div className="bg-gradient-to-r from-foreground to-foreground/80 bg-clip-text text-transparent">
                     {section.title}
                   </div>
-                  <div className="text-muted-foreground/90 text-[0.6em] sm:text-[0.7em] font-medium tracking-wider">
+                  <div className="text-muted-foreground/90 text-[0.6em] sm:text-[0.7em] font-light tracking-wider">
                     {section.subtitle}
                   </div>
                 </div>
