@@ -242,8 +242,55 @@ Ordered to match the 7-Day Build Plan and to keep the required capabilities ahea
 
 ---
 
+## 11. NASA-Grade Enhancement Checklist
+
+> **Source of truth:** root `enhancement.md`. These items represent the startup/NASA-sponsorship roadmap for the frontend. Refer there for full context, then implement locally.
+
+### 11.1 ROI / AOI Dynamic Crop Analysis Flow (CRITICAL)
+- [ ] **[BROKEN FLOW]** When the user draws an ROI polygon / bounding box on `GlobeView.jsx`, trigger an explicit backend `/api/query` call that includes `roiAttachment` (bounds + name) AND the currently attached raster reference, so the backend/ML can crop pixels for that exact region.
+- [ ] Replace the static "ROI selected" badge with a **live spatial telemetry badge**: computed WGS84 bounds, area in $km^2$, pixel ground resolution, and count of available overlapping scenes.
+- [ ] Add a **persistent hover/active coordinate readout** (LAT/LON + zoom altitude) following the cursor on the globe.
+- [ ] When a ROI is drawn over an uploaded tile, fetch a **thumbnail crop preview** of that region within the AOI badge/panel.
+- [ ] Provide a **"Resize / Fine-Tune ROI"** mode with draggable corner handles, snapped to integer degrees, and an "Analyze ROI" floating action button.
+
+### 11.2 Dynamic Globe Layer Controls & Spectral Overlays
+- [ ] Add a **Layer Switcher floating control** on the globe to toggle blend layers: RGB Visual, False-Color (NIR), NDVI Heatmap, NDWI Water Mask, and Change-Detection Mask.
+- [ ] Allow per-layer **opacity slider** (0–100%) so judges can cross-fade raw imagery with the analysis mask.
+- [ ] Render the selected analysis mask **clamped to the ROI polygon** as a polygon-constrained image overlay (via Cesium `ImageMaterialProperty` / texture canvas).
+- [ ] Add a small **legend chip** for each spectral layer (e.g., NDVI: high veg = green, bare = red).
+- [ ] **Empty-state handling:** show "Draw an ROI or upload raster to generate this layer" when no data backs the layer.
+
+### 11.3 Mission-Control Telemetry Aesthetics / HUD
+- [ ] Replace basic text-only result cards with a **HUD-style analytics panel**: top KPI strip (AOI area, mean NDVI/NDWI, scene count, acquisition date, cloud cover).
+- [ ] Add a **band histogram widget** (per-spectral-band pixel distribution) for the active raster, mounted as a small canvas card.
+- [ ] Add the **Qwen2-VL model + adapter status chip** ("Adapter active / base model") into the results trust layer.
+- [ ] Add **semi-transparent grid overlay** and UTC coordinates in the globe viewport for the aerospace feel (toggleable).
+- [ ] Standardize a **Corner Ribbon/Label** ("SATQUERY // MISSION ANALYTICS") on the results panel for brand consistency.
+
+### 11.4 Dual-Pane / Temporal Comparison Mode
+- [ ] Implement a **split-screen compare mode**: left/right (or top/bottom) rendering of two acquisitions (Before vs After) over the same ROI for change analysis.
+- [ ] Add side-by-side swipe divider control (DragSlider) synchronized with the Cesium camera.
+- [ ] When comparing, let users toggle per-side independent layers (e.g., RGB on left, NDVI mask on right).
+
+### 11.5 STAC Scene Picker & Time Slider (Live Data Path)
+- [ ] Add a **Time Slider / Pass Navigator** docked at the bottom of the globe to select historical Sentinel-2 / Landsat-9 acquisition dates over the active ROI.
+- [ ] Add **STAC Scene Picker** modal listing available satellite passes (platform, datetime, cloud cover %, thumbnail) returned by the backend `/api/stac/search`.
+- [ ] On scene selection, auto-load the scene as the active raster and re-run the query context (tileId reference).
+
+### 11.6 Async Long-Running Query UX
+- [ ] Render a **queued / processing indicator** (spinner + ETA + progress steps) when a long VLM inference job is in flight.
+- [ ] Poll `GET /api/query/status/:jobId` (backend async jobs) and display completion time; keep the session navigable meanwhile.
+- [ ] Automatically retry with user notification if a request aborts on the 600-second backend timeout.
+
+### 11.7 PWA / Onboarding Finish
+- [ ] Complete `vite-plugin-pwa` real-device install flow test (service worker, offline shell, manifest).
+- [ ] Add a brief **onboarding tooltip tour** for first-time judges: "1) Upload or pick a region → 2) Ask a question → 3) Read trust layer".
+
+---
+
 ## Change Log
 
 | Date | Change |
 |---|---|
 | 2026-09-08 | Updated design tokens, Cesium globe controls, report exporter, visual evidence overlays, and checklist status. |
+| 2026-09-26 | Added Section 11 NASA-Grade Enhancement Checklist (ROI crop flow, layer controls, HUD telemetry, dual-pane compare, STAC picker, async UX, PWA). |

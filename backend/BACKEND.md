@@ -445,6 +445,35 @@ Use this as a running task list. Work top to bottom within each section; section
 
 ---
 
+## 16. NASA-Grade Enhancement Checklist
+
+> **Source of truth:** root `enhancement.md`. These items represent the backend orchestrator roadmap for NASA-grade system capability.
+
+### 16.1 Spatial ROI Crop & Analysis Pipeline (CRITICAL)
+- [ ] **[BROKEN FLOW FIX]** Extend `backend/src/agents/planner.js` and `inputValidator.js` to detect `roiAttachment` (bounding box + CRS) and route queries to the new `mlServiceClient.cropRoi()` endpoint.
+- [ ] Ensure spatial cropping handles both user-uploaded rasters (`tiles` collection) and live fetched satellite scenes.
+- [ ] Calculate spatial overlap / spatial intersection between tile bounding box and user-selected ROI before invoking ML tools.
+
+### 16.2 Extended VLM Analytical Prompting & Answer Composition
+- [ ] Update `answerComposer.js` to support long-form multi-paragraph responses (up to 512 tokens) with structured section breaks: `[Summary]`, `[Spectral & Environmental Indicators]`, `[Land Cover Breakdown]`, `[Recommendations & Risk]`.
+- [ ] Extract structured JSON metadata from ML service tool outputs (e.g., VQA confidence score, adapter active status, processing latency) and include them in `evidence.metadata`.
+
+### 16.3 Live STAC Catalog Proxy & Search API
+- [ ] Implement `POST /api/stac/search` route in Express to query external STAC catalogs (Sentinel-2, Landsat-9, EarthSearch) for any bounding box + date range.
+- [ ] Normalize STAC search results into internal `Tile` document metadata schema and persist in MongoDB.
+- [ ] Add `POST /api/stac/ingest` to download/stream selected STAC GeoTIFF scenes directly into the ML service workspace.
+
+### 16.4 Asynchronous Job Queue for Deep VLM Inference
+- [ ] Implement async execution mode for queries taking > 30 seconds (`POST /api/query?async=true` returning `jobId` and `status: "queued"`).
+- [ ] Add `GET /api/query/status/:jobId` polling route so frontend can track progress without long-polling connection timeouts.
+- [ ] Integrate background task worker queue (BullMQ / Redis or in-memory async pool).
+
+### 16.5 Georeferencing Fallback & Raster Validation
+- [ ] Intercept raster validation warnings (e.g. `NotGeoreferencedWarning`) from ML service and label tile metadata cleanly (`isGeoreferenced: false`).
+- [ ] Ensure non-georeferenced images bypass geospatial spatial tools (NDVI/NDWI/Area) gracefully with an explicit informative rejection reason, while allowing visual VQA/Captioning.
+
+---
+
 ## Change Log
 
 Update this section whenever a decision in this document changes, so the team (and repo history) has a clear record.
@@ -454,3 +483,4 @@ Update this section whenever a decision in this document changes, so the team (a
 | 2026-09-01 | Initial version created from 7-Day Build Plan + SIH26167 PS |
 | 2026-09-01 | Completed sections 15.1-15.7: Full agent pipeline, auth, geospatial tools, trend caching, fetch-imagery, and comprehensive test suite |
 | 2026-09-06 | M6 (§15.8): session-scoped query history (`sessionId` on `POST /api/query` + `GET /api/query/history?sessionId=`) and orchestrated integration milestone (`backend/Dockerfile`, root `docker-compose.yml`, `scripts/docker-smoke.sh`). Live compose execution pending Docker engine. |
+| 2026-09-26 | Added Section 16 NASA-Grade Enhancement Checklist (ROI crop flow, STAC API, async job queue, prompt composition). |

@@ -363,12 +363,42 @@ Ordered to match the 7-Day Build Plan's priority matrix (CRITICAL → HIGH → M
 
 ---
 
+## 13. NASA-Grade Enhancement Checklist
+
+> **Source of truth:** root `enhancement.md`. These items represent the ML/Geospatial service roadmap for NASA-grade system capability.
+
+### 13.1 Expanded VLM Inference Depth & Prompt Templating (CRITICAL)
+- [ ] Increase `max_new_tokens` in `app/models/vlm_loader.py:246` from 60 to 256 / 512 for rich analytical VQA reports.
+- [ ] Add NASA EO domain prompt wrappers to `vqa.py` (e.g. instructing model to detail land cover %, urban density, coastline condition, and vegetation health).
+- [ ] Add explicit parameter `detail_level: "brief" | "standard" | "deep"` in VQA request payload to control token budget dynamically.
+
+### 13.2 Spatial ROI Crop Engine (`/tools/roi_crop.py`)
+- [ ] Implement `POST /vlm/crop-and-analyze` and `POST /tools/crop-roi` in `app/tools/roi_crop.py` using `rasterio.mask.mask`.
+- [ ] Given a GeoTIFF and WGS84 ROI polygon, reproject polygon into raster native CRS (using `pyproj`), crop raster sub-matrix, and pass cropped sub-image to VLM / Index tools.
+- [ ] Return spatial statistics (min, max, mean, std, percentiles) for all bands inside the ROI polygon.
+
+### 13.3 STAC Catalog Ingestion & PySTAC Integration
+- [ ] Implement `POST /stac/search` using `pystac_client` to query Element84 / Planetary Computer STAC APIs for Sentinel-2 L2A and Landsat-9 scenes matching an ROI.
+- [ ] Implement `POST /stac/download-roi` to download only the bounding-box COG (Cloud Optimized GeoTIFF) byte ranges via HTTP GET range requests, avoiding downloading full 500MB tiles.
+
+### 13.4 Multispectral Band-Aware Preprocessing & False-Color Rendering
+- [ ] Add false-color NIR (B8-B4-B3) rendering in `app/geospatial/raster_io.py` for visual VLM consumption on agricultural/forest scenes.
+- [ ] Enhance normalization in `raster_io.py` using 2%–98% percentile cumulative stretching to eliminate dark/blown-out visuals on raw 16-bit surface reflectance rasters.
+- [ ] Suppress `NotGeoreferencedWarning` cleanly for visual PNG/TIFF assets while preserving spatial metadata for actual GeoTIFF rasters.
+
+### 13.5 Async PyTorch Worker & CPU Inference Optimization
+- [ ] Enable INT8 / FP16 quantization (`torch.quantization` or `bitsandbytes`) for Qwen2-VL to speed up CPU inference on multi-core systems by 3x.
+- [ ] Wrap VLM model generation in `asyncio.to_thread` or ProcessPoolExecutor to prevent blocking FastAPI async event loop during token generation.
+
+---
+
 ## Change Log
 
 | Date | Change |
 |---|---|
-| | Initial version created from 7-Day Build Plan + SIH26167 PS |
+| 2026-09-01 | Initial version created from 7-Day Build Plan + SIH26167 PS |
 | 2026-09-01 | Completed sections 12.1, 12.4, 12.5, 12.6, 12.6a, and partial 12.8: All geospatial tools (NDVI/NDWI/area), change detection, optical-SAR fusion, trend analysis, fetch-imagery, comprehensive validation pipeline, and unit tests |
 | 2026-09-05 | Completed section 12.2: Selected Salesforce/blip-vqa-base (VQA) and Salesforce/blip-image-captioning-base (captioning) as base VLMs. Implemented /vqa (RSVQA format: lowercase short word/phrase) and /caption (VRSBench format: natural sentence). Both endpoints return Section 8 standard output schema. Format confirmed against real RSVQA-HR (cpratikaki/RSVQA-HR_qwen_finetuning) and VRSBench (xiang709/VRSBench) benchmark examples. Chose /caption over /ground due to lower implementation risk and better timeline fit. |
 | 2026-09-05 | Migrated VLM from BLIP to Qwen2-VL-2B-Instruct for both /vqa and /caption. BLIP does not support supervised fine-tuning with labels (embedding index error caused by vocab mismatch between tokenizer and decoder). Qwen2-VL supports standard LoRA training, is pre-compatible with the RSVQA Qwen-formatted dataset, and produces instruction-following outputs for both VQA and captioning. Updated: vlm_loader.py, requirements.txt (added qwen-vl-utils, torchvision), .env.example. Endpoints remain Section 8 compliant. |
 | 2026-09-05 | Section 12.3 infrastructure complete: LoRA training script (adaptation/train_lora_rsvqa.py) implemented for Qwen2-VL — rank 16, alpha 32, target q_proj+v_proj across 28 LM layers, AdamW lr=3e-4, 500 steps, 2000-sample RSVQA-HR subset. Dataset loading and preprocessing validated. adaptation/README.md written with full methodology, config, and run instructions. Full training run pending GPU/extended compute. Adapter path wired into /vqa via VQA_ADAPTER_PATH env var. |
+| 2026-09-26 | Added Section 13 NASA-Grade Enhancement Checklist (VLM token depth, ROI crop engine, STAC ingestion, false-color rendering, INT8 CPU optimization). |
