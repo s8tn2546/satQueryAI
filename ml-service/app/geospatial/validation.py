@@ -13,6 +13,9 @@ from typing import Any
 
 from app.geospatial.crs import bounds_to_wgs84, crs_to_string, parse_crs
 from app.geospatial.raster_io import (
+    INTEGRITY_ANALYSIS_READY,
+    INTEGRITY_INVALID,
+    INTEGRITY_VISUAL_ONLY,
     RasterCorruptError,
     RasterFormatError,
     RasterNotFoundError,
@@ -214,6 +217,26 @@ def validate_data_quality(
     return vr
 
 
+def _integrity_for(metadata: dict[str, Any] | None) -> str:
+    """Map extracted metadata onto an integrity category.
+
+    ``None`` metadata means the file never opened, so it is invalid. Otherwise
+    the category follows directly from the observed dimensions/band count and the
+    georeference flag, keeping validation and :func:`classify_raster` consistent.
+    """
+    if metadata is None:
+        return INTEGRITY_INVALID
+    if (
+        int(metadata.get("width", 0) or 0) <= 0
+        or int(metadata.get("height", 0) or 0) <= 0
+        or int(metadata.get("band_count", 0) or 0) <= 0
+    ):
+        return INTEGRITY_INVALID
+    if metadata.get("is_georeferenced", False):
+        return INTEGRITY_ANALYSIS_READY
+    return INTEGRITY_VISUAL_ONLY
+
+
 def run_validation(
     path: str | Path,
     modality_hint: str | None = None,
@@ -233,6 +256,8 @@ def run_validation(
             errors=file_vr.errors,
             warnings=file_vr.warnings,
             format=path.suffix.lstrip(".").upper() if path.suffix else "unknown",
+            is_georeferenced=None,
+            integrity=INTEGRITY_INVALID,
         )
 
     assert metadata is not None  # guaranteed if file_vr is not invalid
@@ -250,6 +275,8 @@ def run_validation(
             format=metadata.get("driver", path.suffix.lstrip(".")),
             errors=prop_vr.errors,
             warnings=file_vr.warnings + prop_vr.warnings,
+            is_georeferenced=bool(metadata.get("is_georeferenced", False)),
+            integrity=INTEGRITY_INVALID,
         )
 
     # Step 3: Geospatial metadata validation
@@ -275,6 +302,8 @@ def run_validation(
                 file_vr.warnings + prop_vr.warnings +
                 geo_vr.warnings + band_vr.warnings
             ),
+            is_georeferenced=bool(metadata.get("is_georeferenced", False)),
+            integrity=INTEGRITY_INVALID,
         )
 
     # Step 6: CRS and bounds conversion
@@ -349,4 +378,6 @@ def run_validation(
         dtype=metadata.get("dtype", ""),
         warnings=all_warnings,
         errors=all_errors,
+        is_georeferenced=bool(metadata.get("is_georeferenced", False)),
+        integrity=_integrity_for(metadata),
     )

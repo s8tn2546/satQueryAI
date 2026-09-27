@@ -8,7 +8,7 @@ export const INITIAL_TOOLS = [
     acceptedModalities: ['optical', 'sar'],
     parameters: { question: 'string', region: 'optional' },
     endpoint: '/vqa',
-    outputSchema: { answer: 'string', confidence: 'float' }
+    outputSchema: { answer: 'string', question: 'string', answer_mode: 'string', confidence: 'float' }
   },
   {
     name: 'caption',
@@ -17,7 +17,7 @@ export const INITIAL_TOOLS = [
     acceptedModalities: ['optical', 'sar'],
     parameters: { max_length: 'optional' },
     endpoint: '/caption',
-    outputSchema: { caption: 'string', keywords: 'array' }
+    outputSchema: { caption: 'string', confidence: 'float' }
   },
   {
     name: 'ground',
@@ -26,7 +26,7 @@ export const INITIAL_TOOLS = [
     acceptedModalities: ['optical', 'sar'],
     parameters: { target: 'string' },
     endpoint: '/ground',
-    outputSchema: { boundingBox: 'array', label: 'string' }
+    outputSchema: { boundingBox: 'array', label: 'string', detectedFeatures: 'integer' }
   },
   {
     name: 'change',
@@ -35,7 +35,7 @@ export const INITIAL_TOOLS = [
     acceptedModalities: ['optical', 'sar'],
     parameters: { metric: 'optional' },
     endpoint: '/change',
-    outputSchema: { changeMaskUrl: 'string', changePercentage: 'float', summary: 'string' }
+    outputSchema: { change_percentage: 'float', mean_difference: 'float', max_difference: 'float', changed_area_km2: 'float', changed_pixels: 'integer', unchanged_pixels: 'integer', threshold: 'float', aligned: 'boolean' }
   },
   {
     name: 'optical_sar',
@@ -44,7 +44,7 @@ export const INITIAL_TOOLS = [
     acceptedModalities: ['optical', 'sar'],
     parameters: { fusionMethod: 'optional' },
     endpoint: '/optical-sar',
-    outputSchema: { fusedLandCover: 'object', confidence: 'float' }
+    outputSchema: { optical: 'object', sar: 'object', fusion: 'object', overlap: 'object', alignment: 'object', crs: 'object', resolution: 'float' }
   },
   {
     name: 'ndvi',
@@ -53,7 +53,7 @@ export const INITIAL_TOOLS = [
     acceptedModalities: ['optical'],
     parameters: { region: 'optional' },
     endpoint: '/ndvi',
-    outputSchema: { value: 'float', map: 'raster' }
+    outputSchema: { index: 'string', min: 'float', max: 'float', mean: 'float', median: 'float', valid_pixel_count: 'integer', total_pixel_count: 'integer', bands: 'object' }
   },
   {
     name: 'ndwi',
@@ -62,7 +62,7 @@ export const INITIAL_TOOLS = [
     acceptedModalities: ['optical'],
     parameters: { region: 'optional' },
     endpoint: '/ndwi',
-    outputSchema: { value: 'float', map: 'raster' }
+    outputSchema: { index: 'string', min: 'float', max: 'float', mean: 'float', median: 'float', valid_pixel_count: 'integer', total_pixel_count: 'integer', bands: 'object' }
   },
   {
     name: 'area',
@@ -71,7 +71,7 @@ export const INITIAL_TOOLS = [
     acceptedModalities: ['optical', 'sar'],
     parameters: { featureType: 'string' },
     endpoint: '/area',
-    outputSchema: { areaKm2: 'float', featureType: 'string' }
+    outputSchema: { area_km2: 'float', area_ha: 'float', area_m2: 'float', valid_pixel_count: 'integer', total_pixel_count: 'integer', crs: 'string', feature_type: 'string', pixel_area_m2: 'float' }
   },
   {
     name: 'trend',
@@ -80,7 +80,7 @@ export const INITIAL_TOOLS = [
     acceptedModalities: ['optical', 'sar'],
     parameters: { region: 'geojson', metric: 'string', startDate: 'date', endDate: 'date' },
     endpoint: '/trend',
-    outputSchema: { series: 'array', trendSlope: 'float' }
+    outputSchema: { series: 'array', trend: 'object', metric: 'string', interval: 'string' }
   },
   {
     name: 'validate',
@@ -89,7 +89,7 @@ export const INITIAL_TOOLS = [
     acceptedModalities: ['optical', 'sar'],
     parameters: { modality_hint: 'string' },
     endpoint: '/validate',
-    outputSchema: { valid: 'boolean', validation_status: 'string', errors: 'array', warnings: 'array' }
+    outputSchema: { valid: 'boolean', validation_status: 'string', modality: 'string', width: 'integer', height: 'integer', band_count: 'integer', bands: 'array', crs: 'string', errors: 'array', warnings: 'array' }
   },
   {
     name: 'fetch-imagery',
@@ -98,7 +98,7 @@ export const INITIAL_TOOLS = [
     acceptedModalities: ['optical', 'sar'],
     parameters: { bounding_box: 'geojson', start_date: 'date', end_date: 'date' },
     endpoint: '/fetch-imagery',
-    outputSchema: { images: 'array', date_gap_days: 'integer' }
+    outputSchema: { images: 'array', source: 'string', bounding_box: 'object', date_range: 'object', date_gap_days: 'integer', warnings: 'array' }
   }
 ];
 

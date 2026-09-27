@@ -18,6 +18,7 @@ from app.common.http_utils import (
     InvalidFileError,
     aoi_error_output,
     aoi_metadata,
+    spatial_metadata,
     error_output,
     read_upload_file,
     save_to_temp,
@@ -156,6 +157,7 @@ async def change_endpoint(
             "size_bytes_1": len(content1),
             "size_bytes_2": len(content2),
             "comparison_band": result.get("comparison_band"),
+            **spatial_metadata(result),
             **aoi_metadata(result, aoi_geometry),
         },
     )

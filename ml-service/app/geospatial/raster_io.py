@@ -8,12 +8,15 @@ rasterio-readable PNG/JPEG).
 from __future__ import annotations
 
 import logging
+import math
+import warnings
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Generator
 
 import numpy as np
 import rasterio
+from rasterio.errors import NotGeoreferencedWarning
 from rasterio.io import MemoryFile
 from rasterio.transform import Affine
 
@@ -37,6 +40,41 @@ class RasterFormatError(RasterError):
 
 class RasterCorruptError(RasterError):
     """Raised when a raster file is corrupt or cannot be parsed."""
+
+
+class NotGeoreferencedError(RasterError):
+    """Raised when a spatial value is requested from a raster that has none.
+
+    rasterio silently substitutes the identity transform (and therefore
+    pixel-sized "bounds") for a raster with no georeferencing. Returning that
+    would hand callers coordinates that describe array indices, not geography,
+    so the accessors refuse instead. Callers that only need pixel data
+    (:func:`read_band`, :func:`read_all_bands`) are unaffected.
+    """
+
+
+@contextmanager
+def _suppress_not_georeferenced() -> Generator[None, None, None]:
+    """Silence *only* rasterio's identity-substitution notice.
+
+    ``NotGeoreferencedWarning`` fires on every open of a non-georeferenced
+    raster — including legitimate visual-only PNGs — and is informational: the
+    fact it reports is already surfaced authoritatively as
+    ``metadata["is_georeferenced"]``. Left alone it floods logs and gets
+    mistaken for a defect.
+
+    The suppression is deliberately narrow: it names this one category, so a
+    genuine warning or error from rasterio still propagates untouched.
+    """
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            category=NotGeoreferencedWarning,
+            # Only the identity-matrix notice; other rasterio warnings are errors
+            # in disguise and must never be hidden.
+            message=r".*no geotransform, gcps, or rpcs.*",
+        )
+        yield
 
 
 def _crs_is_defined(crs: Any) -> bool:
@@ -68,6 +106,25 @@ def _is_identity_transform(transform: Affine) -> bool:
         and transform.e == 1
         and transform.f == 0
     )
+
+
+def _is_real_geotransform(transform: Affine) -> bool:
+    """Return True only if the transform genuinely georeferences the raster.
+
+    Rejects two cases that rasterio will happily hand back without complaint:
+    the identity matrix it substitutes when a dataset has no geotransform, and a
+    degenerate transform with a zero/non-finite pixel size that collapses the
+    raster to a single point.
+    """
+    if _is_identity_transform(transform):
+        return False
+    for component in (transform.a, transform.b, transform.d, transform.e):
+        if not math.isfinite(component):
+            return False
+    # Pixel size along both axes must be strictly positive and finite.
+    if transform.a == 0 or transform.e == 0:
+        return False
+    return True
 
 
 def is_raster_extension(path: str | Path) -> bool:
@@ -107,8 +164,9 @@ def open_raster(path: str | Path) -> Generator[rasterio.DatasetReader, None, Non
         )
 
     try:
-        with rasterio.open(path) as src:
-            yield src
+        with _suppress_not_georeferenced():
+            with rasterio.open(path) as src:
+                yield src
     except rasterio.errors.RasterioIOError as exc:
         raise RasterFormatError(f"Cannot read file as raster: {path} — {exc}") from exc
     except rasterio.errors.CRSError as exc:
@@ -136,7 +194,7 @@ def read_metadata(path: str | Path) -> dict[str, Any]:
         res = src.res
         transform = src.transform
         is_georef = _crs_is_defined(src.crs)
-        has_transform = not _is_identity_transform(transform)
+        has_transform = _is_real_geotransform(transform)
         georeferenced = is_georef and has_transform
         return {
             "width": src.width,
@@ -184,17 +242,36 @@ def read_all_bands(path: str | Path) -> np.ndarray:
 
 
 def get_bounds(path: str | Path) -> dict[str, float]:
-    """Return raster bounds as {west, south, east, north}."""
-    with open_raster(path) as src:
-        b = src.bounds
-        return {"west": b.left, "south": b.bottom, "east": b.right, "north": b.top}
+    """Return raster bounds as {west, south, east, north}.
+
+    Raises:
+        NotGeoreferencedError: the raster has no CRS/geotransform. rasterio would
+            otherwise return identity-implied bounds derived from pixel counts,
+            which are array indices rather than coordinates.
+    """
+    metadata = read_metadata(path)
+    if not metadata["is_georeferenced"] or metadata["bounds"] is None:
+        raise NotGeoreferencedError(
+            f"{path} is not georeferenced, so it has no geographic bounds. "
+            "Refusing to return identity-implied pixel bounds as coordinates."
+        )
+    return dict(metadata["bounds"])
 
 
 def get_resolution(path: str | Path) -> dict[str, float]:
-    """Return pixel resolution as {x, y} in CRS units."""
-    with open_raster(path) as src:
-        res = src.res
-        return {"x": abs(res[0]), "y": abs(res[1])}
+    """Return pixel resolution as {x, y} in CRS units.
+
+    Raises:
+        NotGeoreferencedError: the raster has no CRS/geotransform, so its
+            "resolution" is the identity matrix's 1.0, not a ground distance.
+    """
+    metadata = read_metadata(path)
+    if not metadata["is_georeferenced"] or metadata["resolution"] is None:
+        raise NotGeoreferencedError(
+            f"{path} is not georeferenced, so it has no ground resolution. "
+            "Refusing to report the identity matrix's 1.0 as a pixel size."
+        )
+    return dict(metadata["resolution"])
 
 
 def get_crs(path: str | Path) -> rasterio.crs.CRS | None:
@@ -207,6 +284,108 @@ def get_band_count(path: str | Path) -> int:
     """Return the number of bands in the raster."""
     with open_raster(path) as src:
         return src.count
+
+
+# Integrity categories. A file's readability and its georeferencing are
+# independent questions, and conflating them would either reject perfectly good
+# visual-only images or let unmeasurable rasters into spatial analysis.
+INTEGRITY_VISUAL_ONLY = "visual_only_valid"
+INTEGRITY_ANALYSIS_READY = "georeferenced_analysis_ready"
+INTEGRITY_INVALID = "invalid"
+
+
+def classify_raster(path: str | Path) -> dict[str, Any]:
+    """Classify a raster into exactly one integrity category.
+
+    Returns a dict with ``integrity`` (one of the ``INTEGRITY_*`` constants) and
+    the observed facts behind the decision. Every reported value is read from
+    the file; nothing is inferred.
+
+    * ``invalid`` — the file cannot be opened, parsed, or has impossible
+      geometry (zero/negative dimensions or band count). It must not reach any
+      analysis.
+    * ``visual_only_valid`` — readable, but not georeferenced. Usable for
+      VQA/caption and other pixel-domain work; *not* usable for area, AOI or
+      any other measurement that needs real-world units.
+    * ``georeferenced_analysis_ready`` — readable with a defined CRS *and* a
+      non-identity transform, so spatial metadata is meaningful.
+    """
+    try:
+        with open_raster(path) as src:
+            width, height, count = int(src.width), int(src.height), int(src.count)
+            src_crs = src.crs
+            has_crs = _crs_is_defined(src_crs)
+            transform = src.transform
+            identity = _is_identity_transform(transform)
+            usable = _is_real_geotransform(transform)
+            dtypes = list(src.dtypes)
+    except RasterError as exc:
+        return {
+            "integrity": INTEGRITY_INVALID,
+            "isGeoreferenced": None,
+            "reason": str(exc),
+        }
+
+    if width <= 0 or height <= 0:
+        return {
+            "integrity": INTEGRITY_INVALID,
+            "isGeoreferenced": False,
+            "width": width,
+            "height": height,
+            "bandCount": count,
+            "reason": f"Invalid raster dimensions: {width}x{height}.",
+        }
+    if count <= 0:
+        return {
+            "integrity": INTEGRITY_INVALID,
+            "isGeoreferenced": False,
+            "width": width,
+            "height": height,
+            "bandCount": count,
+            "reason": f"Invalid band count: {count}.",
+        }
+    if has_crs and not usable and not identity:
+        # A CRS is declared but the geotransform is degenerate (zero/non-finite
+        # pixel size). The raster itself is still readable, so this is *not*
+        # invalid: it is a non-georeferenced image whose footprint would
+        # collapse to a point. Classified visual-only, with the reason spelled
+        # out, and every spatial accessor refuses it.
+        return {
+            "integrity": INTEGRITY_VISUAL_ONLY,
+            "isGeoreferenced": False,
+            "width": width,
+            "height": height,
+            "bandCount": count,
+            "dtypes": dtypes,
+            "crs": str(src_crs) if src_crs is not None else None,
+            "reason": (
+                "The raster declares a CRS but its geotransform is degenerate "
+                "(zero or non-finite pixel size), so it has no usable ground "
+                "footprint. Pixel-domain analysis is available; area, AOI and "
+                "other spatial measurements are not."
+            ),
+        }
+
+    is_georeferenced = has_crs and usable
+    if is_georeferenced:
+        integrity, reason = INTEGRITY_ANALYSIS_READY, None
+    else:
+        integrity = INTEGRITY_VISUAL_ONLY
+        reason = (
+            "The raster is readable but not georeferenced (no CRS and/or no "
+            "geotransform). Pixel-domain analysis (VQA, caption, spectral "
+            "indices) is available; area, AOI and other spatial measurements are not."
+        )
+
+    return {
+        "integrity": integrity,
+        "isGeoreferenced": is_georeferenced,
+        "width": width,
+        "height": height,
+        "bandCount": count,
+        "dtypes": dtypes,
+        "reason": reason,
+    }
 
 
 def get_nodata(path: str | Path) -> Any:

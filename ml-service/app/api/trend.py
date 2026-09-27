@@ -59,6 +59,8 @@ async def trend_endpoint(
             start_date=request.start_date,
             end_date=request.end_date,
             interval=request.interval,
+            aoi=request.aoi,
+            aoi_crs=request.aoi_crs,
         )
     except TrendValidationError as exc:
         return _failure(str(exc))
@@ -75,6 +77,7 @@ async def trend_endpoint(
         return _failure(f"Internal trend error: {exc}")
 
     source = result.get("source", "unknown")
+    aoi_scope = result.get("aoiScope", {})
     return ToolOutput(
         tool="trend",
         status="success",
@@ -82,17 +85,25 @@ async def trend_endpoint(
         evidence={
             "metric": result.get("metric"),
             "region": result.get("region"),
+            "region_crs": (result.get("region") or {}).get("crs"),
+            "analyzed_region": result.get("analyzedRegion"),
+            "aoi_scope": aoi_scope,
+            "aoi_applied": aoi_scope.get("aoiApplied", False),
             "date_range": result.get("date_range"),
             "interval": result.get("interval"),
             "collection": result.get("collection"),
             "quality_mask": result.get("quality_mask"),
             "observation_count": result.get("trend", {}).get("observation_count"),
+            "sufficient_for_trend": result.get("trend", {}).get("sufficient_for_trend"),
             "data_source": source,
         },
         confidence=trend_confidence(result),
         metadata={
             "data_source": source,
             "band_mapping": result.get("band_mapping"),
+            "region_crs": (result.get("region") or {}).get("crs"),
+            "aoi_applied": aoi_scope.get("aoiApplied", False),
+            "aoi_scope": aoi_scope.get("aoiScope"),
             "source_warning": (
                 "Mock/fixture data. Not real GEE satellite observations."
                 if source != "gee"

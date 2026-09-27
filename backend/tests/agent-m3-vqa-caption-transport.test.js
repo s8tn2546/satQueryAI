@@ -141,9 +141,13 @@ describe('Agent M3 — /vqa multipart transport', () => {
       question: 'Is there vegetation?'
     });
 
-    expect(result.status).toBe('success');
+    expect(result.status).toBe('failed');
+    expect(result.confidence).toBe(0);
     expect(result.metadata.mock).toBe(true);
-    expect(typeof result.result.answer).toBe('string');
+    // Must be the explicit marker, not merely "some string" — a fabricated
+    // sentence about the image would still satisfy a typeof check.
+    expect(result.result.answer).toBe('offline-placeholder');
+    expect(result.result.confidence).toBe(0);
   });
 });
 
@@ -183,9 +187,13 @@ describe('Agent M3 — /caption multipart transport', () => {
       tile_id: 'tid-caption-off'
     });
 
-    expect(result.status).toBe('success');
+    expect(result.status).toBe('failed');
+    expect(result.confidence).toBe(0);
     expect(result.metadata.mock).toBe(true);
-    expect(typeof result.result.caption).toBe('string');
+    // Explicit marker rather than a typeof check, so a generated description
+    // of an image that was never read cannot pass as a valid caption.
+    expect(result.result.caption).toBe('offline-placeholder');
+    expect(result.result.confidence).toBe(0);
   });
 });
 // =============================================================================

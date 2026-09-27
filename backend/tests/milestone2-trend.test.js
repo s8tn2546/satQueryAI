@@ -87,7 +87,11 @@ describe('Milestone 2 — POST /api/query/trend two-phase cache (BACKEND.md §10
       interval: 'monthly'
     }));
     expect(res.body.result.series).toHaveLength(3);
-    expect(res.body.answerText).toContain('3 data point(s)');
+    // The answer states the series length; wording changed when the composer
+    // gained its degraded mode.
+    expect(res.body.answerText).toMatch(/3 (?:data point|observation)\(s\)/);
+    // Confidence computed for the trend is forwarded to the composer.
+    expect(res.body.answerText).toMatch(/Overall confidence: 0\.8/);
 
     // result was persisted
     const stored = await ResultsCache.find({});

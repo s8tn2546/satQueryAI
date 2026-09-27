@@ -1,5 +1,6 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { makeTraceEntry } from '../utils/responseBuilder.js';
+import { LLM_MODE, describeLlmMode, resolveLlmConfig } from '../utils/llmConfig.js';
 
 const TASK_TYPES = ['VQA', 'CAPTION', 'GROUNDING', 'CHANGE_ANALYSIS', 'OPTICAL_SAR', 'NDVI', 'NDWI', 'AREA', 'TREND'];
 
@@ -168,16 +169,24 @@ export async function classifyIntent(queryText, tiles, trace) {
 
   trace.push(makeTraceEntry('intent_classification_start', `Classifying query with ${imageCount} image(s)`));
 
-  const llmApiKey = process.env.GROQ_API_KEY || process.env.LLM_API_KEY;
-  const llmProvider = process.env.GROQ_API_KEY ? 'groq' : (process.env.LLM_PROVIDER || 'anthropic');
+  // Shared config resolution: placeholder keys such as `demo` are recognized
+  // here exactly as they are in answerComposer, so the two agents can never
+  // disagree about whether a real LLM call is possible. Previously this inline
+  // check missed `demo`, causing a real API call with a fake key and a silent
+  // fallback.
+  const config = resolveLlmConfig();
 
-  const isMock = !llmApiKey || llmApiKey === 'mock-llm-key' || llmApiKey.startsWith('mock');
-
-  if (isMock) {
+  if (config.mocked) {
     const result = mockClassify(queryText, imageCount);
-    trace.push(makeTraceEntry('intent_classification', `[mock] Classified as ${result.taskType}, tools: [${result.toolNames.join(', ')}]`));
+    trace.push(makeTraceEntry(
+      'intent_classification',
+      `${describeLlmMode(config, 'Intent classification', LLM_MODE.MOCK)} Classified as ${result.taskType}, tools: [${result.toolNames.join(', ')}]`
+    ));
     return result;
   }
+
+  const llmApiKey = config.apiKey;
+  const llmProvider = config.provider;
 
   try {
     let classified;
@@ -185,8 +194,8 @@ export async function classifyIntent(queryText, tiles, trace) {
     if (llmProvider === 'anthropic') {
       const client = new Anthropic({ apiKey: llmApiKey });
       const response = await client.messages.create({
-        model: 'claude-3-5-haiku-20241022',
-        max_tokens: 512,
+        model: config.model,
+        max_tokens: 1024,
         system: buildSystemPrompt(imageCount, modalities),
         tools: TOOL_DEFINITIONS,
         tool_choice: { type: 'any' },
@@ -200,7 +209,7 @@ export async function classifyIntent(queryText, tiles, trace) {
       const { default: OpenAI } = await import('openai');
       const isGroq = llmProvider === 'groq';
       const baseURL = isGroq ? 'https://api.groq.com/openai/v1' : undefined;
-      const model = process.env.GROQ_MODEL || (isGroq ? 'gptoss-120b' : 'gpt-4o-mini');
+      const model = config.model;
       const client = new OpenAI({ apiKey: llmApiKey, baseURL });
       const openaiTools = TOOL_DEFINITIONS.map(t => ({
         type: 'function',
@@ -225,7 +234,10 @@ export async function classifyIntent(queryText, tiles, trace) {
   } catch (err) {
     console.warn('[IntentClassifier] LLM call failed, falling back to heuristic:', err.message);
     const result = mockClassify(queryText, imageCount);
-    trace.push(makeTraceEntry('intent_classification', `[heuristic-fallback] Classified as ${result.taskType}, tools: [${result.toolNames.join(', ')}]`));
+    trace.push(makeTraceEntry(
+      'intent_classification',
+      `${describeLlmMode(config, 'Intent classification', LLM_MODE.FALLBACK)} Classified as ${result.taskType}, tools: [${result.toolNames.join(', ')}]`
+    ));
     return result;
   }
 }

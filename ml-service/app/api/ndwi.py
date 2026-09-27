@@ -17,6 +17,7 @@ from app.common.http_utils import (
     InvalidFileError,
     aoi_error_output,
     aoi_metadata,
+    spatial_metadata,
     error_output,
     read_upload_file,
     save_to_temp,
@@ -105,6 +106,7 @@ async def ndwi_endpoint(
         metadata={
             "filename": filename,
             "size_bytes": len(content),
+            **spatial_metadata(result),
             **aoi_metadata(result, aoi_geometry),
         },
     )

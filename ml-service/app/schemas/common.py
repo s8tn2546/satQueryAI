@@ -56,6 +56,10 @@ class ValidateResult(BaseModel):
     dtype: str = ""
     warnings: list[str] = []
     errors: list[str] = []
+    # Truthful spatial-readiness facts, read from the file rather than assumed.
+    # ``is_georeferenced`` is None only when the file could not be opened at all.
+    is_georeferenced: bool | None = None
+    integrity: str | None = None
 
 
 class ToolOutput(BaseModel):

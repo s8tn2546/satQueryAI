@@ -448,10 +448,13 @@ class TestVlmWindowScope:
 
         seen = {}
 
-        def fake_run_vqa(image_path, question, model_name=None, adapter_path=None):
+        def fake_run_vqa(image_path, question, model_name=None, adapter_path=None, scope_label=None):
             with rasterio.open(image_path) as ds:
                 seen["width"], seen["height"] = ds.width, ds.height
                 seen["masked"] = int((ds.dataset_mask() > 0).sum())
+            # The structured prompt carries the window scope, so the model is
+            # never told it saw a polygon-masked scene.
+            seen["scope_label"] = scope_label
             return {"answer": "water", "question": question, "confidence": 0.9}
 
         monkeypatch.setattr(vqa_tool, "_run_vqa", fake_run_vqa)

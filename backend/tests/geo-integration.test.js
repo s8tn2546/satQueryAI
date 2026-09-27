@@ -174,10 +174,17 @@ describe('§6.1a — Region-Based Image Acquisition + /validate integration', ()
     it('falls back to local validation when the ML service is unreachable', async () => {
       mockCallMlService.mockRejectedValue(new Error('ECONNREFUSED'));
 
+      // Must be a real PNG: the local fallback inspects container signatures
+      // and rejects non-raster bytes. This exercises the genuine fallback path.
+      const realPng = Buffer.from(
+        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+        'base64'
+      );
+
       const res = await request(app)
         .post('/api/images/upload')
         .field('modality', 'optical')
-        .attach('images', Buffer.from('png-bytes'), 'test.png');
+        .attach('images', realPng, 'test.png');
 
       expect(res.status).toBe(200);
       expect(res.body.status).toBe('success');

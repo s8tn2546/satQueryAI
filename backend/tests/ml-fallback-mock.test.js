@@ -19,31 +19,36 @@ afterAll(() => {
 describe('ML mock-fallback evidence key alignment (Member 6 Geo integration)', () => {
   it('returns evidence.images from tile_id for /ndvi', async () => {
     const r = await mlServiceClient.callMlService('/ndvi', { tile_id: 'abc123' });
-    expect(r.status).toBe('success');
+    expect(r.status).toBe('failed');
+    expect(r.confidence).toBe(0);
     expect(r.evidence.images).toEqual(['abc123']);
   });
 
   it('returns evidence.images from tile_id for /ndwi', async () => {
     const r = await mlServiceClient.callMlService('/ndwi', { tile_id: 'abc123' });
-    expect(r.status).toBe('success');
+    expect(r.status).toBe('failed');
+    expect(r.confidence).toBe(0);
     expect(r.evidence.images).toEqual(['abc123']);
   });
 
   it('returns evidence.images from tile_id for /area', async () => {
     const r = await mlServiceClient.callMlService('/area', { tile_id: 'abc123' });
-    expect(r.status).toBe('success');
+    expect(r.status).toBe('failed');
+    expect(r.confidence).toBe(0);
     expect(r.evidence.images).toEqual(['abc123']);
   });
 
   it('returns evidence.images from tile_id_t1/tile_id_t2 for /change', async () => {
     const r = await mlServiceClient.callMlService('/change', { tile_id_t1: 't1', tile_id_t2: 't2' });
-    expect(r.status).toBe('success');
+    expect(r.status).toBe('failed');
+    expect(r.confidence).toBe(0);
     expect(r.evidence.images).toEqual(['t1', 't2']);
   });
 
   it('returns evidence.images from optical_tile_id/sar_tile_id for /optical-sar', async () => {
     const r = await mlServiceClient.callMlService('/optical-sar', { optical_tile_id: 'o1', sar_tile_id: 's1' });
-    expect(r.status).toBe('success');
+    expect(r.status).toBe('failed');
+    expect(r.confidence).toBe(0);
     expect(r.evidence.images).toEqual(['o1', 's1']);
   });
 });

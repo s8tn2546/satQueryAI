@@ -7,6 +7,7 @@ import { runAgentPipeline } from '../agents/pipeline.js';
 import { composeAnswer } from '../agents/answerComposer.js';
 import { makeTraceEntry } from '../utils/responseBuilder.js';
 import { isDemoRegion, isMockTrendResult, findDemoTrendFallback } from '../services/demoTrendService.js';
+import { normalizeTrendResult } from '../utils/trendResultNormalizer.js';
 
 const router = express.Router();
 
@@ -18,6 +19,11 @@ function regionKey(region) {
   return JSON.stringify({ type: region.type, coordinates: region.coordinates });
 }
 
+function aoiKey(aoi) {
+  if (!aoi) return null;
+  return JSON.stringify({ type: aoi.type, coordinates: aoi.coordinates });
+}
+
 function parseIsoDate(value) {
   if (typeof value !== 'string' || !ISO_DATE_RE.test(value)) return null;
   const d = new Date(`${value}T00:00:00.000Z`);
@@ -25,12 +31,23 @@ function parseIsoDate(value) {
 }
 
 function validateTrendRequest(body) {
-  const { region, metric = 'ndvi', startDate, endDate, interval = 'monthly' } = body || {};
+  const { region, metric = 'ndvi', startDate, endDate, interval = 'monthly', aoi, aoiCrs } = body || {};
 
   if (!region || typeof region !== 'object' || !['Polygon', 'MultiPolygon'].includes(region.type) ||
-      !Array.isArray(region.coordinates) || region.coordinates.length === 0) {
+    !Array.isArray(region.coordinates) || region.coordinates.length === 0) {
     return 'region (GeoJSON Polygon or MultiPolygon) is required.';
   }
+
+  if (aoi !== undefined && aoi !== null) {
+    if (typeof aoi !== 'object' || !['Polygon', 'MultiPolygon'].includes(aoi.type) ||
+      !Array.isArray(aoi.coordinates) || aoi.coordinates.length === 0) {
+      return 'aoi (GeoJSON Polygon or MultiPolygon) is required when supplied.';
+    }
+    if (aoiCrs !== undefined && aoiCrs !== null && (typeof aoiCrs !== 'string' || !aoiCrs.trim())) {
+      return 'aoiCrs must be a non-empty string when supplied.';
+    }
+  }
+
 
   const metricLower = String(metric).toLowerCase();
   if (!SUPPORTED_TREND_METRICS.has(metricLower)) {
@@ -79,18 +96,32 @@ function trendRejectedResponse(reason, trace = []) {
 
 async function composeTrendAnswer(result, confidence, trace) {
   const toolResults = [{ tool: 'trend', status: 'success', result: result || {}, confidence: confidence || 0 }];
-  return composeAnswer('Historical trend analysis', TREND_TASK_TYPE, toolResults, trace);
+  // Forward the computed confidence so the answer is not just the trend values;
+  // a cached trend carries no AOI and no pixel-level quality findings.
+  return composeAnswer('Historical trend analysis', TREND_TASK_TYPE, toolResults, trace, {
+    confidence: typeof confidence === 'number' ? confidence : undefined
+  });
 }
 
-async function findCoveringCacheEntry({ region, metric, startDate, endDate, interval }) {
+async function findCoveringCacheEntry({ region, aoi, metric, startDate, endDate, interval }) {
   const start = parseIsoDate(startDate);
   const end = parseIsoDate(endDate);
   return ResultsCache.findOne({
+    // Scope the lookup to trend results. Without `tool`, an entry cached by a
+    // different tool that happened to share metric/region/dateRange could be
+    // served as a trend.
+    tool: 'trend',
     metric,
     regionKey: regionKey(region),
+    // An AOI-scoped series must never answer an unscoped request, or vice
+    // versa; they are different ground.
+    aoiKey: aoiKey(aoi),
     interval,
     'dateRange.start': { $lte: start },
-    'dateRange.end': { $gte: end }
+    'dateRange.end': { $gte: end },
+    // Never serve an expired entry. The TTL index only reaps documents
+    // asynchronously, so a read can still match one past its expiry.
+    expiresAt: { $gt: new Date() }
   }).sort({ computedAt: -1 });
 }
 
@@ -182,10 +213,12 @@ router.post('/trend', async (req, res) => {
       return res.status(400).json(trendRejectedResponse(validationError));
     }
 
-    const { region, metric = 'ndvi', startDate, endDate, interval = 'monthly' } = req.body;
+    const { region, metric = 'ndvi', startDate, endDate, interval = 'monthly', aoi, aoiCrs } = req.body;
     const metricLower = String(metric).toLowerCase();
+    const scopedAoi = aoi ?? null;
+    const requestAoiCrs = aoiCrs ?? null;
 
-    const cached = await findCoveringCacheEntry({ region, metric: metricLower, startDate, endDate, interval });
+    const cached = await findCoveringCacheEntry({ region, aoi: scopedAoi, metric: metricLower, startDate, endDate, interval });
     if (cached) {
       const trace = [
         makeTraceEntry('trend_cache_check', `Cache lookup for ${metricLower} over ${region.type} region`),
@@ -217,7 +250,10 @@ router.post('/trend', async (req, res) => {
       metric: metricLower,
       start_date: startDate,
       end_date: endDate,
-      interval
+      interval,
+      // Only sent when actually supplied. Omitted otherwise, so the ML service
+      // applies the full region rather than receiving an undefined scope.
+      ...(scopedAoi ? { aoi: scopedAoi, aoi_crs: requestAoiCrs } : {})
     });
 
     if (!mlResult || !['success', 'partial'].includes(mlResult.status)) {
@@ -264,9 +300,13 @@ router.post('/trend', async (req, res) => {
       return res.status(200).json(trendFailureResponse(reason, trace));
     }
 
-    const result = mlResult.result || (Array.isArray(mlResult.series) ? mlResult : {});
+    const rawResult = mlResult.result || (Array.isArray(mlResult.series) ? mlResult : {});
     const confidence = mlResult.confidence || 0;
     const evidence = mlResult.evidence || { images: [], region: {}, notes: '' };
+    // One stable shape for the direct route, matching the pipeline contract:
+    // region/CRS, applied scope, series, quality-annotated observations, trend
+    // statistics, anomalies and the confidence the ML service actually computed.
+    const result = normalizeTrendResult(mlResult, { aoiName: scopedAoi ? 'Selected AOI' : 'Requested region' });
 
     // A labeled mock/fallback result (ML unreachable, timed out, or GEE-unavailable
     // fixtures) is served to the client but must never be cached as a real result.
@@ -316,7 +356,7 @@ router.post('/trend', async (req, res) => {
     // Only cache successful (non-mock) results (BACKEND.md §10). Guard against
     // inserting a duplicate where an existing exact/superset entry already
     // covers the request.
-    const existing = await findCoveringCacheEntry({ region, metric: metricLower, startDate, endDate, interval });
+    const existing = await findCoveringCacheEntry({ region, aoi: scopedAoi, metric: metricLower, startDate, endDate, interval });
     if (!existing && !isMockTrendResult(mlResult)) {
       try {
         await ResultsCache.create({
@@ -324,12 +364,17 @@ router.post('/trend', async (req, res) => {
           metric: metricLower,
           region,
           regionKey: regionKey(region),
+          // Persist the applied scope so an AOI-scoped series is never served to
+          // an unscoped request, or an unscoped series to an AOI request.
+          aoiKey: aoiKey(scopedAoi),
           dateRange: { start: new Date(startDate), end: new Date(endDate) },
           series: (result.series || []).map(p => {
             const parsed = new Date(p.date);
             return { date: isNaN(parsed.getTime()) ? new Date() : parsed, value: p.value ?? null };
           }),
           interval,
+          // Kept exactly as the cache contract defines it; the AOI scope is
+          // carried by the dedicated aoiKey field rather than reshaping these.
           parameters: { region, metric: metricLower, startDate, endDate, interval },
           confidence,
           evidence,

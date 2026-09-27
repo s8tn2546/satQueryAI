@@ -37,6 +37,22 @@ class TrendRequest(BaseModel):
         default="monthly",
         description="Temporal aggregation: 'monthly' or 'yearly'.",
     )
+    aoi: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "Optional GeoJSON Polygon/MultiPolygon analysis-of-interest, applied as "
+            "an intersection with `region`. When present the series is computed "
+            "over region-aoi only, and the applied scope is reported in the "
+            "result's `aoiScope` block."
+        ),
+    )
+    aoi_crs: str | None = Field(
+        default=None,
+        description=(
+            "CRS of `aoi` when it is not WGS84 lon/lat. Reprojected to EPSG:4326 "
+            "before use. Never inferred."
+        ),
+    )
 
 
 class FetchImageryRequest(BaseModel):

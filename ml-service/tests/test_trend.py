@@ -263,13 +263,50 @@ def test_no_observations_fails():
 
 
 def test_insufficient_observations_single_point():
+    """One observation supports no change over time at all.
+
+    Regression guard: a single point previously produced
+    ``direction == "stable"`` and ``percentage_change == 0.0``, asserting a flat
+    trend that was never observed.
+    """
     obs = [{"date": "2021-01-01", "value": 0.4, "valid_pixels": 10}]
     res = compute_trend(FakeProvider(obs), metric="ndvi", region=REGION,
                         start_date="2021-01-01", end_date="2021-02-01")
     assert res["trend"]["slope"] is None
     assert res["trend"]["observation_count"] == 1
-    assert res["trend"]["percentage_change"] == 0.0
+    # No comparison is possible, so no percentage change is reported.
+    assert res["trend"]["percentage_change"] is None
+    # A direction must not be invented from one point.
+    assert res["trend"]["direction"] == "insufficient-data"
+    assert res["trend"]["sufficient_for_trend"] is False
     assert _flat(res) == []
+
+
+def test_two_observations_are_comparison_not_trend():
+    """Two points support a comparison, and are flagged as not a trend."""
+    obs = [
+        {"date": "2021-01-01", "value": 0.40, "valid_pixels": 10},
+        {"date": "2021-02-01", "value": 0.50, "valid_pixels": 10},
+    ]
+    res = compute_trend(FakeProvider(obs), metric="ndvi", region=REGION,
+                        start_date="2021-01-01", end_date="2021-03-01")
+    assert res["trend"]["observation_count"] == 2
+    assert res["trend"]["sufficient_for_trend"] is False
+    assert res["trend"]["percentage_change"] == 25.0
+    assert res["trend"]["direction"] == "increasing"
+    assert "comparison" in (res["trend"]["note"] or "").lower()
+
+
+def test_three_observations_are_sufficient_for_trend():
+    obs = [
+        {"date": "2021-01-01", "value": 0.40, "valid_pixels": 10},
+        {"date": "2021-02-01", "value": 0.45, "valid_pixels": 10},
+        {"date": "2021-03-01", "value": 0.50, "valid_pixels": 10},
+    ]
+    res = compute_trend(FakeProvider(obs), metric="ndvi", region=REGION,
+                        start_date="2021-01-01", end_date="2021-04-01")
+    assert res["trend"]["sufficient_for_trend"] is True
+    assert res["trend"]["direction"] == "increasing"
 
 
 def test_first_value_zero_no_division_by_zero():

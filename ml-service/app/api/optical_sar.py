@@ -22,6 +22,7 @@ from app.common.http_utils import (
     InvalidFileError,
     aoi_error_output,
     aoi_metadata,
+    spatial_metadata,
     error_output,
     read_upload_file,
     save_to_temp,
@@ -179,6 +180,7 @@ async def optical_sar_endpoint(
             "size_bytes_sar": len(content_sar),
             "optical_feature": result.get("optical", {}).get("feature_basis"),
             "sar_band": result.get("sar", {}).get("band"),
+            **spatial_metadata(result),
             **aoi_metadata(result, aoi_geometry),
         },
     )

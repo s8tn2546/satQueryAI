@@ -344,8 +344,10 @@ describe('Milestone 4 — HTTP failure and malformed responses from ML', () => {
     }));
 
     const result = await ml.callMlService('/area', { image_path: '/tmp/x.tif', tile_id: 'a' });
-    expect(result.status).toBe('success');
+    expect(result.status).toBe('failed');
+    expect(result.confidence).toBe(0);
     expect(result.metadata.mock).toBe(true);
+    expect(result.result.area_km2).toBeNull();
   });
 
   it('HTTP 5xx from ML falls back to a clearly-flagged mock result', async () => {
@@ -357,8 +359,10 @@ describe('Milestone 4 — HTTP failure and malformed responses from ML', () => {
     }));
 
     const result = await ml.callMlService('/ndvi', { image_path: '/tmp/x.tif', tile_id: 'a' });
-    expect(result.status).toBe('success');
+    expect(result.status).toBe('failed');
+    expect(result.confidence).toBe(0);
     expect(result.metadata.mock).toBe(true);
+    expect(result.result.mean).toBeNull();
   });
 
   it('malformed JSON (HTTP ok) falls back to a mock result instead of crashing', async () => {
@@ -373,8 +377,10 @@ describe('Milestone 4 — HTTP failure and malformed responses from ML', () => {
     }));
 
     const result = await ml.callMlService('/ndwi', { image_path: '/tmp/x.tif', tile_id: 'a' });
-    expect(result.status).toBe('success');
+    expect(result.status).toBe('failed');
+    expect(result.confidence).toBe(0);
     expect(result.metadata.mock).toBe(true);
+    expect(result.result.mean).toBeNull();
   });
 });
 

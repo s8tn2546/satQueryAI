@@ -144,17 +144,34 @@ def load_qwen_model(model_name: str = DEFAULT_MODEL, adapter_path: str | None = 
     return model, processor
 
 
+CAPTION_PROMPT = (
+    "Describe this satellite image for an Earth-observation analyst.\n"
+    "Organise your answer under these headings, and keep each to one or two sentences:\n"
+    "Land cover - what surface types are visibly present.\n"
+    "Hydrology - water bodies, channels, flooding, or bare ground, or say none is visible.\n"
+    "Urban density - built-up extent, road network, or absence of development.\n"
+    "Vegetation health - density, colour and stress of vegetation, or absence of it.\n"
+    "Rules: report only what you can actually see. Never invent percentages, area figures, "
+    "class names or counts. If a heading has no supporting evidence, write "
+    "\"not determinable from this image\". Separate direct observation from inference. "
+    "Do not claim ground truth or field verification."
+)
+
+
 def run_vqa(
     image: Image.Image,
     question: str,
     model_name: str = DEFAULT_VQA_MODEL,
     adapter_path: str | None = None,
+    max_new_tokens: int = 256,
 ) -> tuple[str, float]:
     """Run VQA inference using Qwen2-VL.
 
-    Returns (answer, confidence) tuple. Answer is lowercase, trimmed,
-    matching RSVQA expected format (single word or short phrase like
-    "yes", "no", "3", "farmland").
+    `max_new_tokens` is a ceiling, not a target: `question` is expected to carry
+    its own structure instruction, so a yes/no question can still be answered in
+    a few tokens while an analytical question can use the full budget.
+
+    Returns (answer, confidence) tuple.
 
     Raises:
         VLMUnavailableError: when PyTorch / model weights are unavailable.
@@ -188,12 +205,16 @@ def run_vqa(
     with torch.no_grad():
         output_ids = model.generate(
             **inputs,
-            max_new_tokens=20,
+            max_new_tokens=max_new_tokens,
             do_sample=False,
+            # Greedy decoding over a much longer budget can fall into a
+            # repetition loop; a mild penalty suppresses that without
+            # changing the deterministic character of the output.
+            repetition_penalty=1.05,
         )
 
     output_ids = output_ids[:, inputs.input_ids.shape[1]:]
-    answer = processor.batch_decode(output_ids, skip_special_tokens=True)[0].strip().lower()
+    answer = processor.batch_decode(output_ids, skip_special_tokens=True)[0].strip()
 
     confidence = _vqa_confidence(answer)
     return answer, confidence
@@ -203,11 +224,13 @@ def run_caption(
     image: Image.Image,
     model_name: str = DEFAULT_CAPTION_MODEL,
     adapter_path: str | None = None,
+    max_new_tokens: int = 512,
 ) -> tuple[str, float]:
     """Run image captioning inference using Qwen2-VL.
 
-    Returns (caption, confidence) tuple. Caption is a natural English
-    sentence as required by VRSBench BLEU/CIDEr evaluation.
+    `max_new_tokens` is a ceiling, not a target; the prompt controls length.
+
+    Returns (caption, confidence) tuple.
 
     Raises:
         VLMUnavailableError: when PyTorch / model weights are unavailable.
@@ -217,7 +240,7 @@ def run_caption(
     model, processor = load_qwen_model(model_name, adapter_path)
     device = next(model.parameters()).device
 
-    prompt = "Describe this satellite image in one sentence."
+    prompt = CAPTION_PROMPT
     
     messages = [
         {
@@ -243,8 +266,10 @@ def run_caption(
     with torch.no_grad():
         output_ids = model.generate(
             **inputs,
-            max_new_tokens=60,
+            max_new_tokens=max_new_tokens,
             do_sample=False,
+            # See run_vqa: guard against greedy repetition over the longer budget.
+            repetition_penalty=1.05,
         )
 
     output_ids = output_ids[:, inputs.input_ids.shape[1]:]
@@ -259,17 +284,26 @@ def run_caption(
 
 def _vqa_confidence(answer: str) -> float:
     """Confidence heuristic for VQA answers.
-    
+
     Conservative proxy based on answer structure:
       - Empty: 0.0
       - Binary yes/no: 0.80
-      - Other: 0.70
+      - Short free-form phrase: 0.70
+      - Long structured report: lower, because a long answer asserts more
+        without any additional verification. A report is a description of what
+        the model can see, not a measurement, so it must not inherit the
+        confidence of a crisp factual answer.
     """
     if not answer:
         return 0.0
-    if answer in {"yes", "no"}:
+    if answer.strip().lower() in {"yes", "no"}:
         return 0.80
-    return 0.70
+    words = answer.split()
+    if len(words) <= 12:
+        return 0.70
+    if len(words) <= 60:
+        return 0.55
+    return 0.45
 
 
 def _caption_confidence(caption: str) -> float:

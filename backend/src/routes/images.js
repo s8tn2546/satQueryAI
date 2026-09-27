@@ -46,6 +46,78 @@ function inferFormat(ext) {
 }
 
 /**
+ * Minimal container-signature check for an already-stored upload.
+ *
+ * This is a corruption gate, not a raster parser: it reads only the leading
+ * magic bytes and answers "is this file plausibly a TIFF/PNG/JPEG at all?".
+ * That distinction matters because the extension check above is trivially
+ * spoofable — renaming random bytes to `scene.tif` passes it — and because a
+ * file that cannot be opened must never reach a scientific tool that would
+ * otherwise report a plausible-looking failure or, worse, a mock result.
+ *
+ * A clean pass is deliberately NOT a validity claim: decoding the pixels is the
+ * ML service's job. This only guarantees the file is a real container, so a
+ * corrupt upload is rejected at the boundary instead of after analysis.
+ */
+const RASTER_SIGNATURES = [
+  {
+    name: 'TIFF',
+    bytes: [0x49, 0x49, 0x2a, 0x00], // little-endian: "II*\0"
+    alt: [0x4d, 0x4d, 0x00, 0x2a]  // big-endian:    "MM\0*"
+  },
+  {
+    name: 'PNG',
+    bytes: [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]
+  },
+  {
+    name: 'JPEG',
+    bytes: [0xff, 0xd8, 0xff]
+  }
+];
+
+function matchesSignature(head, candidate) {
+  if (head.length < candidate.length) return false;
+  return candidate.every((byte, i) => head[i] === byte);
+}
+
+/**
+ * Inspect the first bytes of a stored upload.
+ * Returns { ok: true, container } or { ok: false, reason }.
+ */
+function inspectRasterSignature(filePath) {
+  let handle;
+  try {
+    const stat = fs.statSync(filePath);
+    if (stat.size === 0) {
+      return { ok: false, reason: 'File is empty (0 bytes).' };
+    }
+    // Read only the header. Max signature length is 8 bytes.
+    const head = Buffer.alloc(16);
+    const fd = fs.openSync(filePath, 'r');
+    handle = fd;
+    const bytesRead = fs.readSync(fd, head, 0, 16, 0);
+    const slice = head.subarray(0, bytesRead);
+    for (const sig of RASTER_SIGNATURES) {
+      if (matchesSignature(slice, sig.bytes) || (sig.alt && matchesSignature(slice, sig.alt))) {
+        return { ok: true, container: sig.name };
+      }
+    }
+    return {
+      ok: false,
+      reason:
+        'File is not a readable TIFF, PNG or JPEG container. The content does not match ' +
+        'any supported raster signature, so it is corrupt or mislabelled.'
+    };
+  } catch (err) {
+    return { ok: false, reason: `File could not be read: ${err.message}` };
+  } finally {
+    if (handle !== undefined) {
+      try { fs.closeSync(handle); } catch { /* already closed */ }
+    }
+  }
+}
+
+/**
  * Normalize a bounding box into the canonical GeoJSON Polygon the Tile schema
  * expects ({ type: 'Polygon', coordinates: [[[lon, lat], ...]] }).
  *
@@ -158,23 +230,26 @@ function deriveTileFields(v) {
 }
 
 /**
- * Ask the ML service's /validate endpoint for a real validation verdict. Returns
- * { validated, validationDetails, metadata } using the ML response when
- * available; falls back to a lenient local check (format + extension) when the
- * ML service is unreachable/offline so the demo never hard-fails on upload.
+ * Ask the ML service's /validate endpoint for a real validation verdict.
+ *
+ * Returns { validated, validationDetails, metadata, integrity, isGeoreferenced }.
+ *
+ * Two verifiers, in strict order of authority:
+ *
+ *   1. The ML service actually opening the file. It decodes the raster, so its
+ *      verdict is authoritative and is used whenever it renders one.
+ *   2. A local container-signature check, used only when ML is unavailable or
+ *      silent. This is a weaker but real check: it rejects the common case of
+ *      corrupt/mislabelled bytes that a lenient extension check would wave
+ *      through, so a bad file is still caught while the ML service is down.
+ *
+ * `validated` is never optimistically true. A previous version defaulted to
+ * `true` whenever ML was down, which let a corrupt file upload cleanly and then
+ * fail — or be papered over by a mock result — deep inside analysis. When the
+ * file was not decoded, `unverifiedReason` records that, so "verified" and
+ * "only structurally sound" stay distinguishable downstream.
  */
 async function validateWithMlService(file, modalityHint, format) {
-  const fallback = {
-    validated: true,
-    validationDetails: {
-      formatValid: true,
-      mimeType: file.mimetype,
-      sizeBytes: file.size,
-      validationSource: 'local-fallback'
-    },
-    metadata: {}
-  };
-
   let mlResult;
   try {
     mlResult = await mlServiceClient.callMlService('/validate', {
@@ -183,29 +258,75 @@ async function validateWithMlService(file, modalityHint, format) {
       format
     });
   } catch (err) {
-    console.warn(`[Upload] /validate ML call failed, using local fallback: ${err.message}`);
-    return fallback;
+    console.warn(`[Upload] /validate ML call failed, using local signature check: ${err.message}`);
+    mlResult = null;
   }
 
-  if (!mlResult || mlResult.status === 'failed' || mlResult.status === 'error') {
-    return fallback;
+  const v = (mlResult && mlResult.result) || {};
+  const mlVerdict = mlResult
+    && mlResult.status !== 'failed'
+    && mlResult.status !== 'error'
+    && typeof v.valid === 'boolean'
+    ? v.valid
+    : null;
+
+  if (mlVerdict !== null) {
+    // ML decoded the file; its verdict wins outright.
+    const metadata = extractValidateMetadata(mlResult);
+    return {
+      validated: mlVerdict,
+      validationDetails: {
+        formatValid: v.formatValid ?? true,
+        mimeType: file.mimetype,
+        sizeBytes: file.size,
+        validationStatus: v.validation_status ?? null,
+        errors: v.errors ?? [],
+        warnings: v.warnings ?? [],
+        confidence: mlResult.confidence,
+        validationSource: 'ml-service'
+      },
+      metadata,
+      integrity: v.integrity ?? (mlVerdict ? null : 'invalid'),
+      isGeoreferenced: typeof v.is_georeferenced === 'boolean' ? v.is_georeferenced : null
+    };
   }
 
-  const v = mlResult.result || {};
-  const metadata = extractValidateMetadata(mlResult);
+  // ML could not render a verdict — fall back to the structural check.
+  const signature = inspectRasterSignature(file.path);
+  if (!signature.ok) {
+    return {
+      validated: false,
+      validationDetails: {
+        formatValid: false,
+        mimeType: file.mimetype,
+        sizeBytes: file.size,
+        errors: [signature.reason],
+        warnings: [],
+        validationSource: 'local-fallback'
+      },
+      metadata: {},
+      integrity: 'invalid',
+      isGeoreferenced: null
+    };
+  }
+
   return {
-    validated: v.valid !== undefined ? Boolean(v.valid) : true,
+    validated: true,
     validationDetails: {
-      formatValid: v.formatValid ?? true,
+      formatValid: true,
       mimeType: file.mimetype,
       sizeBytes: file.size,
-      validationStatus: v.validation_status ?? null,
-      errors: v.errors ?? [],
-      warnings: v.warnings ?? [],
-      confidence: mlResult.confidence,
-      validationSource: 'ml-service'
+      container: signature.container,
+      errors: [],
+      warnings: [],
+      unverifiedReason:
+        'The ML validation service was unavailable, so the file was not decoded. '
+        + 'Only its container signature was verified.',
+      validationSource: 'local-fallback'
     },
-    metadata
+    metadata: {},
+    integrity: 'unverified',
+    isGeoreferenced: null
   };
 }
 
@@ -272,11 +393,32 @@ router.post('/upload', (req, res) => {
           fileModality = String(modality).toLowerCase();
         }
 
-        const { validated, validationDetails, metadata } = await validateWithMlService(
+        const {
+          validated,
+          validationDetails,
+          metadata,
+          integrity,
+          isGeoreferenced
+        } = await validateWithMlService(
           file,
           req.body.modality_hint || fileModality,
           format
         );
+
+        // A file that could not be opened is category C: it must not become a
+        // tile, because every downstream tool assumes an openable raster and
+        // would otherwise produce a failure (or a mock) that looks like analysis.
+        if (!validated) {
+          cleanupStoredFiles(files);
+          const detail = (validationDetails.errors || []).join(' ') ||
+            'The file could not be validated as a readable raster.';
+          return res.status(400).json({
+            status: 'rejected',
+            error: `Upload rejected: ${detail}`,
+            file: file.originalname,
+            validationDetails
+          });
+        }
 
         const derived = deriveTileFields(metadata);
         const boundingBox = normalizeBoundingBox(metadata.wgs84_bounds || metadata.bounds) || null;
@@ -292,6 +434,10 @@ router.post('/upload', (req, res) => {
           crs: derived.crs || null,
           resolution: derived.resolution,
           bands: derived.bands,
+          // Truthful spatial-readiness state, recorded explicitly so a consumer
+          // never has to infer georeferencing from a missing crs/resolution.
+          isGeoreferenced: isGeoreferenced ?? null,
+          integrity: integrity ?? null,
           metadata
         });
 

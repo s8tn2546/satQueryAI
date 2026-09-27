@@ -33,6 +33,7 @@ from app.common.http_utils import (
     error_output,
     read_upload_file,
     save_to_temp,
+    spatial_metadata,
     validate_upload_ext,
 )
 from app.models.vlm_loader import (
@@ -201,6 +202,7 @@ async def vqa_endpoint(
             "size_bytes": len(content),
             "model": DEFAULT_VQA_MODEL,
             "adapter_used": _adapter_detected(),
+            **spatial_metadata(result),
             **aoi_metadata(result, aoi_geometry),
         },
     )

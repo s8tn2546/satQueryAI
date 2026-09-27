@@ -38,6 +38,12 @@ const tileSchema = new mongoose.Schema({
   filePath: { type: String, required: true },
   validated: { type: Boolean, default: false },
   validationDetails: { type: Object, default: {} },
+  // Spatial-readiness state as observed at upload. `null` means "not
+  // determined" (the file was not decoded); it is never defaulted to false,
+  // which would misreport an unverified file as a known non-georeferenced one.
+  isGeoreferenced: { type: Boolean, default: null },
+  // 'georeferenced_analysis_ready' | 'visual_only_valid' | 'invalid' | 'unverified'
+  integrity: { type: String, default: null },
   metadata: { type: Object, default: {} }
 }, { timestamps: true });
 

@@ -23,8 +23,8 @@ import datetime as _dt
 from typing import Any, Iterator
 
 import numpy as np
-from shapely.geometry import shape
-
+import shapely.ops
+from shapely.geometry import mapping, shape
 # Supported optical trend metrics (documented). Unsupported metrics fail, never
 # silently substituted.
 SUPPORTED_METRICS = {"ndvi", "ndwi"}
@@ -54,6 +54,51 @@ class TrendComputationError(TrendError):
 # Region validation                                                           #
 # --------------------------------------------------------------------------- #
 
+# /trend queries Google Earth Engine with ``ee.Geometry(region)``. GEE
+# interprets a bare GeoJSON geometry as WGS84 longitude/latitude degrees
+# (EPSG:4326), so that is the CRS the service actually works in and the CRS in
+# which every reported ``region.bounds`` is expressed.
+NATIVE_CRS = "EPSG:4326"
+
+# Minimum distinct observations before a direction may be inferred. Below this
+# the series supports comparison, not trend.
+MIN_OBSERVATIONS_FOR_TREND = 3
+
+
+def _to_wgs84(geom, declared_crs: str | None):
+    """Return ``(geometry_in_wgs84, crs_label)`` for a caller-supplied region.
+
+    A GeoJSON geometry carries no CRS field of its own, so an absent
+    ``declared_crs`` means RFC 7946 WGS84 lon/lat — which is what the range
+    checks below verify. When a caller *does* declare a CRS (e.g. a polygon drawn
+    in UTM metres and posted as ``{"type": "Polygon", ..., "crs": "EPSG:32643"}``)
+    the coordinates are reprojected rather than reinterpreted, so a metric value
+    can never be computed over the wrong ground.
+    """
+    if declared_crs is None:
+        return geom, NATIVE_CRS
+    try:
+        from pyproj import CRS as _CRS
+        from pyproj import Transformer as _Transformer
+    except ImportError as exc:  # pragma: no cover - pyproj is a hard dependency
+        raise TrendValidationError(
+            "A region CRS was declared but pyproj is unavailable to reproject it."
+        ) from exc
+    try:
+        source = _CRS.from_user_input(declared_crs)
+    except Exception as exc:
+        raise TrendValidationError(
+            f"Unrecognised region CRS '{declared_crs}': {exc}"
+        ) from exc
+    if source.equals(_CRS.from_user_input(NATIVE_CRS)):
+        return geom, NATIVE_CRS
+    transformer = _Transformer.from_crs(source, _CRS.from_user_input(NATIVE_CRS),
+                                        always_xy=True)
+    return (
+        shapely.ops.transform(transformer.transform, geom),
+        NATIVE_CRS,
+    )
+
 
 def validate_region(geojson: Any) -> tuple[dict[str, Any], list[str]]:
     """Validate a GeoJSON Polygon/MultiPolygon region.
@@ -61,6 +106,9 @@ def validate_region(geojson: Any) -> tuple[dict[str, Any], list[str]]:
     Returns (region_meta, warnings) on success. Raises TrendValidationError with a
     clear message on invalid/unsupported geometry. Does not silently repair
     geometry.
+
+    ``region_meta`` always carries an explicit ``crs`` alongside ``bounds``, so a
+    consumer never has to assume what the numbers are in.
     """
     warnings: list[str] = []
     if not isinstance(geojson, dict):
@@ -72,6 +120,14 @@ def validate_region(geojson: Any) -> tuple[dict[str, Any], list[str]]:
             f"Unsupported region type '{gtype}'. /trend supports a GeoJSON "
             "Polygon or MultiPolygon geometry."
         )
+
+    # A CRS declared on the geometry (non-standard GeoJSON, but clients send it)
+    # is honoured by reprojection, never ignored.
+    declared_crs = geojson.get("crs")
+    if isinstance(declared_crs, dict):
+        # GeoJSON-style crs member: {"type": "name", "properties": {"name": ...}}
+        name = (declared_crs.get("properties") or {}).get("name")
+        declared_crs = name if isinstance(name, str) else None
 
     try:
         geom = shape(geojson)
@@ -85,37 +141,55 @@ def validate_region(geojson: Any) -> tuple[dict[str, Any], list[str]]:
             "region geometry is invalid (shapely reports is_valid=False)."
         )
 
-    # Coordinate range checks (WGS84 assumed for GEE queries).
-    if not geom.is_valid:
-        raise TrendValidationError("region geometry is invalid.")
+    # Reproject before the range checks: a UTM polygon is not out of range, it is
+    # simply not in the CRS the range check is written for.
+    geom, crs_label = _to_wgs84(geom, declared_crs)
+    if declared_crs is not None and crs_label == NATIVE_CRS and not geom.is_valid:
+        raise TrendValidationError("region geometry is invalid after reprojection.")
+    if geom.is_empty:
+        raise TrendValidationError("region geometry is empty after reprojection.")
+
     minx, miny, maxx, maxy = geom.bounds
-    for label, mn, mx in (("longitude", minx, maxx), ("latitude", miny, maxy)):
+    for label, mn, mx in (("longitude", minx, maxx),):
         if mn < -180 or mx > 180:
             raise TrendValidationError(
-                f"region {label} out of range [-180, 180]: [{mn}, {mx}]."
+                f"region {label} out of range [-180, 180]: [{mn}, {mx}]. "
+                "Coordinates must be WGS84 longitude; declare the region's CRS "
+                "if it is not already EPSG:4326."
             )
     for label, mn, mx in (("latitude", miny, maxy),):
         if mn < -90 or mx > 90:
             raise TrendValidationError(
-                f"region {label} out of range [-90, 90]: [{mn}, {mx}]."
+                f"region {label} out of range [-90, 90]: [{mn}, {mx}]. "
+                "Coordinates must be WGS84 latitude; declare the region's CRS "
+                "if it is not already EPSG:4326."
             )
 
     centroid = geom.centroid
     area_deg2 = abs(geom.area)
     meta = {
         "type": gtype,
+        # Bounds and the label describing them, always together. Reporting bounds
+        # without a CRS is what made the trend contract ambiguous.
         "bounds": {
             "west": float(minx), "south": float(miny),
             "east": float(maxx), "north": float(maxy),
         },
+        "crs": crs_label,
         "centroid": {"lat": float(centroid.y), "lon": float(centroid.x)},
+        # Square degrees, not square kilometres: a degree is not a distance.
         "area_deg2": float(area_deg2),
+        "area_units": "square degrees (EPSG:4326); not a ground area",
     }
     if area_deg2 <= 0:
         raise TrendValidationError("region geometry has zero area.")
 
-    # The coordinates are already validated by shapely; a 4-coordinate ring is
-    # expected for closed polygons. No silent repair is performed.
+    if declared_crs is not None:
+        warnings.append(
+            f"Region was supplied in {declared_crs} and reprojected to {NATIVE_CRS} "
+            "for analysis; reported bounds are in " + NATIVE_CRS + "."
+        )
+
     return meta, warnings
 
 
@@ -278,6 +352,13 @@ def trend_statistics(series: list[dict[str, Any]]) -> dict[str, Any]:
     Slope uses simple linear regression: ``value = slope * day_index + intercept``,
     where ``day_index`` is days since the first observation (documented). Handles
     zero first value for percentage change safely (returns null + note).
+
+    Insufficient data is reported as such rather than resolved into a direction.
+    With a single observation there is nothing to compare, so ``direction`` is
+    ``"insufficient-data"`` and ``percentage_change`` is ``None`` — reporting
+    "stable" or 0.0% there would assert a flat trend that was never observed.
+    Two observations support a comparison but not a trend, which
+    ``sufficient_for_trend`` records.
     """
     valid = [
         (i, s["date"], s["value"])
@@ -287,6 +368,7 @@ def trend_statistics(series: list[dict[str, Any]]) -> dict[str, Any]:
     stats: dict[str, Any] = {
         "observation_count": len(valid),
         "missing_count": sum(1 for s in series if s.get("value") is None),
+        "sufficient_for_trend": len(valid) >= MIN_OBSERVATIONS_FOR_TREND,
     }
 
     if not valid:
@@ -321,6 +403,29 @@ def trend_statistics(series: list[dict[str, Any]]) -> dict[str, Any]:
         slope, _ = np.polyfit(day_index, values, 1)  # least squares
         slope = float(slope)
 
+    # A single observation has no "first vs last" to compare: the two are the
+    # same point, so any percentage would be a fabricated 0.0.
+    if len(values) < 2:
+        stats.update(
+            {
+                "first_value": round(first_value, 6),
+                "last_value": round(first_value, 6),
+                "min": round(float(np.min(values)), 6),
+                "max": round(float(np.max(values)), 6),
+                "mean": round(float(np.mean(values)), 6),
+                "slope": None,
+                "slope_units": None,
+                "percentage_change": None,
+                "direction": "insufficient-data",
+                "note": (
+                    "Only one valid observation: no change over time can be "
+                    "computed. At least 2 observations are required for a "
+                    "comparison and 3 for a trend."
+                ),
+            }
+        )
+        return stats
+
     # Percentage change, safe for first_value == 0.
     percentage_change = None
     note = ""
@@ -337,6 +442,14 @@ def trend_statistics(series: list[dict[str, Any]]) -> dict[str, Any]:
         direction = "increasing"
     else:
         direction = "decreasing"
+
+    if len(values) < MIN_OBSERVATIONS_FOR_TREND:
+        note = (
+            (note + " " if note else "")
+            + f"Only {len(values)} valid observation(s): this is a two-point "
+            "comparison, not a fitted trend. At least "
+            f"{MIN_OBSERVATIONS_FOR_TREND} are required for trend inference."
+        )
 
     stats.update(
         {
@@ -362,6 +475,86 @@ def trend_statistics(series: list[dict[str, Any]]) -> dict[str, Any]:
 # --------------------------------------------------------------------------- #
 
 
+def apply_aoi(
+    region: dict[str, Any],
+    aoi: dict[str, Any] | None,
+    aoi_crs: str | None = None,
+) -> tuple[dict[str, Any] | None, list[str]]:
+    """Intersect the requested region with an optional AOI.
+
+    Returns ``(effective_region_or_None, warnings)``. ``effective_region`` is
+    ``None`` when no AOI was requested, meaning the analysis is region-scoped.
+    An AOI that does not intersect the region is an error, not an empty series:
+    silently analysing the whole region instead would return numbers for ground
+    the caller did not ask about.
+    """
+    if aoi is None:
+        return None, []
+    if not isinstance(aoi, dict):
+        raise TrendValidationError("aoi must be a GeoJSON geometry object.")
+    gtype = aoi.get("type")
+    if gtype not in ("Polygon", "MultiPolygon"):
+        raise TrendValidationError(
+            f"Unsupported aoi type '{gtype}'. /trend supports a GeoJSON "
+            "Polygon or MultiPolygon geometry."
+        )
+    try:
+        aoi_geom = shape(aoi)
+    except Exception as exc:
+        raise TrendValidationError(f"Invalid aoi GeoJSON geometry: {exc}") from exc
+    if aoi_geom.is_empty or not aoi_geom.is_valid:
+        raise TrendValidationError("aoi geometry is empty or invalid.")
+
+    declared = aoi_crs or (aoi.get("crs") if isinstance(aoi.get("crs"), str) else None)
+    if declared is None and isinstance(aoi.get("crs"), dict):
+        name = (aoi["crs"].get("properties") or {}).get("name")
+        declared = name if isinstance(name, str) else None
+    aoi_geom, _ = _to_wgs84(aoi_geom, declared)
+
+    region_geom = shape(region)
+    region_geom, _ = _to_wgs84(
+        region_geom,
+        region.get("crs") if isinstance(region.get("crs"), (str, dict)) else None,
+    )
+
+    if not aoi_geom.intersects(region_geom):
+        raise TrendValidationError(
+            "The AOI does not intersect the requested region; there is no area to "
+            "analyse. Check that both geometries refer to the same place and CRS."
+        )
+    clipped = region_geom.intersection(aoi_geom)
+    if clipped.is_empty or clipped.area <= 0:
+        raise TrendValidationError(
+            "The AOI only touches the requested region boundary, leaving no area "
+            "to analyse."
+        )
+
+    warnings: list[str] = []
+    if declared is not None:
+        warnings.append(
+            f"AOI was supplied in {declared} and reprojected to {NATIVE_CRS}; "
+            "the applied AOI bounds are in " + NATIVE_CRS + "."
+        )
+    return _geometry_to_geojson(clipped), warnings
+
+
+def _geometry_to_gs84_meta(geom) -> dict[str, Any]:
+    """Bounds + CRS block for a WGS84 geometry, matching ``region_meta``."""
+    minx, miny, maxx, maxy = geom.bounds
+    return {
+        "bounds": {
+            "west": float(minx), "south": float(miny),
+            "east": float(maxx), "north": float(maxy),
+        },
+        "crs": NATIVE_CRS,
+    }
+
+
+def _geometry_to_geojson(geom) -> dict[str, Any]:
+    """Serialise a shapely geometry back to bare GeoJSON for the provider."""
+    return mapping(geom)
+
+
 def compute_trend(
     provider,
     *,
@@ -370,6 +563,8 @@ def compute_trend(
     start_date: str,
     end_date: str,
     interval: str = "monthly",
+    aoi: dict[str, Any] | None = None,
+    aoi_crs: str | None = None,
 ) -> dict[str, Any]:
     """Run the full trend pipeline against a given provider."""
     metric_p = (metric or "").lower()
@@ -379,11 +574,19 @@ def compute_trend(
             f"Unsupported interval '{interval}'. Supported: monthly, yearly."
         )
     region_meta, region_warnings = validate_region(region)
+
+    # The AOI narrows the area actually queried. It is resolved before the
+    # provider call so the provider never sees ground outside the applied scope.
+    effective_region, aoi_warnings = apply_aoi(region, aoi, aoi_crs)
+    aoi_scope = _aoi_scope_meta(region, region_meta, effective_region)
+
+    query_region = effective_region if effective_region is not None else region
+
     start_dt, end_dt, date_warnings = parse_date_range(start_date, end_date)
     start_iso, end_iso = start_dt.isoformat(), end_dt.isoformat()
 
     provider_payload = provider.compute_trend(
-        metric_p, region, start_iso, end_iso, interval=interval
+        metric_p, query_region, start_iso, end_iso, interval=interval
     )
     observations = provider_payload.get("observations", [])
     provider_warnings = list(provider_payload.get("provider_warnings", []))
@@ -396,12 +599,18 @@ def compute_trend(
     warnings = (
         region_warnings
         + date_warnings
+        + aoi_warnings
         + provider_warnings
         + series_warnings
     )
     source = provider_payload.get("source", "unknown")
 
     if not any(s.get("value") is not None for s in series):
+        if aoi_scope.get("aoiApplied"):
+            raise TrendComputationError(
+                "No valid observations were returned for the requested AOI/region, "
+                "date range and metric. Nothing can be quantified."
+            )
         raise TrendComputationError(
             "No valid observations were returned for the requested region/date "
             "range/metric. Nothing can be quantified."
@@ -410,6 +619,18 @@ def compute_trend(
     result = {
         "metric": metric_p,
         "region": region_meta,
+        # The geometry actually analysed. Equal to `region` when no AOI was
+        # requested, so a consumer can always read the analysed scope here.
+        "analyzedRegion": (
+            {**region_meta, **_geometry_to_gs84_meta(shape(query_region))}
+            if effective_region is None
+            else {
+                **region_meta,
+                **_geometry_to_gs84_meta(shape(query_region)),
+                "type": effective_region.get("type", region_meta.get("type")),
+            }
+        ),
+        "aoiScope": aoi_scope,
         "date_range": {"start": start_iso, "end": end_iso},
         "interval": interval,
         "source": source,
@@ -423,11 +644,56 @@ def compute_trend(
     return result
 
 
+def _aoi_scope_meta(
+    region: dict[str, Any],
+    region_meta: dict[str, Any],
+    effective_region: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Describe the scope the series was actually computed over.
+
+    Only fields that are genuinely known are populated; this tool never opens a
+    raster, so there is no pixel coverage or georeference to report and none is
+    invented.
+    """
+    requested = {
+        "bounds": region_meta.get("bounds"),
+        "crs": region_meta.get("crs"),
+    }
+    if effective_region is None:
+        return {
+            "aoiApplied": False,
+            "aoiScope": "region",
+            "aoiStatus": "not_requested",
+            "crs": region_meta.get("crs"),
+            "requestedBounds": requested["bounds"],
+            "analyzedBounds": requested["bounds"],
+            "reason": "No AOI was supplied; the full requested region was analysed.",
+        }
+
+    analyzed = _geometry_to_gs84_meta(shape(effective_region))
+    return {
+        "aoiApplied": True,
+        "aoiScope": "aoi",
+        "aoiStatus": "applied",
+        "crs": analyzed["crs"],
+        "requestedBounds": requested["bounds"],
+        "analyzedBounds": analyzed["bounds"],
+        "aoiBounds": analyzed["bounds"],
+        "regionBounds": requested["bounds"],
+        "reason": (
+            "The series was computed over the AOI clipped to the requested "
+            "region. Analyzed bounds differ from the requested region."
+        ),
+    }
+
+
 def trend_confidence(result: dict[str, Any]) -> float:
     """Deterministic confidence (reliability, not statistical significance).
 
-    1.0 if all inputs valid, no warnings, and real (non-mock) observations exist.
-    0.8 if any warnings, missing periods, or mock/fixture source.
+    1.0 if all inputs valid, no warnings, real (non-mock) observations exist and
+    there are enough of them to support a trend.
+    0.8 if any warnings, missing periods, mock/fixture source, or too few
+    observations to infer a trend from (the value can only be compared).
     0.0 only reached externally on failure (no valid result here).
     """
     if result.get("source") != "gee":
@@ -438,5 +704,10 @@ def trend_confidence(result: dict[str, Any]) -> float:
     if not trend.get("observation_count"):
         return 0.8
     if trend.get("missing_count"):
+        return 0.8
+    # Below MIN_OBSERVATIONS_FOR_TREND this is a comparison, not a trend, so it
+    # cannot carry the same confidence as a fitted trend even when every
+    # observation is real and complete.
+    if not trend.get("sufficient_for_trend", True):
         return 0.8
     return 1.0

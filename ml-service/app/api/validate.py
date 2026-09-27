@@ -11,8 +11,8 @@ import tempfile
 from pathlib import Path
 
 from fastapi import APIRouter, File, Form, UploadFile
-from fastapi.responses import JSONResponse
 
+from app.common.http_utils import spatial_metadata
 from app.geospatial.validation import run_validation
 from app.schemas.common import ToolOutput, ValidationStatus
 
@@ -53,7 +53,9 @@ async def validate_image(
                     f"Supported: {sorted(ALLOWED_EXTENSIONS)}"
                 ],
                 "warnings": [],
-                "format": ext.lstrip(".").upper(),
+                "is_georeferenced": None,
+                "integrity": "invalid",
+                "format": ext.lstrip(".").upper() or None,
             },
             confidence=1.0,
         )
@@ -70,6 +72,9 @@ async def validate_image(
                     f"Invalid modality_hint: '{modality_hint}'. Must be 'optical' or 'sar'."
                 ],
                 "warnings": [],
+                "is_georeferenced": None,
+                "integrity": "invalid",
+                "format": ext.lstrip(".").upper() or None,
             },
             confidence=1.0,
         )
@@ -87,6 +92,9 @@ async def validate_image(
                 "validation_status": ValidationStatus.INVALID.value,
                 "errors": [f"Failed to read uploaded file: {exc}"],
                 "warnings": [],
+                "is_georeferenced": None,
+                "integrity": "invalid",
+                "format": ext.lstrip(".").upper() or None,
             },
             confidence=1.0,
         )
@@ -103,6 +111,9 @@ async def validate_image(
                     f"(max: {MAX_FILE_SIZE_MB} MB)"
                 ],
                 "warnings": [],
+                "is_georeferenced": None,
+                "integrity": "invalid",
+                "format": ext.lstrip(".").upper() or None,
             },
             confidence=1.0,
         )
@@ -116,6 +127,9 @@ async def validate_image(
                 "validation_status": ValidationStatus.INVALID.value,
                 "errors": ["Uploaded file is empty (0 bytes)"],
                 "warnings": [],
+                "is_georeferenced": None,
+                "integrity": "invalid",
+                "format": ext.lstrip(".").upper() or None,
             },
             confidence=1.0,
         )
@@ -142,6 +156,9 @@ async def validate_image(
                 "validation_status": ValidationStatus.INVALID.value,
                 "errors": [f"Internal validation error: {exc}"],
                 "warnings": [],
+                "is_georeferenced": None,
+                "integrity": "invalid",
+                "format": ext.lstrip(".").upper() or None,
             },
             confidence=1.0,
         )
@@ -163,5 +180,9 @@ async def validate_image(
         result=result_dict,
         evidence={"filename": filename},
         confidence=confidence,
-        metadata={"filename": filename, "size_bytes": len(content)},
+        metadata={
+            "filename": filename,
+            "size_bytes": len(content),
+            **spatial_metadata(result_dict),
+        },
     )

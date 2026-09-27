@@ -3,6 +3,7 @@ import { makeTraceEntry } from '../utils/responseBuilder.js';
 import ResultsCache from '../models/ResultsCache.js';
 import { isMockTrendResult } from '../services/demoTrendService.js';
 import { analyzeMultiTemporalSeries } from '../utils/multiTemporalAnalyzer.js';
+import { normalizeTrendResult } from '../utils/trendResultNormalizer.js';
 import { interpretCandidateSemanticChange } from '../utils/semanticChangeInterpreter.js';
 import crypto from 'crypto';
 
@@ -355,6 +356,7 @@ export async function executeTools(tools, tiles = [], parameters = {}, trace = [
       const queryCond = {
         tool: 'trend',
         metric,
+        interval: payload.interval || 'monthly',
         expiresAt: { $gt: new Date() }
       };
 
@@ -375,7 +377,9 @@ export async function executeTools(tools, tiles = [], parameters = {}, trace = [
         const cachedEntry = {
           tool: 'trend',
           status: 'success',
-          result: { ...cached.result, ...analysis },
+          // A cached trend gets the identical normaliser treatment as a live one,
+          // so a cache hit and a cache miss are the same contract.
+          result: { ...normalizeTrendResult({ result: cached.result, confidence: cached.confidence, evidence: cached.evidence, metadata: cached.metadata }), ...analysis },
           evidence: cached.evidence || {},
           confidence: cached.confidence || 0,
           metadata: { ...(cached.metadata || {}), cacheHit: true }
@@ -427,8 +431,12 @@ export async function executeTools(tools, tiles = [], parameters = {}, trace = [
       let finalResult = mlResult.result;
       if (tool.name === 'trend' && mlResult.result) {
         const metric = (payload.metric || 'ndvi').toLowerCase();
+        // Same normaliser the direct route uses, so /api/query and
+        // /api/query/trend return one trend contract. The analyzer's own keys
+        // are spread afterwards to preserve the pre-existing pipeline shape
+        // (upper-case `metric`, `aoiName`) for existing consumers.
         const analysis = analyzeMultiTemporalSeries(mlResult.result.series || mlResult.result.observations || [], { metric });
-        finalResult = { ...mlResult.result, ...analysis };
+        finalResult = { ...normalizeTrendResult(mlResult, { aoiName: 'Selected AOI' }), ...analysis };
       } else if (tool.name === 'change' && mlResult.result) {
         const ndviRes = executionContext.previousResults.get('ndvi')?.result;
         const ndwiRes = executionContext.previousResults.get('ndwi')?.result;
@@ -445,7 +453,13 @@ export async function executeTools(tools, tiles = [], parameters = {}, trace = [
         });
         finalResult = { ...mlResult.result, candidateInterpretation };
       }
-      const successEntry = { tool: tool.name, status: mlResult.status || 'success', ...mlResult, result: finalResult };
+      // The backend tool name is authoritative. The ML service labels some
+      // endpoints with hyphens (e.g. "optical-sar") while the backend, the
+      // frontend and `previousResults` all key on snake_case ("optical_sar").
+      // Letting the ML value win meant a real fusion result was silently
+      // dropped by every consumer that looks up 'optical_sar'.
+      const { tool: _mlToolName, ...mlRest } = mlResult;
+      const successEntry = { tool: tool.name, status: mlResult.status || 'success', ...mlRest, result: finalResult };
       if (dependencyNote) {
         successEntry.metadata = {
           ...(successEntry.metadata || {}),

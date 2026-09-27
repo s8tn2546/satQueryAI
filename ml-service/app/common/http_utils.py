@@ -100,6 +100,120 @@ def aoi_metadata(result: dict, raw_aoi: str | None) -> dict:
     return metadata
 
 
+def spatial_metadata(result: dict | None) -> dict:
+    """Standardized spatial-readiness block for ``ToolOutput.metadata``.
+
+    Built from the AOI report the shared AOI layer already attaches to every
+    tool result (``result["aoi"]``), which is populated exclusively from values
+    read out of the raster itself. Nothing is defaulted, coerced or inferred:
+    a raster with no CRS reports ``crs: None`` rather than a plausible default,
+    and one with no transform reports ``resolution: None`` rather than the
+    identity matrix's 1.0.
+
+    ``isGeoreferenced`` is the load-bearing field: the single truthful answer to
+    "do this result's coordinates mean anything?", derived from an actual CRS
+    *and* a non-identity transform. Consumers use it instead of inferring
+    georeferencing from an absent field.
+
+    Accepts two result shapes. Most tools attach the shared AOI report under
+    ``result["aoi"]``; ``/validate`` instead returns a ``ValidateResult``, whose
+    spatial fields sit at the top level and already carry an explicit
+    ``integrity`` verdict. Both are mapped to the same block so a consumer can
+    read ``isGeoreferenced`` the same way regardless of which endpoint produced
+    the result.
+    """
+    if result and "validation_status" in result:
+        return _validation_spatial_block(result)
+
+    report = (result or {}).get("aoi")
+    report = report if isinstance(report, dict) else {}
+
+    # Bi-temporal / bi-modal tools report one scope per input. Surface each
+    # input's own spatial facts rather than collapsing them to a single claim:
+    # two images can differ, and averaging or picking one would misreport.
+    images = report.get("images")
+    if isinstance(images, list) and images:
+        per_image = {}
+        for entry in images:
+            if not isinstance(entry, dict):
+                continue
+            dims = entry.get("originalDimensions") or {}
+            per_image[str(entry.get("image") or "image")] = {
+                "isGeoreferenced": entry.get("isGeoreferenced"),
+                "crs": entry.get("crs"),
+                "resolution": entry.get("resolution"),
+                "width": dims.get("width"),
+                "height": dims.get("height"),
+                "bandCount": entry.get("bandCount"),
+                "bounds": entry.get("originalBounds"),
+                "dataQuality": entry.get("aoiStatus"),
+            }
+        return {
+            "isGeoreferenced": report.get("isGeoreferenced"),
+            "images": per_image,
+            "dataQuality": report.get("aoiStatus"),
+        }
+
+    dimensions = report.get("originalDimensions") or {}
+
+    block: dict = {
+        "isGeoreferenced": report.get("isGeoreferenced"),
+        "crs": report.get("crs"),
+        "resolution": report.get("resolution"),
+        "width": dimensions.get("width"),
+        "height": dimensions.get("height"),
+        "bandCount": report.get("bandCount"),
+        # Original (whole-scene) footprint; never the identity-implied bounds
+        # rasterio substitutes for a raster with no transform.
+        "bounds": report.get("originalBounds"),
+        "dataQuality": report.get("aoiStatus"),
+    }
+
+    if block["isGeoreferenced"] is False:
+        # Say *why* the spatial values are absent, so a consumer does not read
+        # the nulls as a bug or fall back to assuming EPSG:4326.
+        block["spatialMetadataUnavailable"] = (
+            "The raster is not georeferenced (no CRS and/or no geotransform), so no "
+            "coordinates, bounds or ground resolution are available. None were "
+            "inferred. Spatial measurements (area, AOI, overlap) are unavailable; "
+            "pixel-domain analysis is still valid."
+        )
+    return block
+
+
+def _validation_spatial_block(result: dict) -> dict:
+    """Map a ``ValidateResult`` payload onto the shared spatial block.
+
+    ``/validate`` is the endpoint that *establishes* spatial readiness, so it
+    reports the verdict itself (``integrity``) alongside the raw spatial fields.
+    ``bounds`` is the native-CRS footprint; ``wgs84_bounds`` is included
+    separately so a consumer never has to assume which CRS it is looking at.
+    """
+    block: dict = {
+        "isGeoreferenced": result.get("is_georeferenced"),
+        "crs": result.get("crs"),
+        "resolution": result.get("resolution"),
+        "width": result.get("width"),
+        "height": result.get("height"),
+        "bandCount": result.get("band_count"),
+        "bounds": result.get("bounds"),
+        # The authoritative readiness verdict for this file.
+        "dataQuality": result.get("integrity"),
+    }
+    wgs84 = result.get("wgs84_bounds")
+    if wgs84 is not None:
+        block["wgs84Bounds"] = wgs84
+
+    if block["isGeoreferenced"] is False:
+        block["spatialMetadataUnavailable"] = (
+            "The raster is not georeferenced (no CRS and/or no geotransform), so no "
+            "coordinates, bounds or ground resolution are available. None were "
+            "inferred. Spatial measurements (area, AOI, overlap) are unavailable; "
+            "pixel-domain analysis is still valid."
+        )
+    return block
+
+
 def aoi_error_output(
     tool: str,
     exc: "RoiCropError",

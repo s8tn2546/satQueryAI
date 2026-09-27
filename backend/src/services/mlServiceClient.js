@@ -94,15 +94,338 @@ async function sendMultipart(url, endpoint, payload, options, signal) {
  */
 function mockAoiReport(payload) {
   const requested = Boolean(payload?.aoi_geometry);
+  // Deliberately does not name a cause: the same report is used whether the ML
+  // service was unreachable or the endpoint does not exist. What is always true
+  // is that no pixels were read, so no AOI could have been applied.
   return {
     aoiPresent: requested,
     aoiApplied: false,
     aoiScope: null,
     aoiStatus: requested ? 'not_applied_mock_offline' : 'not_requested_mock_offline',
     reason: requested
-      ? 'The ML service was unreachable, so this is a whole-scene mock result. No pixels were read and the requested AOI was NOT applied.'
-      : 'The ML service was unreachable, so this is a whole-scene mock result. No pixels were read.'
+      ? 'This is an offline result. No pixels were read and the requested AOI was NOT applied.'
+      : 'This is an offline result. No pixels were read.'
   };
+}
+
+/**
+ * Endpoints the ML service does not implement at all.
+ *
+ * These are never attempted over the wire: a request would only produce a 404
+ * and then a fallback, which is indistinguishable from a real outage and hides
+ * the fact that the capability simply does not exist.
+ */
+const UNIMPLEMENTED_ENDPOINTS = new Set(['/ground']);
+
+/**
+ * Build a result that is honest about having computed nothing.
+ *
+ * Every scientific field is `null` rather than a plausible number. A mock that
+ * reports `mean: 0.64` is worse than no answer at all: the number looks
+ * measured, flows into charts and summaries, and is indistinguishable from a
+ * real observation unless every consumer happens to check `metadata.mock`.
+ *
+ * `result` mirrors the real ML schema key-for-key so that a consumer reading
+ * `result.mean` gets `null` ("not computed") instead of a missing key that
+ * could be mistaken for a different code path, and so real and mock results
+ * stay structurally interchangeable.
+ *
+ * `status: 'failed'` is deliberate. Nothing was computed, so 'success' would be
+ * a false claim; 'failed' is already in the persisted status vocabulary
+ * (`pipeline.js` `persistableToolResults`) and drives the honest `partial`
+ * query status and the failure treatment in the UI.
+ */
+function unavailableResult({ tool, reason, result = {}, evidence = {}, notComputed = [] }) {
+  return {
+    tool,
+    status: 'failed',
+    // Same shape `toolExecutor` emits for a failed tool, so the reason surfaces
+    // in the answer and trace instead of an unexplained blank failure.
+    error: reason,
+    result: { status: 'not_computed', ...result },
+    evidence: { ...evidence, notes: reason },
+    // No measurement was produced, so there is nothing to be confident about.
+    confidence: 0,
+    metadata: {
+      mock: true,
+      offline: true,
+      available: false,
+      notComputed,
+      reason,
+      timestamp: new Date().toISOString()
+    }
+  };
+}
+
+const OFFLINE_REASON =
+  'The ML service was unreachable, so no pixels were read and no measurement was computed. '
+  + 'Every scientific value below is null (not computed) — this is not a measurement.';
+
+/**
+ * Request facts that are true regardless of whether the ML service answered.
+ * Tile identifiers, region and filenames describe the request, not the science,
+ * so they are safe to echo and keep `evidence` useful for traceability.
+ */
+function requestEvidence(payload, extra = {}) {
+  const images = [
+    ...(Array.isArray(payload?.imageRefs) ? payload.imageRefs : []),
+    payload?.tile_id,
+    payload?.tile_id_t1,
+    payload?.tile_id_t2,
+    payload?.optical_tile_id,
+    payload?.sar_tile_id
+  ].filter(v => v !== undefined && v !== null && v !== '');
+  return { images, region: payload?.region || {}, ...extra };
+}
+
+/**
+ * Build the offline result for an endpoint.
+ *
+ * Every branch returns `unavailableResult(...)`: the same ToolOutput shape with
+ * the real schema's keys present and null. No branch invents a number.
+ */
+function buildMockResult(endpoint, payload) {
+  const cleanEndpoint = endpoint.startsWith('/') ? endpoint : `/${endpoint}`;
+
+  switch (cleanEndpoint) {
+    case '/ground':
+      // Grounding is not implemented anywhere in the ML service. Reporting a
+      // bounding box here would mean inventing coordinates for a detector that
+      // does not exist, so the capability is reported as unavailable instead.
+      return unavailableResult({
+        tool: 'ground',
+        reason:
+          'Grounding (feature localization / bounding-box detection) is not implemented. '
+          + 'No detector ran, so no bounding box, label, or grounding confidence can be reported.',
+        result: {
+          boundingBox: null,
+          label: payload?.target || null,
+          detectedFeatures: null
+        },
+        evidence: requestEvidence(payload, { target: payload?.target || null }),
+        notComputed: ['boundingBox', 'label', 'detectedFeatures', 'confidence']
+      });
+
+    case '/optical-sar':
+      // The real tool computes per-modality statistics, a fused feature and
+      // cross-modal correlation. It computes no land-cover percentages, so a
+      // mock must not report any.
+      return unavailableResult({
+        tool: 'optical_sar',
+        reason: `${OFFLINE_REASON} Optical/SAR fusion and cross-modal correlation were not computed.`,
+        result: {
+          fusedLandCover: null,
+          optical: null,
+          sar: null,
+          fusion: null,
+          overlap: null,
+          alignment: null,
+          crs: null,
+          resolution: null,
+          summary: null
+        },
+        evidence: requestEvidence(payload, { optical_filename: null, sar_filename: null }),
+        notComputed: [
+          'optical', 'sar', 'fusion', 'overlap', 'alignment', 'crs', 'resolution', 'fusedLandCover'
+        ]
+      });
+
+    case '/ndvi':
+      return unavailableResult({
+        tool: 'ndvi',
+        reason: `${OFFLINE_REASON} NDVI was not computed.`,
+        result: {
+          index: 'NDVI',
+          min: null,
+          max: null,
+          mean: null,
+          median: null,
+          valid_pixel_count: null,
+          total_pixel_count: null,
+          bands: null,
+          band_detection_method: null,
+          warnings: []
+        },
+        evidence: requestEvidence(payload, { filename: null, bands_used: null }),
+        notComputed: ['min', 'max', 'mean', 'median', 'valid_pixel_count', 'total_pixel_count', 'bands']
+      });
+
+    case '/ndwi':
+      return unavailableResult({
+        tool: 'ndwi',
+        reason: `${OFFLINE_REASON} NDWI was not computed.`,
+        result: {
+          index: 'NDWI',
+          min: null,
+          max: null,
+          mean: null,
+          median: null,
+          valid_pixel_count: null,
+          total_pixel_count: null,
+          bands: null,
+          band_detection_method: null,
+          warnings: []
+        },
+        evidence: requestEvidence(payload, { filename: null, bands_used: null }),
+        notComputed: ['min', 'max', 'mean', 'median', 'valid_pixel_count', 'total_pixel_count', 'bands']
+      });
+
+    case '/area':
+      return unavailableResult({
+        tool: 'area',
+        reason: `${OFFLINE_REASON} No area was measured.`,
+        result: {
+          status: 'not_computed',
+          area_km2: null,
+          area_ha: null,
+          area_m2: null,
+          valid_pixel_count: null,
+          total_pixel_count: null,
+          resolution_m: null,
+          resolution_y_m: null,
+          crs: null,
+          feature_type: payload?.featureType || null,
+          pixel_area_m2: null,
+          warnings: [],
+          confidence: 0
+        },
+        evidence: requestEvidence(payload, { filename: null }),
+        notComputed: ['area_km2', 'area_ha', 'area_m2', 'valid_pixel_count', 'total_pixel_count', 'crs', 'pixel_area_m2']
+      });
+
+    case '/change':
+      return unavailableResult({
+        tool: 'change',
+        reason: `${OFFLINE_REASON} Change detection was not computed.`,
+        result: {
+          method: 'absolute_difference',
+          comparison_band: null,
+          threshold: null,
+          threshold_source: null,
+          total_pixels: null,
+          valid_pixels: null,
+          invalid_pixels: null,
+          changed_pixels: null,
+          unchanged_pixels: null,
+          change_percentage: null,
+          mean_difference: null,
+          max_difference: null,
+          changed_area_km2: null,
+          aligned: null,
+          alignment: null,
+          warnings: []
+        },
+        evidence: requestEvidence(payload, { image1: null, image2: null, method: 'absolute_difference' }),
+        notComputed: [
+          'change_percentage', 'mean_difference', 'max_difference', 'changed_area_km2',
+          'changed_pixels', 'unchanged_pixels', 'threshold', 'aligned', 'alignment'
+        ]
+      });
+
+    case '/trend':
+      return unavailableResult({
+        tool: 'trend',
+        reason: `${OFFLINE_REASON} No time series was retrieved or analysed.`,
+        result: {
+          metric: payload?.metric || null,
+          region: payload?.region || null,
+          date_range: { start: payload?.start_date || null, end: payload?.end_date || null },
+          interval: payload?.interval || null,
+          source: null,
+          collection: null,
+          band_mapping: null,
+          quality_mask: null,
+          series: [],
+          trend: null,
+          warnings: []
+        },
+        evidence: requestEvidence(payload),
+        notComputed: ['series', 'trend', 'source', 'collection', 'band_mapping', 'quality_mask']
+      });
+
+    case '/vqa':
+      // Mirrors the ML service's own offline placeholder: a literal marker
+      // string rather than a fabricated observation of the image.
+      return unavailableResult({
+        tool: 'vqa',
+        reason: `${OFFLINE_REASON} No visual question answering was performed.`,
+        result: {
+          answer: 'offline-placeholder',
+          question: payload?.question || null,
+          answer_mode: null,
+          confidence: 0
+        },
+        evidence: requestEvidence(payload, { question: payload?.question || null, image: { filename: null } }),
+        notComputed: ['answer', 'answer_mode', 'confidence']
+      });
+
+    case '/caption':
+      return unavailableResult({
+        tool: 'caption',
+        reason: `${OFFLINE_REASON} No caption was generated.`,
+        result: { caption: 'offline-placeholder', confidence: 0 },
+        evidence: requestEvidence(payload, { image: { filename: null } }),
+        notComputed: ['caption', 'keywords', 'confidence']
+      });
+
+    case '/validate':
+      // Cannot assert a file is valid without opening it.
+      return unavailableResult({
+        tool: 'validate',
+        reason:
+          'The ML service was unreachable, so the file was never opened. '
+          + 'It cannot be reported as valid or invalid.',
+        result: {
+          valid: null,
+          validation_status: 'not_computed',
+          modality: null,
+          format: payload?.format || null,
+          width: null,
+          height: null,
+          band_count: null,
+          bands: [],
+          crs: null,
+          bounds: null,
+          wgs84_bounds: null,
+          resolution: null,
+          nodata: null,
+          dtype: null,
+          warnings: [],
+          errors: []
+        },
+        evidence: requestEvidence(payload, { filename: payload?.filename || null }),
+        notComputed: ['valid', 'validation_status', 'modality', 'width', 'height', 'band_count', 'bands', 'crs', 'bounds']
+      });
+
+    case '/fetch-imagery':
+      // Nothing was downloaded, so there is no imagery to describe. Satellite,
+      // band list, capture date and date gap were all invented before.
+      return unavailableResult({
+        tool: 'fetch-imagery',
+        reason:
+          'The ML service was unreachable, so no satellite imagery was acquired. '
+          + 'No images, dates, bands or resolutions can be reported.',
+        result: {
+          source: null,
+          bounding_box: payload?.bounding_box || null,
+          date_range: { start: payload?.start_date || null, end: payload?.end_date || null },
+          images: [],
+          date_gap_days: null,
+          warnings: ['No imagery was acquired: the ML service was unreachable.']
+        },
+        evidence: { region: payload?.bounding_box || {}, data_source: null },
+        notComputed: ['images', 'source', 'date_gap_days', 'date_range']
+      });
+
+    default:
+      return unavailableResult({
+        tool: cleanEndpoint.replace('/', ''),
+        reason: `${OFFLINE_REASON} This endpoint has no offline result definition.`,
+        result: {},
+        evidence: requestEvidence(payload),
+        notComputed: ['*']
+      });
+  }
 }
 
 /**
@@ -126,228 +449,20 @@ function getMockResult(endpoint, payload) {
 }
 
 /**
- * Build the raw mock payload for an endpoint. Analysis tools get a whole-scene
- * placeholder; `withMockAoi` then labels it as not AOI-scoped.
- */
-function buildMockResult(endpoint, payload) {
-  const cleanEndpoint = endpoint.startsWith('/') ? endpoint : `/${endpoint}`;
-
-  switch (cleanEndpoint) {
-    case '/validate':
-      return {
-        tool: 'validate',
-        status: 'success',
-        result: {
-          valid: true,
-          validation_status: 'valid',
-          format: payload.format || 'TIFF',
-          errors: [],
-          warnings: []
-        },
-        evidence: { filename: payload.filename || 'uploaded-file' },
-        confidence: 1.0,
-        metadata: { mock: true }
-      };
-
-    case '/fetch-imagery':
-      return {
-        tool: 'fetch-imagery',
-        status: 'success',
-        result: {
-          images: [
-            {
-              modality: 'optical',
-              source: 'sentinel-2',
-              satellite: 'Sentinel-2',
-              filePath: null,
-              downloaded: false,
-              captureDate: '2026-01-01T00:00:00Z',
-              boundingBox: payload.bounding_box || null,
-              crs: 'EPSG:4326',
-              resolution: 10,
-              bands: ['B2', 'B3', 'B4', 'B8'],
-              validated: false,
-              validation_status: 'not-downloaded'
-            },
-            {
-              modality: 'sar',
-              source: 'sentinel-1',
-              satellite: 'Sentinel-1',
-              filePath: null,
-              downloaded: false,
-              captureDate: '2026-01-04T00:00:00Z',
-              boundingBox: payload.bounding_box || null,
-              crs: 'EPSG:4326',
-              resolution: 10,
-              bands: ['VV', 'VH'],
-              validated: false,
-              validation_status: 'not-downloaded'
-            }
-          ],
-          date_gap_days: 3,
-          date_range: { start: payload.start_date || null, end: payload.end_date || null },
-          source: 'mock',
-          warnings: ['Mock/fixture data — NOT real GEE satellite observations.']
-        },
-        evidence: { region: payload.bounding_box || {}, data_source: 'mock' },
-        confidence: 0.7,
-        metadata: { mock: true, data_source: 'mock', source_warning: 'Mock/fixture data. Not real GEE satellite imagery.' }
-      };
-
-    case '/vqa':
-      return {
-        tool: 'vqa',
-        status: 'success',
-        result: {
-          answer: `Based on visual inspection of the satellite imagery, ${payload.question || 'the requested feature'} is visible with high confidence. The area features predominant urban infrastructure and sparse vegetation cover.`,
-          confidence: 0.92
-        },
-        evidence: { images: payload.imageRefs || [payload.tileId], region: payload.region || {}, notes: 'VQA inference completed successfully.' },
-        confidence: 0.92,
-        metadata: { mock: true, timestamp: new Date().toISOString() }
-      };
-
-    case '/caption':
-      return {
-        tool: 'caption',
-        status: 'success',
-        result: {
-          caption: 'High-resolution multispectral satellite view depicting mixed land cover with dense built-up structures, primary road networks, and adjacent agricultural parcels.',
-          keywords: ['built-up', 'road network', 'agricultural', 'urban']
-        },
-        evidence: { images: payload.imageRefs || [payload.tileId], region: payload.region || {}, notes: 'Image captioning generated.' },
-        confidence: 0.89,
-        metadata: { mock: true, timestamp: new Date().toISOString() }
-      };
-
-    case '/ground':
-      return {
-        tool: 'ground',
-        status: 'success',
-        result: {
-          boundingBox: [0.25, 0.30, 0.65, 0.70],
-          label: payload.target || 'water body',
-          detectedFeatures: 1
-        },
-        evidence: { images: payload.imageRefs || [payload.tileId], region: payload.region || {}, notes: 'Feature grounding bounding box computed.' },
-        confidence: 0.88,
-        metadata: { mock: true, timestamp: new Date().toISOString() }
-      };
-
-    case '/change':
-      return {
-        tool: 'change',
-        status: 'success',
-        result: {
-          changePercentage: 14.8,
-          changeMaskUrl: '/cache/masks/change_mask_001.png',
-          summary: 'Significant urban expansion and vegetation reduction detected between Time 1 and Time 2 across the central sector (14.8% net change).'
-        },
-        evidence: { images: payload.imageRefs || [payload.tile_id_t1, payload.tile_id_t2], region: payload.region || {}, notes: 'Bi-temporal change detection mask generated.' },
-        confidence: 0.94,
-        metadata: { mock: true, timestamp: new Date().toISOString() }
-      };
-
-    case '/optical-sar':
-      return {
-        tool: 'optical_sar',
-        status: 'success',
-        result: {
-          fusedLandCover: {
-            builtUpPercent: 42.5,
-            waterPercent: 18.2,
-            vegetationPercent: 31.3,
-            bareSoilPercent: 8.0
-          },
-          summary: 'Optical and SAR fusion successfully separated built-up structures from water bodies despite cloud/shadow coverage.'
-        },
-        evidence: { images: payload.imageRefs || [payload.optical_tile_id, payload.sar_tile_id], region: payload.region || {}, notes: 'Cross-modal Sentinel-1 SAR + Sentinel-2 Optical fusion.' },
-        confidence: 0.95,
-        metadata: { mock: true, timestamp: new Date().toISOString() }
-      };
-
-    case '/ndvi':
-      return {
-        tool: 'ndvi',
-        status: 'success',
-        result: {
-          value: 0.64,
-          map: '/cache/masks/ndvi_raster_001.png',
-          classification: 'Moderate-to-dense healthy vegetation'
-        },
-        evidence: { images: payload.imageRefs || [payload.tile_id], region: payload.region || {}, notes: 'NDVI calculation from NIR and Red optical bands.' },
-        confidence: 0.96,
-        metadata: { mock: true, timestamp: new Date().toISOString() }
-      };
-
-    case '/ndwi':
-      return {
-        tool: 'ndwi',
-        status: 'success',
-        result: {
-          value: 0.45,
-          map: '/cache/masks/ndwi_raster_001.png',
-          classification: 'Delineated surface water body'
-        },
-        evidence: { images: payload.imageRefs || [payload.tile_id], region: payload.region || {}, notes: 'NDWI calculation from Green and NIR optical bands.' },
-        confidence: 0.95,
-        metadata: { mock: true, timestamp: new Date().toISOString() }
-      };
-
-    case '/area':
-      return {
-        tool: 'area',
-        status: 'success',
-        result: {
-          areaKm2: 12.45,
-          featureType: payload.featureType || 'water body',
-          pixelCount: 124500
-        },
-        evidence: { images: payload.imageRefs || [payload.tile_id], region: payload.region || {}, notes: 'Geospatial area measurement computed.' },
-        confidence: 0.93,
-        metadata: { mock: true, timestamp: new Date().toISOString() }
-      };
-
-    case '/trend':
-      return {
-        tool: 'trend',
-        status: 'success',
-        result: {
-          metric: payload.metric || 'ndvi',
-          series: [
-            { date: '2025-01-01', value: 0.52 },
-            { date: '2025-04-01', value: 0.58 },
-            { date: '2025-07-01', value: 0.65 },
-            { date: '2025-10-01', value: 0.61 },
-            { date: '2026-01-01', value: 0.63 },
-            { date: '2026-04-01', value: 0.67 }
-          ],
-          trendSlope: 0.025,
-          summary: 'Positive multi-temporal vegetation trend (+2.5% per quarter) observed over the selected region.'
-        },
-        evidence: { region: payload.region || {}, notes: 'Multi-temporal time series computed.' },
-        confidence: 0.91,
-        metadata: { mock: true, timestamp: new Date().toISOString() }
-      };
-
-    default:
-      return {
-        tool: endpoint.replace('/', ''),
-        status: 'success',
-        result: { message: `Executed tool at ${endpoint}` },
-        evidence: { images: payload.imageRefs || [], region: payload.region || {} },
-        confidence: 0.85,
-        metadata: { mock: true, timestamp: new Date().toISOString() }
-      };
-  }
-}
-
-/**
  * Call ML service endpoint with payload, falling back to mock response if unavailable.
  */
 export async function callMlService(endpoint, payload, options = {}) {
+  const cleanEndpoint = endpoint.startsWith('/') ? endpoint : `/${endpoint}`;
+
+  // Never attempt a call the ML service does not implement. The honest result
+  // is returned directly so the reason is "not implemented" rather than an
+  // indistinguishable 404-then-offline-fallback.
+  if (UNIMPLEMENTED_ENDPOINTS.has(cleanEndpoint)) {
+    return getMockResult(cleanEndpoint, payload);
+  }
+
   const timeoutMs = options.timeout || DEFAULT_TIMEOUT;
-  const url = `${ML_SERVICE_BASE_URL}${endpoint.startsWith('/') ? endpoint : '/' + endpoint}`;
+  const url = `${ML_SERVICE_BASE_URL}${cleanEndpoint}`;
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);

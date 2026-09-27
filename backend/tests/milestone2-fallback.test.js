@@ -206,7 +206,10 @@ describe('Milestone 2 — answerComposer fallback understands real ML snake_case
         queryText: 'What changed between these two dates?',
         imageRefs: [String(t1._id), String(t2._id)]
       });
-    expect(res.body.answerText).toBe('legacy summary text');
+    // The legacy `summary` field is still surfaced. It is no longer the entire
+    // answer: an LLM-less run is now explicitly labelled as degraded.
+    expect(res.body.answerText).toContain('legacy summary text');
+    expect(res.body.answerText).toContain('Detailed interpretation unavailable (LLM not configured)');
   });
 
   it('never emits NaN or Infinity from non-finite ML values', async () => {
@@ -226,7 +229,15 @@ describe('Milestone 2 — answerComposer fallback understands real ML snake_case
 
     expect(res.body.status).toBe('success');
     expect(res.body.answerText).not.toMatch(/NaN|Infinity/);
-    // non-finite values must not be fabricated — should fall through to the raw result
-    expect(res.body.answerText).toContain('Analysis complete');
+    // non-finite values must not be fabricated — they fall through to the raw
+    // result, where the unusable field is labelled rather than printed as a
+    // number (JSON.stringify turns NaN into null, which would read as real).
+    expect(res.body.answerText).toContain('Raw result for "area"');
+    expect(res.body.answerText).toContain('"area_km2":"not a finite number"');
+    expect(res.body.answerText).toContain('"area_ha":"not a finite number"');
+    // The usable part of the result still survives.
+    expect(res.body.answerText).toContain('water');
+    // A degraded response must say so.
+    expect(res.body.answerText).toContain('Detailed interpretation unavailable (LLM not configured)');
   });
 });

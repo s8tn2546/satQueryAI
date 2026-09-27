@@ -244,13 +244,45 @@ export async function runAgentPipeline(queryText, imageRefIds, parameters = {}, 
     return { _id: queryDoc._id, toolResults: persistedToolResults, plan, ...response };
   }
 
-  const { score: confidence, signals: confidenceSignals } = estimateConfidence(validationResult, toolResults);
-  trace.push(makeTraceEntry('confidence_estimation', `Confidence score: ${confidence}`));
+  const { score: heuristicConfidence, signals: confidenceSignals } = estimateConfidence(validationResult, toolResults);
+  trace.push(makeTraceEntry('confidence_estimation', `Confidence score: ${heuristicConfidence}`));
 
   const primaryResult = successResults[0];
   const evidence = aggregateToolEvidence(sanitizedRefs, successResults, toolResults, mergedParams);
 
-  const answerText = await composeAnswer(queryText, resolvedTaskType, toolResults, trace);
+  // A single-tool trend query has one authoritative confidence: the deterministic
+  // value the ML service computed from the actual observation count, data source
+  // and warnings. Blending that into the generic heuristic (which starts from a
+  // hardcoded 0.5) would report a number the data never produced, so the real
+  // value is used instead and the heuristic is kept only as a recorded signal.
+  const soleTrendResult = resolvedTaskType === 'TREND' && successResults.length === 1
+    ? successResults[0]
+    : null;
+  const trendConfidence = soleTrendResult && typeof soleTrendResult.confidence === 'number'
+    ? clampConfidence(soleTrendResult.confidence)
+    : null;
+  const confidence = trendConfidence ?? heuristicConfidence;
+  if (trendConfidence !== null) {
+    trace.push(makeTraceEntry(
+      'confidence_source',
+      `Reporting the trend tool's computed confidence (${trendConfidence}) rather than the generic heuristic (${heuristicConfidence}).`
+    ));
+  }
+
+  // The composer needs the trust context the pipeline just computed, not just
+  // raw tool results: overall confidence and its signals, the data-quality
+  // report, and whether an AOI was in play.
+  const composerContext = {
+    confidence: clampConfidence(confidence),
+    confidenceSignals,
+    qualityReport: validationResult.qualityReport,
+    degradation: toolResults.some(r => r.status !== 'success')
+      ? `One or more tools did not complete successfully: ${toolResults.filter(r => r.status !== 'success').map(r => `${r.tool}=${r.status}`).join(', ')}.`
+      : null,
+    aoiRequested: Boolean(mergedParams.aoi || mergedParams.roi)
+  };
+
+  const answerText = await composeAnswer(queryText, resolvedTaskType, toolResults, trace, composerContext);
 
   trace.push(makeTraceEntry('execution_trace_assembly', 'Pipeline complete'));
 
