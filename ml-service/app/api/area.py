@@ -12,15 +12,20 @@ from pathlib import Path
 from fastapi import APIRouter, File, Form, UploadFile
 
 from app.common.http_utils import (
+    AOI_CRS_FORM_DESCRIPTION,
+    AOI_FORM_DESCRIPTION,
     InvalidFileError,
+    aoi_error_output,
+    aoi_metadata,
     error_output,
-    parse_aoi_geometry,
     read_upload_file,
     save_to_temp,
     validate_upload_ext,
 )
+from app.geospatial.raster_io import RasterError
 from app.schemas.common import ToolOutput
 from app.tools.area import AreaInputError, compute_area
+from app.tools.roi_crop import RoiCropError
 
 logger = logging.getLogger(__name__)
 
@@ -34,12 +39,10 @@ async def area_endpoint(
         default=None,
         description="Optional label describing the feature being measured",
     ),
-    aoi_geometry: str | None = Form(
-        default=None,
-        description="Optional JSON-stringified GeoJSON AOI scope (recorded in metadata only)",
-    ),
+    aoi_geometry: str | None = Form(default=None, description=AOI_FORM_DESCRIPTION),
+    aoi_crs: str | None = Form(default=None, description=AOI_CRS_FORM_DESCRIPTION),
 ):
-    """Compute the surface area covered by valid pixels in an uploaded raster."""
+    """Compute the surface area covered by valid pixels, optionally within an AOI."""
     filename = file.filename or "unknown"
 
     ext = validate_upload_ext(filename)
@@ -58,7 +61,16 @@ async def area_endpoint(
     tmp_path: Path | None = None
     try:
         tmp_path = save_to_temp(content, ext)
-        result = compute_area(tmp_path, feature_type=feature_type or "")
+        result = compute_area(
+            tmp_path,
+            feature_type=feature_type or "",
+            aoi=aoi_geometry,
+            aoi_crs=aoi_crs,
+        )
+    except RoiCropError as exc:
+        return aoi_error_output("area", exc, raw_aoi=aoi_geometry)
+    except RasterError as exc:
+        return error_output("area", str(exc))
     except AreaInputError as exc:
         return error_output("area", str(exc))
     except Exception as exc:
@@ -78,6 +90,8 @@ async def area_endpoint(
                 "warnings": result.get("warnings", []),
             },
             confidence=0.0,
+            metadata=aoi_metadata(result, aoi_geometry),
+            evidence={"aoi": result["aoi"]} if isinstance(result.get("aoi"), dict) else None,
         )
 
     return ToolOutput(
@@ -92,6 +106,6 @@ async def area_endpoint(
         metadata={
             "filename": filename,
             "size_bytes": len(content),
-            **parse_aoi_geometry(aoi_geometry),
+            **aoi_metadata(result, aoi_geometry),
         },
     )

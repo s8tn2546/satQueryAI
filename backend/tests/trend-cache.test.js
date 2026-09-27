@@ -260,4 +260,73 @@ describe('Trend Cache Integration', () => {
     const cacheEntry = await ResultsCache.findOne({ tool: 'trend' });
     expect(cacheEntry).toBeFalsy();
   });
+
+  // An AOI changes what the numbers mean, so it must be part of the cache
+  // identity: a scoped series can never satisfy an unscoped request.
+  test('an AOI-scoped trend is not served to an unscoped request', async () => {
+    const aoi = {
+      type: 'Polygon',
+      coordinates: [[[77.5, 12.9], [77.6, 12.9], [77.6, 13.0], [77.5, 13.0], [77.5, 12.9]]]
+    };
+    mockCallMlService.mockResolvedValue(mockTrendResult);
+
+    await request(app).post('/api/query').send({
+      queryText: 'Show the NDVI trend for Bangalore from January to December 2023',
+      imageRefs: [],
+      parameters: { ...trendParams, aoi }
+    });
+    expect(mockCallMlService).toHaveBeenCalledTimes(1);
+    const scopedEntry = await ResultsCache.findOne({ tool: 'trend' });
+    expect(scopedEntry.aoiKey).toBe(JSON.stringify(aoi));
+
+    // Same region/metric/dates but no AOI -> must not reuse the scoped series.
+    await request(app).post('/api/query').send({
+      queryText: 'Show the NDVI trend for Bangalore from January to December 2023',
+      imageRefs: [],
+      parameters: trendParams
+    });
+    expect(mockCallMlService).toHaveBeenCalledTimes(2);
+
+    const all = await ResultsCache.find({ tool: 'trend' });
+    expect(all).toHaveLength(2);
+  });
+
+  test('an unscoped trend is not served to an AOI-scoped request', async () => {
+    mockCallMlService.mockResolvedValue(mockTrendResult);
+
+    await request(app).post('/api/query').send({
+      queryText: 'Show the NDVI trend for Bangalore from January to December 2023',
+      imageRefs: [],
+      parameters: trendParams
+    });
+    expect(mockCallMlService).toHaveBeenCalledTimes(1);
+
+    await request(app).post('/api/query').send({
+      queryText: 'Show the NDVI trend for Bangalore from January to December 2023',
+      imageRefs: [],
+      parameters: {
+        ...trendParams,
+        aoi: { type: 'Polygon', coordinates: [[[77.5, 12.9], [77.6, 12.9], [77.6, 13.0], [77.5, 13.0], [77.5, 12.9]]] }
+      }
+    });
+    expect(mockCallMlService).toHaveBeenCalledTimes(2);
+  });
+
+  test('identical AOI requests do hit the cache', async () => {
+    const aoi = {
+      type: 'Polygon',
+      coordinates: [[[77.5, 12.9], [77.6, 12.9], [77.6, 13.0], [77.5, 13.0], [77.5, 12.9]]]
+    };
+    mockCallMlService.mockResolvedValue(mockTrendResult);
+    const body = {
+      queryText: 'Show the NDVI trend for Bangalore from January to December 2023',
+      imageRefs: [],
+      parameters: { ...trendParams, aoi }
+    };
+
+    await request(app).post('/api/query').send(body);
+    await request(app).post('/api/query').send(body);
+
+    expect(mockCallMlService).toHaveBeenCalledTimes(1);
+  });
 });

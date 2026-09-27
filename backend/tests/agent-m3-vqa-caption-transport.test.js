@@ -188,3 +188,70 @@ describe('Agent M3 — /caption multipart transport', () => {
     expect(typeof result.result.caption).toBe('string');
   });
 });
+// =============================================================================
+// AOI on the wire: aoi_geometry and aoi_crs must actually reach the ML service
+// as multipart form fields, not merely exist in the JS payload object.
+// =============================================================================
+
+describe('AOI multipart transport', () => {
+  const AOI = {
+    type: 'Polygon',
+    coordinates: [[[77.0, 28.0], [77.1, 28.0], [77.1, 28.1], [77.0, 28.1], [77.0, 28.0]]]
+  };
+
+  it('sends aoi_geometry and aoi_crs as form fields to /ndvi', async () => {
+    when('/ndvi', {
+      body: { tool: 'ndvi', status: 'success', result: { mean: 0.5 }, evidence: {}, confidence: 0.9 }
+    });
+
+    const { default: ml } = await import('../src/services/mlServiceClient.js');
+    await ml.callMlService('/ndvi', {
+      image_path: await makeTempFile('aoi-ndvi.tif', 'BYTES'),
+      tile_id: 'tid-aoi',
+      aoi_geometry: AOI,
+      aoi_crs: 'EPSG:32643'
+    });
+
+    const form = await capturedForm('/ndvi');
+    expect(JSON.parse(await form.get('aoi_geometry'))).toEqual(AOI);
+    expect(await form.get('aoi_crs')).toBe('EPSG:32643');
+    // Internal bookkeeping flag is not part of the ML contract.
+    expect(await form.get('aoi_requested')).toBeNull();
+  });
+
+  it('sends aoi_geometry but no aoi_crs when the user stated no CRS', async () => {
+    when('/ndvi', {
+      body: { tool: 'ndvi', status: 'success', result: { mean: 0.5 }, evidence: {}, confidence: 0.9 }
+    });
+
+    const { default: ml } = await import('../src/services/mlServiceClient.js');
+    await ml.callMlService('/ndvi', {
+      image_path: await makeTempFile('aoi-nocrs.tif', 'BYTES'),
+      tile_id: 'tid-aoi2',
+      aoi_geometry: AOI
+    });
+
+    const form = await capturedForm('/ndvi');
+    expect(await form.get('aoi_geometry')).toBeTruthy();
+    // ML defaults bare GeoJSON to RFC 7946; the backend must not fabricate one.
+    expect(await form.get('aoi_crs')).toBeNull();
+  });
+
+  it('sends the AOI to a two-image endpoint', async () => {
+    when('/optical-sar', {
+      body: { tool: 'optical_sar', status: 'success', result: {}, evidence: {}, confidence: 0.9 }
+    });
+
+    const { default: ml } = await import('../src/services/mlServiceClient.js');
+    await ml.callMlService('/optical-sar', {
+      optical_path: await makeTempFile('aoi-o.tif', 'BYTES'),
+      sar_path: await makeTempFile('aoi-s.tif', 'BYTES'),
+      aoi_geometry: AOI,
+      aoi_crs: 'EPSG:32643'
+    });
+
+    const form = await capturedForm('/optical-sar');
+    expect(JSON.parse(await form.get('aoi_geometry'))).toEqual(AOI);
+    expect(await form.get('aoi_crs')).toBe('EPSG:32643');
+  });
+});

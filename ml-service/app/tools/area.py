@@ -19,6 +19,7 @@ import rasterio
 from app.geospatial.crs import crs_is_geographic
 from app.geospatial.raster_io import get_crs, read_metadata
 from app.tools.band_utils import build_valid_mask
+from app.tools.roi_crop import aoi_scope, attach_aoi
 
 
 class AreaError(Exception):
@@ -49,19 +50,40 @@ def _valid_pixel_count(path: Path, nodata: Any) -> int:
 def compute_area(
     path: str | Path,
     feature_type: str = "",
+    *,
+    aoi: Any = None,
+    aoi_crs: Any = None,
 ) -> dict[str, Any]:
-    """Compute the surface area covered by valid pixels in a raster.
+    """Compute the surface area covered by valid pixels, optionally within an AOI.
 
     Args:
         path: Path to the raster file.
         feature_type: Optional label describing the feature being measured.
+        aoi: Optional GeoJSON Polygon/MultiPolygon (or JSON string) defining the
+            region of interest. When given, only valid pixels inside the AOI
+            contribute to the area, so the reported area is the AOI-restricted
+            measurement. When absent the whole scene is measured.
+        aoi_crs: Optional explicit CRS of the AOI coordinates. A bare GeoJSON
+            geometry follows RFC 7946 (WGS84) and the resolved CRS is reported
+            in ``result["aoi"]``.
 
     Returns:
         A dict with area in m², km², hectares, the valid pixel count, and the
         resolution/CRS used. For geographic CRS this returns a structured
         failure explaining that deg*deg is not a valid area.
+
+    Raises:
+        AreaInputError: the raster cannot be used for area measurement.
+        RoiCropError: the AOI is invalid, in a different/unusable CRS, does not
+            intersect the raster, or the raster cannot be georeferenced.
     """
-    path = Path(path)
+    with aoi_scope(path, aoi, aoi_crs=aoi_crs) as scope:
+        result = _compute_area(scope.raster_path, feature_type)
+    return attach_aoi(result, scope)
+
+
+def _compute_area(path: Path, feature_type: str) -> dict[str, Any]:
+    """Compute area from a single raster (already AOI-scoped)."""
     try:
         metadata = read_metadata(path)
     except Exception as exc:

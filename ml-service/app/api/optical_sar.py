@@ -17,13 +17,17 @@ from pathlib import Path
 from fastapi import APIRouter, File, Form, UploadFile
 
 from app.common.http_utils import (
+    AOI_CRS_FORM_DESCRIPTION,
+    AOI_FORM_DESCRIPTION,
     InvalidFileError,
+    aoi_error_output,
+    aoi_metadata,
     error_output,
-    parse_aoi_geometry,
     read_upload_file,
     save_to_temp,
     validate_upload_ext,
 )
+from app.geospatial.raster_io import RasterError
 from app.schemas.common import ToolOutput
 from app.tools.fusion import (
     FusionError,
@@ -31,6 +35,7 @@ from app.tools.fusion import (
     fusion_confidence,
     run_optical_sar_fusion,
 )
+from app.tools.roi_crop import RoiCropError
 
 logger = logging.getLogger(__name__)
 
@@ -73,10 +78,8 @@ async def optical_sar_endpoint(
             "Defaults to a deterministic 3x3 median filter."
         ),
     ),
-    aoi_geometry: str | None = Form(
-        default=None,
-        description="Optional JSON-stringified GeoJSON AOI scope (recorded in metadata only)",
-    ),
+    aoi_geometry: str | None = Form(default=None, description=AOI_FORM_DESCRIPTION),
+    aoi_crs: str | None = Form(default=None, description=AOI_CRS_FORM_DESCRIPTION),
 ):
     """Run optical + SAR cross-modal analysis between two uploaded images."""
     optical_filename = optical_image.filename or "unknown"
@@ -125,7 +128,13 @@ async def optical_sar_endpoint(
             optical_band=optical_band,
             sar_band=sar_band,
             speckle_size=speckle_size,
+            aoi=aoi_geometry,
+            aoi_crs=aoi_crs,
         )
+    except RoiCropError as exc:
+        return aoi_error_output("optical-sar", exc, raw_aoi=aoi_geometry)
+    except RasterError as exc:
+        return error_output("optical-sar", str(exc), confidence=0.0)
     except FusionValidationError as exc:
         return error_output(
             "optical-sar",
@@ -170,6 +179,6 @@ async def optical_sar_endpoint(
             "size_bytes_sar": len(content_sar),
             "optical_feature": result.get("optical", {}).get("feature_basis"),
             "sar_band": result.get("sar", {}).get("band"),
-            **parse_aoi_geometry(aoi_geometry),
+            **aoi_metadata(result, aoi_geometry),
         },
     )

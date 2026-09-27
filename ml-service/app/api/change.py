@@ -13,13 +13,17 @@ from pathlib import Path
 from fastapi import APIRouter, File, Form, UploadFile
 
 from app.common.http_utils import (
+    AOI_CRS_FORM_DESCRIPTION,
+    AOI_FORM_DESCRIPTION,
     InvalidFileError,
+    aoi_error_output,
+    aoi_metadata,
     error_output,
-    parse_aoi_geometry,
     read_upload_file,
     save_to_temp,
     validate_upload_ext,
 )
+from app.geospatial.raster_io import RasterError
 from app.schemas.common import ToolOutput
 from app.tools.change import (
     ChangeError,
@@ -27,6 +31,7 @@ from app.tools.change import (
     change_confidence,
     compute_change,
 )
+from app.tools.roi_crop import RoiCropError
 
 logger = logging.getLogger(__name__)
 
@@ -57,10 +62,8 @@ async def change_endpoint(
         default=None,
         description="Optional explicit 1-based band index in image2.",
     ),
-    aoi_geometry: str | None = Form(
-        default=None,
-        description="Optional JSON-stringified GeoJSON AOI scope (recorded in metadata only)",
-    ),
+    aoi_geometry: str | None = Form(default=None, description=AOI_FORM_DESCRIPTION),
+    aoi_crs: str | None = Form(default=None, description=AOI_CRS_FORM_DESCRIPTION),
 ):
     """Run bi-temporal change detection between two uploaded images."""
     filename1 = image1.filename or "unknown"
@@ -103,7 +106,13 @@ async def change_endpoint(
             band=band,
             band_t1=band_t1,
             band_t2=band_t2,
+            aoi=aoi_geometry,
+            aoi_crs=aoi_crs,
         )
+    except RoiCropError as exc:
+        return aoi_error_output("change", exc, raw_aoi=aoi_geometry)
+    except RasterError as exc:
+        return error_output("change", str(exc), confidence=0.0)
     except ChangeValidationError as exc:
         return error_output(
             "change",
@@ -147,6 +156,6 @@ async def change_endpoint(
             "size_bytes_1": len(content1),
             "size_bytes_2": len(content2),
             "comparison_band": result.get("comparison_band"),
-            **parse_aoi_geometry(aoi_geometry),
+            **aoi_metadata(result, aoi_geometry),
         },
     )

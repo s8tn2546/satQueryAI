@@ -26,16 +26,21 @@ from pathlib import Path
 from fastapi import APIRouter, File, Form, UploadFile
 
 from app.common.http_utils import (
+    AOI_CRS_FORM_DESCRIPTION,
+    AOI_FORM_DESCRIPTION,
     InvalidFileError,
+    aoi_error_output,
+    aoi_metadata,
     error_output,
-    parse_aoi_geometry,
     read_upload_file,
     save_to_temp,
     validate_upload_ext,
 )
 from app.models.vlm_loader import DEFAULT_CAPTION_MODEL, VLMUnavailableError
+from app.geospatial.raster_io import RasterError
 from app.schemas.common import ToolOutput
 from app.tools.caption import CaptionError, compute_caption
+from app.tools.roi_crop import RoiCropError
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +58,8 @@ def _offline_caption_output(
     filename: str,
     size_bytes: int,
     exc: VLMUnavailableError,
+    *,
+    aoi_geometry: str | None = None,
 ) -> ToolOutput:
     """Clearly-labeled offline placeholder when real VLM inference is unavailable.
 
@@ -85,6 +92,17 @@ def _offline_caption_output(
             "offline": True,
             "reason": str(exc),
             "note": note,
+            "aoi": {
+                "aoiPresent": bool(aoi_geometry),
+                "aoiApplied": False,
+                "aoiStatus": "not_applied_offline_placeholder",
+                "aoiScope": None,
+                "reason": (
+                    "No image analysis was performed because the VLM is unavailable, "
+                    "so the AOI was not applied and no AOI-scoped caption exists."
+                ),
+            },
+            **aoi_metadata(None, aoi_geometry),
         },
     )
 
@@ -92,10 +110,8 @@ def _offline_caption_output(
 @router.post("/caption")
 async def caption_endpoint(
     image: UploadFile = File(..., description="Input image (GeoTIFF, TIFF, PNG, or JPEG)"),
-    aoi_geometry: str | None = Form(
-        default=None,
-        description="Optional JSON-stringified GeoJSON AOI scope (recorded in metadata only)",
-    ),
+    aoi_geometry: str | None = Form(default=None, description=AOI_FORM_DESCRIPTION),
+    aoi_crs: str | None = Form(default=None, description=AOI_CRS_FORM_DESCRIPTION),
 ):
     """Generate a caption for an uploaded satellite image.
 
@@ -126,10 +142,16 @@ async def caption_endpoint(
         result = compute_caption(
             tmp_path,
             adapter_path=CAPTION_ADAPTER_PATH,
+            aoi=aoi_geometry,
+            aoi_crs=aoi_crs,
         )
+    except RoiCropError as exc:
+        return aoi_error_output("caption", exc, raw_aoi=aoi_geometry)
+    except RasterError as exc:
+        return error_output("caption", str(exc), confidence=0.0)
     except VLMUnavailableError as exc:
         return _offline_caption_output(
-            filename, len(content), exc
+            filename, len(content), exc, aoi_geometry=aoi_geometry
         )
     except CaptionError as exc:
         return error_output("caption", str(exc), confidence=0.0)
@@ -145,6 +167,7 @@ async def caption_endpoint(
         status="success",
         result={
             "caption": result["caption"],
+            "aoi": result.get("aoi"),
         },
         evidence={
             "image": {"filename": filename},
@@ -155,6 +178,6 @@ async def caption_endpoint(
             "size_bytes": len(content),
             "model": DEFAULT_CAPTION_MODEL,
             "adapter_used": _adapter_detected(),
-            **parse_aoi_geometry(aoi_geometry),
+            **aoi_metadata(result, aoi_geometry),
         },
     )

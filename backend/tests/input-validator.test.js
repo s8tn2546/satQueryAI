@@ -162,6 +162,174 @@ describe('Input Validator', () => {
     });
   });
 
+  describe('AOI structural validation', () => {
+    const polygon = {
+      type: 'Polygon',
+      coordinates: [[[72.0, 18.0], [72.5, 18.0], [72.5, 18.5], [72.0, 18.5], [72.0, 18.0]]]
+    };
+    const multiPolygon = {
+      type: 'MultiPolygon',
+      coordinates: [
+        [[[72.0, 18.0], [72.2, 18.0], [72.2, 18.2], [72.0, 18.2], [72.0, 18.0]]],
+        [[[73.0, 19.0], [73.2, 19.0], [73.2, 19.2], [73.0, 19.2], [73.0, 19.0]]]
+      ]
+    };
+    const geoTiles = [{ format: 'geotiff', modality: 'optical', crs: 'EPSG:32643' }];
+
+    test('accepts a structurally valid Polygon and reports it', () => {
+      const result = validateInputs('NDVI', geoTiles, trace, { aoi: polygon });
+      expect(result.valid).toBe(true);
+      expect(result.aoi).toEqual({ status: 'PASS', geometryType: 'Polygon', vertexCount: 5 });
+      const check = result.qualityReport.checks.find(c => c.name === 'AOI Geometry Structure');
+      expect(check.status).toBe('PASS');
+      expect(check.details).toContain('ML service');
+    });
+
+    test('accepts a MultiPolygon', () => {
+      const result = validateInputs('NDVI', geoTiles, trace, { aoi: multiPolygon });
+      expect(result.valid).toBe(true);
+      expect(result.aoi.geometryType).toBe('MultiPolygon');
+      expect(result.aoi.vertexCount).toBe(10);
+    });
+
+    test('accepts a JSON-stringified geometry, as the ML form sends it', () => {
+      const result = validateInputs('NDVI', geoTiles, trace, { aoi: JSON.stringify(polygon) });
+      expect(result.valid).toBe(true);
+      expect(result.aoi.status).toBe('PASS');
+    });
+
+    test('unwraps a GeoJSON Feature / FeatureCollection', () => {
+      const feature = { type: 'Feature', properties: {}, geometry: polygon };
+      const collection = { type: 'FeatureCollection', features: [feature] };
+      expect(validateInputs('NDVI', geoTiles, trace, { aoi: feature }).valid).toBe(true);
+      expect(validateInputs('NDVI', geoTiles, trace, { aoi: collection }).valid).toBe(true);
+    });
+
+    test('rejects an unsupported geometry type', () => {
+      const result = validateInputs('NDVI', geoTiles, trace, {
+        aoi: { type: 'Point', coordinates: [72, 18] }
+      });
+      expect(result.valid).toBe(false);
+      expect(result.reason).toContain('not supported');
+    });
+
+    test('rejects a ring that is not closed enough to be an area', () => {
+      const result = validateInputs('NDVI', geoTiles, trace, {
+        aoi: { type: 'Polygon', coordinates: [[[72, 18], [72.5, 18], [72, 18]]] }
+      });
+      expect(result.valid).toBe(false);
+      expect(result.reason).toContain('at least 4');
+    });
+
+    test('rejects non-numeric coordinates', () => {
+      const result = validateInputs('NDVI', geoTiles, trace, {
+        aoi: { type: 'Polygon', coordinates: [[['72', 18], [72.5, 18], [72.5, 18.5], ['72', 18.5], ['72', 18]]] }
+      });
+      expect(result.valid).toBe(false);
+      expect(result.reason).toContain('finite');
+    });
+
+    test('rejects non-finite coordinates instead of letting NaN through', () => {
+      const result = validateInputs('NDVI', geoTiles, trace, {
+        aoi: { type: 'Polygon', coordinates: [[[72, 18], [null, 18], [72.5, 18.5], [72, 18.5], [72, 18]]] }
+      });
+      expect(result.valid).toBe(false);
+    });
+
+    test('rejects an unparseable JSON string', () => {
+      const result = validateInputs('NDVI', geoTiles, trace, { aoi: '{not json' });
+      expect(result.valid).toBe(false);
+      expect(result.reason).toContain('not valid JSON');
+    });
+
+    test('rejects a non-object AOI', () => {
+      const result = validateInputs('NDVI', geoTiles, trace, { aoi: [1, 2, 3] });
+      expect(result.valid).toBe(false);
+      expect(result.reason).toContain('GeoJSON geometry object');
+    });
+
+    test('does NOT reject an AOI that does not overlap the tile footprint', () => {
+      // Intersection is the ML service's call: it opens the actual pixels.
+      const farAway = {
+        type: 'Polygon',
+        coordinates: [[[10.0, 10.0], [10.5, 10.0], [10.5, 10.5], [10.0, 10.5], [10.0, 10.0]]]
+      };
+      const result = validateInputs('NDVI', geoTiles, trace, { aoi: farAway });
+      expect(result.valid).toBe(true);
+    });
+
+    test('does NOT reject an AOI whose CRS is unknown to the backend', () => {
+      const result = validateInputs('NDVI', geoTiles, trace, {
+        aoi: polygon,
+        aoiCrs: 'EPSG:99999-not-real'
+      });
+      expect(result.valid).toBe(true);
+    });
+
+    test('does NOT reject an AOI on a non-georeferenced image', () => {
+      const pngTiles = [{ format: 'png', modality: 'optical' }];
+      const result = validateInputs('VQA', pngTiles, trace, { aoi: polygon });
+      expect(result.valid).toBe(true);
+    });
+
+    test('absent AOI is recorded as unscoped, not as a failure', () => {
+      const result = validateInputs('NDVI', geoTiles, trace, {});
+      expect(result.valid).toBe(true);
+      expect(result.aoi).toEqual({ status: 'NONE' });
+      expect(result.qualityReport.checks.find(c => c.name === 'AOI Geometry Structure')).toBeUndefined();
+    });
+
+    test('empty-string AOI is treated as absent', () => {
+      const result = validateInputs('NDVI', geoTiles, trace, { aoi: '' });
+      expect(result.valid).toBe(true);
+      expect(result.aoi.status).toBe('NONE');
+    });
+
+    test('rejects an absurdly complex AOI', () => {
+      const ring = [];
+      for (let i = 0; i < 11000; i++) ring.push([72 + i * 1e-5, 18 + i * 1e-5]);
+      ring.push(ring[0]);
+      const result = validateInputs('NDVI', geoTiles, trace, {
+        aoi: { type: 'Polygon', coordinates: [ring] }
+      });
+      expect(result.valid).toBe(false);
+      expect(result.reason).toContain('too complex');
+    });
+  });
+
+  describe('AOI trace entries', () => {
+    const polygon = {
+      type: 'Polygon',
+      coordinates: [[[72.0, 18.0], [72.5, 18.0], [72.5, 18.5], [72.0, 18.5], [72.0, 18.0]]]
+    };
+
+    test('aoi_validation comes after input_validation on success', () => {
+      const tiles = [{ format: 'geotiff', modality: 'optical' }];
+      validateInputs('NDVI', tiles, trace, { aoi: polygon });
+      const steps = trace.map(t => t.step);
+      expect(steps).toContain('input_validation');
+      expect(steps).toContain('aoi_validation');
+      expect(steps.indexOf('aoi_validation')).toBeGreaterThan(steps.indexOf('input_validation'));
+      const aoiEntry = trace.find(t => t.step === 'aoi_validation');
+      expect(aoiEntry.details).toContain('PASS');
+    });
+
+    test('unscoped runs are labeled SKIP', () => {
+      const tiles = [{ format: 'geotiff', modality: 'optical' }];
+      validateInputs('NDVI', tiles, trace, {});
+      const aoiEntry = trace.find(t => t.step === 'aoi_validation');
+      expect(aoiEntry.details).toContain('SKIP');
+      expect(aoiEntry.details).toContain('unscoped');
+    });
+
+    test('an invalid AOI records FAIL on both steps', () => {
+      const tiles = [{ format: 'geotiff', modality: 'optical' }];
+      validateInputs('NDVI', tiles, trace, { aoi: { type: 'Point', coordinates: [1, 2] } });
+      const aoiEntry = trace.find(t => t.step === 'aoi_validation');
+      expect(aoiEntry.details).toContain('FAIL');
+    });
+  });
+
   describe('Edge cases', () => {
     test('handles missing modality gracefully', () => {
       const tiles = [{ format: 'geotiff' }];

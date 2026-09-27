@@ -37,7 +37,7 @@ const FILE_ENDPOINTS = {
 const NON_FORM_KEYS = new Set([
   'image_path', 'image_t1_path', 'image_t2_path', 'optical_path', 'sar_path',
   'tile_id', 'tile_id_t1', 'tile_id_t2', 'optical_tile_id', 'sar_tile_id',
-  'imageRefs'
+  'imageRefs', 'aoi_requested'
 ]);
 
 function isFileEndpoint(endpoint) {
@@ -85,9 +85,51 @@ async function sendMultipart(url, endpoint, payload, options, signal) {
 }
 
 /**
+ * AOI report for an offline mock.
+ *
+ * A mock never opens the pixels, so it can never have applied an AOI. These
+ * fixtures are whole-scene placeholders; saying otherwise would let a
+ * "scoped" claim survive on fabricated data. The report says so explicitly so
+ * callers and the UI cannot mistake a mock for AOI-scoped analysis.
+ */
+function mockAoiReport(payload) {
+  const requested = Boolean(payload?.aoi_geometry);
+  return {
+    aoiPresent: requested,
+    aoiApplied: false,
+    aoiScope: null,
+    aoiStatus: requested ? 'not_applied_mock_offline' : 'not_requested_mock_offline',
+    reason: requested
+      ? 'The ML service was unreachable, so this is a whole-scene mock result. No pixels were read and the requested AOI was NOT applied.'
+      : 'The ML service was unreachable, so this is a whole-scene mock result. No pixels were read.'
+  };
+}
+
+/**
+ * Attach the honest AOI report to a mock result, in both the result body and
+ * the metadata, mirroring the real ML service's contract.
+ */
+function withMockAoi(mock, payload) {
+  const aoi = mockAoiReport(payload);
+  return {
+    ...mock,
+    result: { ...(mock.result || {}), aoi },
+    metadata: { ...(mock.metadata || {}), aoi }
+  };
+}
+
+/**
  * Returns mock result for a given endpoint when ML service is offline/mocked.
  */
 function getMockResult(endpoint, payload) {
+  return withMockAoi(buildMockResult(endpoint, payload), payload);
+}
+
+/**
+ * Build the raw mock payload for an endpoint. Analysis tools get a whole-scene
+ * placeholder; `withMockAoi` then labels it as not AOI-scoped.
+ */
+function buildMockResult(endpoint, payload) {
   const cleanEndpoint = endpoint.startsWith('/') ? endpoint : `/${endpoint}`;
 
   switch (cleanEndpoint) {

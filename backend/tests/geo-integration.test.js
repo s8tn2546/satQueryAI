@@ -11,12 +11,14 @@ const mongoose = (await import('mongoose')).default;
 const request = (await import('supertest')).default;
 const { default: app } = await import('../src/index.js');
 const { default: Tile } = await import('../src/models/Tile.js');
+const { seedTools } = await import('../src/services/seedTools.js');
 
 let mongod;
 
 beforeAll(async () => {
   mongod = await MongoMemoryServer.create();
   await mongoose.connect(mongod.getUri());
+  await seedTools();
 });
 
 afterAll(async () => {
@@ -315,5 +317,112 @@ describe('§6.1a — Region-Based Image Acquisition + /validate integration', ()
       expect(mockCallMlService).not.toHaveBeenCalled();
       expect(await Tile.countDocuments()).toBe(0);
     });
+  });
+});
+
+// =============================================================================
+// Drawn AOI end-to-end: query request -> validation -> ML call -> response
+// =============================================================================
+
+describe('Drawn AOI end-to-end', () => {
+  const DRAWN_AOI = {
+    type: 'Polygon',
+    coordinates: [[[77.0, 28.0], [77.1, 28.0], [77.1, 28.1], [77.0, 28.1], [77.0, 28.0]]]
+  };
+
+  async function seedOpticalTile() {
+    return Tile.create({
+      source: 'benchmark-upload',
+      modality: 'optical',
+      format: 'geotiff',
+      filePath: '/real/uploads/scene.tif',
+      crs: 'EPSG:32643',
+      boundingBox: MOCK_BBOX,
+      captureDate: new Date('2025-01-01')
+    });
+  }
+
+  it('carries the drawn AOI from the request all the way into the ML call', async () => {
+    const tile = await seedOpticalTile();
+    mockCallMlService.mockResolvedValue({
+      tool: 'ndvi',
+      status: 'success',
+      result: {
+        mean: 0.61,
+        valid_pixel_count: 144,
+        aoi: {
+          aoiPresent: true, aoiApplied: true, aoiScope: 'raster_window+mask',
+          aoiStatus: 'applied', aoiCrs: 'EPSG:4326', aoiCrsSource: 'rfc7946_default',
+          aoiMaskedPixels: 144, isGeoreferenced: true
+        }
+      },
+      confidence: 0.9
+    });
+
+    const res = await request(app).post('/api/query').send({
+      queryText: 'What is the NDVI of this image?',
+      imageRefs: [String(tile._id)],
+      parameters: { aoi: DRAWN_AOI }
+    });
+    expect(res.status).toBe(200);
+    expect(res.body.status).not.toBe('rejected');
+
+    // The ML service really received the drawn geometry.
+    const [endpoint, payload] = mockCallMlService.mock.calls[0];
+    expect(endpoint).toBe('/ndvi');
+    expect(payload.aoi_geometry).toEqual(DRAWN_AOI);
+    expect(payload.aoi_requested).toBe(true);
+
+    // The trace explains the scope decision before the tool ever runs.
+    const steps = res.body.executionTrace.map(t => t.step);
+    expect(steps).toContain('aoi_validation');
+    expect(steps.indexOf('aoi_validation')).toBeGreaterThan(steps.indexOf('input_validation'));
+    expect(res.body.executionTrace.find(t => t.step === 'aoi_application').details)
+      .toContain('AOI applied by ML service');
+  });
+
+  it('rejects a structurally broken AOI before any ML call is made', async () => {
+    const tile = await seedOpticalTile();
+
+    const res = await request(app).post('/api/query').send({
+      queryText: 'Compute NDVI in the area I selected',
+      imageRefs: [String(tile._id)],
+      parameters: { aoi: { type: 'Point', coordinates: [77.05, 28.05] } }
+    });
+
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe('rejected');
+    expect(res.body.answerText || res.body.answer).toMatch(/not supported/);
+    expect(mockCallMlService).not.toHaveBeenCalled();
+  });
+
+  it('an AOI that misses the raster fails loudly instead of returning a whole-scene number', async () => {
+    const tile = await seedOpticalTile();
+    // The ML service is authoritative: it opens the pixels and refuses.
+    mockCallMlService.mockResolvedValue({
+      tool: 'ndvi',
+      status: 'failed',
+      result: { error: 'AOI does not intersect the raster footprint.' },
+      metadata: {
+        aoi: {
+          aoiPresent: true, aoiApplied: false, aoiScope: null,
+          aoiStatus: 'rejected_outside_raster', isGeoreferenced: true
+        }
+      },
+      confidence: 0
+    });
+
+    const res = await request(app).post('/api/query').send({
+      queryText: 'Compute NDVI in the area I selected',
+      imageRefs: [String(tile._id)],
+      parameters: { aoi: DRAWN_AOI }
+    });
+
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe('failed');
+    expect(res.body.toolResults[0].status).toBe('failed');
+    expect(res.body.toolResults[0].error).toMatch(/does not intersect/);
+    expect(res.body.executionTrace.find(t => t.step === 'aoi_application').details)
+      .toContain('AOI was NOT applied by ML service');
   });
 });

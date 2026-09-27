@@ -35,12 +35,100 @@ function geojsonExtents(polygon) {
   return { minLon, minLat, maxLon, maxLat };
 }
 
+const SUPPORTED_AOI_TYPES = new Set(['Polygon', 'MultiPolygon']);
+const MAX_AOI_VERTICES = 10000;
+
+/**
+ * Parse and structurally validate the user-drawn AOI.
+ *
+ * This is deliberately a *shape* check only. Whether the AOI actually
+ * intersects the raster, whether its CRS is consistent with the raster, and
+ * whether the raster is georeferenced at all are questions only the ML service
+ * can answer authoritatively (it opens the actual pixels). Failing those here
+ * would risk rejecting valid requests using guessed assumptions, so we only
+ * reject geometry that could never be meaningful.
+ *
+ * @returns {{status:'NONE'}|{status:'PASS',geometryType:string,vertexCount:number}
+ *          |{status:'FAIL',reason:string}}
+ */
+function validateAoiParameters(parameters) {
+  const raw = parameters?.aoi;
+  if (raw === undefined || raw === null || raw === '') return { status: 'NONE' };
+
+  let aoi = raw;
+  if (typeof aoi === 'string') {
+    try {
+      aoi = JSON.parse(aoi);
+    } catch {
+      return { status: 'FAIL', reason: 'AOI parameter is a string but is not valid JSON.' };
+    }
+  }
+
+  if (typeof aoi !== 'object' || Array.isArray(aoi) || aoi === null) {
+    return { status: 'FAIL', reason: 'AOI must be a GeoJSON geometry object.' };
+  }
+
+  // Tolerate a Feature/FeatureCollection envelope and use the first polygon.
+  let geometry = aoi;
+  if (geometry.type === 'Feature') geometry = geometry.geometry;
+  else if (geometry.type === 'FeatureCollection') {
+    geometry = Array.isArray(geometry.features) ? geometry.features[0]?.geometry : undefined;
+  }
+
+  if (!geometry || typeof geometry.type !== 'string' || !SUPPORTED_AOI_TYPES.has(geometry.type)) {
+    return {
+      status: 'FAIL',
+      reason: `AOI geometry type "${geometry?.type ?? 'unknown'}" is not supported; use a GeoJSON Polygon or MultiPolygon.`
+    };
+  }
+
+  if (!Array.isArray(geometry.coordinates) || geometry.coordinates.length === 0) {
+    return { status: 'FAIL', reason: 'AOI geometry has no coordinates.' };
+  }
+
+  // MultiPolygon nests one level deeper: polygons -> rings -> positions.
+  const polygons = geometry.type === 'Polygon' ? [geometry.coordinates] : geometry.coordinates;
+  let vertexCount = 0;
+  for (const polygon of polygons) {
+    if (!Array.isArray(polygon) || polygon.length === 0) {
+      return { status: 'FAIL', reason: `AOI ${geometry.type} contains an empty polygon.` };
+    }
+    for (const ring of polygon) {
+      if (!Array.isArray(ring) || ring.length < 4) {
+        return {
+          status: 'FAIL',
+          reason: `AOI ${geometry.type} has a ring with ${Array.isArray(ring) ? ring.length : 0} positions; each ring needs at least 4 (closed triangle minimum).`
+        };
+      }
+      for (const position of ring) {
+        if (!Array.isArray(position) || position.length < 2
+            || !Number.isFinite(position[0]) || !Number.isFinite(position[1])) {
+          return { status: 'FAIL', reason: 'AOI coordinates must be finite [x, y] numbers.' };
+        }
+        vertexCount += 1;
+        if (vertexCount > MAX_AOI_VERTICES) {
+          return {
+            status: 'FAIL',
+            reason: `AOI is too complex (over ${MAX_AOI_VERTICES} vertices); simplify the drawn shape.`
+          };
+        }
+      }
+    }
+  }
+
+  if (vertexCount === 0) {
+    return { status: 'FAIL', reason: 'AOI geometry has no coordinates.' };
+  }
+
+  return { status: 'PASS', geometryType: geometry.type, vertexCount };
+}
+
 function extentsOverlap(a, b, eps = OVERLAP_EPS_DEG) {
   return a.minLon <= b.maxLon + eps && b.minLon <= a.maxLon + eps
     && a.minLat <= b.maxLat + eps && b.minLat <= a.maxLat + eps;
 }
 
-export function validateInputs(taskType, tiles, trace) {
+export function validateInputs(taskType, tiles, trace, parameters = {}) {
   const warnings = [];
   const checks = [];
   let validationStatus = 'READY_FOR_ANALYSIS';
@@ -185,6 +273,31 @@ export function validateInputs(taskType, tiles, trace) {
     }
   }
 
+  // 4. AOI shape check (structure only; ML owns CRS/intersection/georeferencing)
+  const aoiCheck = validateAoiParameters(parameters);
+  if (aoiCheck.status === 'FAIL') {
+    trace.push(makeTraceEntry('input_validation', `FAIL: ${aoiCheck.reason}`));
+    trace.push(makeTraceEntry('aoi_validation', `FAIL: ${aoiCheck.reason}`));
+    return {
+      valid: false,
+      reason: aoiCheck.reason,
+      qualityReport: {
+        status: 'CANNOT_ANALYZE',
+        summary: aoiCheck.reason,
+        checks: [...checks, { name: 'AOI Geometry Structure', status: 'FAIL', details: aoiCheck.reason }],
+        warnings: [aoiCheck.reason]
+      }
+    };
+  }
+
+  if (aoiCheck.status === 'PASS') {
+    checks.push({
+      name: 'AOI Geometry Structure',
+      status: 'PASS',
+      details: `AOI is a structurally valid ${aoiCheck.geometryType} with ${aoiCheck.vertexCount} vertices. Whether it intersects the image, and whether its CRS matches the raster, is verified by the ML service against the actual pixels.`
+    });
+  }
+
   const qualityReport = {
     status: validationStatus,
     summary: validationStatus === 'READY_FOR_ANALYSIS'
@@ -196,5 +309,13 @@ export function validateInputs(taskType, tiles, trace) {
 
   const warningNote = warnings.length ? ` Warnings: ${warnings.join('; ')}` : '';
   trace.push(makeTraceEntry('input_validation', `PASS: Inputs valid for task ${taskType}.${warningNote}`));
-  return { valid: true, warnings, qualityReport };
+  // Pushed after input_validation so the AOI decision is the final word on
+  // whether the analysis is spatially scoped.
+  trace.push(makeTraceEntry(
+    'aoi_validation',
+    aoiCheck.status === 'PASS'
+      ? `PASS: AOI scope requested and structurally valid (${aoiCheck.geometryType}, ${aoiCheck.vertexCount} vertices); applied to analysis by the ML service.`
+      : 'SKIP: No AOI requested; analysis runs on the full scene (unscoped).'
+  ));
+  return { valid: true, warnings, qualityReport, aoi: aoiCheck };
 }

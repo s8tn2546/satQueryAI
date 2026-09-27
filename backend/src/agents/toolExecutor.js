@@ -13,8 +13,17 @@ function buildPayload(tool, tiles, parameters) {
   const sarTile = tiles.find(t => t.modality === 'sar');
 
   const payload = { ...parameters };
-  if (parameters.roi || parameters.region || parameters.aoi) {
-    payload.aoi_geometry = parameters.roi || parameters.region || parameters.aoi;
+  const aoiSource = parameters.aoi || parameters.roi || parameters.region;
+  if (aoiSource) {
+    payload.aoi_geometry = aoiSource;
+    // The AOI is bare GeoJSON, so the ML service assumes RFC 7946 (EPSG:4326)
+    // unless the user states otherwise. Forward an explicit CRS when we have
+    // one; never invent one.
+    const aoiCrs = parameters.aoiCrs || parameters.aoi_crs || parameters.crs;
+    if (aoiCrs) payload.aoi_crs = aoiCrs;
+    payload.aoi_requested = true;
+  } else {
+    payload.aoi_requested = false;
   }
 
   switch (tool.name) {
@@ -195,6 +204,30 @@ function applyDependencyOutput(tool, depName, depResult, payload) {
 }
 
 /**
+ * Describe what the ML service actually did with the AOI, using its own report.
+ *
+ * The backend must not assume the AOI was honored just because it was sent. We
+ * relay the ML service's authoritative `aoi` report into the execution trace so
+ * a scoped claim can always be checked against what was really applied.
+ */
+function aoiOutcomeNote(mlResult, payload) {
+  if (!payload?.aoi_requested) {
+    return 'no AOI requested; analysis covers the full scene (unscoped)';
+  }
+  const report = mlResult?.result?.aoi || mlResult?.metadata?.aoi;
+  if (!report) {
+    return 'AOI was requested but the ML service returned no AOI report; applied scope is unverified';
+  }
+  if (report.aoiApplied) {
+    const scope = report.aoiScope || 'unknown scope';
+    const masked = report.aoiMaskedPixels != null ? `, ${report.aoiMaskedPixels} pixel(s) masked` : '';
+    return `AOI applied by ML service (${scope}${masked})`;
+  }
+  const reason = report.reason ? `: ${report.reason}` : '';
+  return `AOI was NOT applied by ML service (${report.aoiStatus || 'unknown status'}${reason})`;
+}
+
+/**
  * Dependency-aware tool execution.
  *
  * The executor walks the structured plan (from M1) in order. For every step:
@@ -299,6 +332,8 @@ export async function executeTools(tools, tiles = [], parameters = {}, trace = [
         };
         trace.push(makeTraceEntry('tool_execution_derived',
           'Tool "area" derived from change.changed_area_km2 without an /area ML call (change already produced the changed area)'));
+        trace.push(makeTraceEntry('aoi_application',
+          `Tool "area": ${aoiOutcomeNote(changeEntry, payload)} (inherited from the change result; no separate /area measurement was performed)`));
         results.push(derived);
         executionContext.previousResults.set('area', derived);
         continue;
@@ -306,6 +341,11 @@ export async function executeTools(tools, tiles = [], parameters = {}, trace = [
     }
 
     // ---- 5. cache lookup (for trend) --------------------------------------
+    // The AOI is part of a measurement's identity: a series computed inside a
+    // scope must never be served to a request with a different (or no) scope.
+    const aoiKey = payload.aoi_geometry
+      ? JSON.stringify(payload.aoi_geometry)
+      : null;
     if (tool.name === 'trend' && payload.metric && payload.region) {
       const metric = (payload.metric || 'ndvi').toLowerCase();
       const rKey = JSON.stringify({ type: payload.region.type, coordinates: payload.region.coordinates });
@@ -319,6 +359,8 @@ export async function executeTools(tools, tiles = [], parameters = {}, trace = [
       };
 
       if (rKey) queryCond.regionKey = rKey;
+      if (aoiKey) queryCond.aoiKey = aoiKey;
+      else queryCond.aoiKey = null;
       if (startDate && endDate) {
         queryCond['dateRange.start'] = { $lte: new Date(startDate) };
         queryCond['dateRange.end'] = { $gte: new Date(endDate) };
@@ -328,6 +370,7 @@ export async function executeTools(tools, tiles = [], parameters = {}, trace = [
 
       if (cached) {
         trace.push(makeTraceEntry('trend_cache_hit', `[trend] cache hit for ${metric}`));
+        trace.push(makeTraceEntry('aoi_application', `Tool "trend": ${aoiOutcomeNote(cached, payload)}`));
         const analysis = analyzeMultiTemporalSeries(cached.result?.series || cached.result?.observations || [], { metric });
         const cachedEntry = {
           tool: 'trend',
@@ -357,6 +400,7 @@ export async function executeTools(tools, tiles = [], parameters = {}, trace = [
     if (mlError) {
       const reason = `ML service call threw an error for tool "${tool.name}": ${mlError.message}`;
       trace.push(makeTraceEntry('tool_execution_failed', reason));
+      trace.push(makeTraceEntry('aoi_application', `Tool "${tool.name}": ${aoiOutcomeNote(null, payload)}`));
       results.push({ tool: tool.name, status: 'failed', result: {}, evidence: {}, error: reason, confidence: 0 });
       continue;
     }
@@ -370,13 +414,16 @@ export async function executeTools(tools, tiles = [], parameters = {}, trace = [
         || mlResult?.result?.error
         || `ML service returned an error for tool "${tool.name}"`;
       trace.push(makeTraceEntry('tool_execution_failed', reason));
+      trace.push(makeTraceEntry('aoi_application', `Tool "${tool.name}": ${aoiOutcomeNote(mlResult, payload)}`));
       results.push({ tool: tool.name, status: 'failed', result: {}, evidence: {}, error: reason, confidence: 0 });
     } else if (!mlResult.result && !mlResult.answer && !mlResult.caption && !mlResult.series) {
       const reason = `ML service returned an empty or malformed result for tool "${tool.name}"`;
       trace.push(makeTraceEntry('tool_execution_failed', reason));
+      trace.push(makeTraceEntry('aoi_application', `Tool "${tool.name}": ${aoiOutcomeNote(mlResult, payload)}`));
       results.push({ tool: tool.name, status: 'failed', result: {}, evidence: {}, error: reason, confidence: 0 });
     } else {
       trace.push(makeTraceEntry('tool_execution_success', `Tool "${tool.name}" completed successfully${dependencyNote ? ` — ${dependencyNote}` : ''}`));
+      trace.push(makeTraceEntry('aoi_application', `Tool "${tool.name}": ${aoiOutcomeNote(mlResult, payload)}`));
       let finalResult = mlResult.result;
       if (tool.name === 'trend' && mlResult.result) {
         const metric = (payload.metric || 'ndvi').toLowerCase();
@@ -412,6 +459,8 @@ export async function executeTools(tools, tiles = [], parameters = {}, trace = [
         const paramHash = crypto.createHash('sha256').update(JSON.stringify({
           metric,
           region: payload.region,
+          aoi: payload.aoi_geometry || null,
+          aoiCrs: payload.aoi_crs || null,
           startDate: payload.start_date || payload.startDate,
           endDate: payload.end_date || payload.endDate
         })).digest('hex');
@@ -426,6 +475,7 @@ export async function executeTools(tools, tiles = [], parameters = {}, trace = [
             metric,
             region: payload.region,
             regionKey: rKey,
+            aoiKey,
             dateRange: (sDate && eDate) ? { start: new Date(sDate), end: new Date(eDate) } : undefined,
             interval: payload.interval || 'monthly',
             parameters: { metric, region: payload.region, startDate: sDate, endDate: eDate, interval: payload.interval || 'monthly', hash: paramHash },

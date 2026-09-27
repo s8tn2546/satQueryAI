@@ -16,6 +16,7 @@ fabricates a fusion result.
 
 from __future__ import annotations
 
+from contextlib import ExitStack
 from pathlib import Path
 from typing import Any
 
@@ -33,6 +34,7 @@ from app.geospatial.raster_io import (
     read_band,
     read_metadata,
 )
+from app.tools.roi_crop import aoi_scope, attach_aoi_pair
 from app.preprocessing.band_detection import detect_modality_from_bands
 from app.preprocessing.normalize import normalize_with_nodata
 from app.preprocessing.speckle_filter import median_filter
@@ -317,8 +319,14 @@ def run_optical_sar_fusion(
     optical_band: int | None = None,
     sar_band: int | None = None,
     speckle_size: int | None = None,
+    aoi: Any = None,
+    aoi_crs: Any = None,
 ) -> dict[str, Any]:
-    """Run optical+SAR cross-modal analysis.
+    """Run optical+SAR cross-modal analysis, restricted to an AOI when given.
+
+    The AOI is genuinely polygon-masked onto both modalities before alignment
+    and fusion, so pixels outside the region of interest cannot contribute to the
+    cross-modal statistics.
 
     Args:
         optical_path: optical raster path.
@@ -326,12 +334,43 @@ def run_optical_sar_fusion(
         optical_band: optional explicit optical band index.
         sar_band: optional explicit SAR band index.
         speckle_size: optional speckle-filter window size (odd).
+        aoi: optional GeoJSON Polygon/MultiPolygon (or JSON string) region of
+            interest, masked onto both inputs. When absent the full scenes are
+            fused.
+        aoi_crs: optional explicit CRS of the AOI coordinates. A bare GeoJSON
+            geometry follows RFC 7946 (WGS84); the resolved CRS is reported in
+            ``result["aoi"]``.
 
     Returns:
         A dict with per-modality statistics, fusion statistics, alignment /
-        overlap / nodata / normalization / speckle metadata. Raises FusionError
-        subclasses for honest (non-fabricated) failures.
+        overlap / nodata / normalization / speckle metadata and AOI reporting.
+        Raises FusionError subclasses for honest (non-fabricated) failures, or
+        RoiCropError subclasses when the AOI cannot be applied to both inputs.
     """
+    with ExitStack() as stack:
+        optical_scope = stack.enter_context(aoi_scope(optical_path, aoi, aoi_crs=aoi_crs))
+        sar_scope = stack.enter_context(aoi_scope(sar_path, aoi, aoi_crs=aoi_crs))
+        result = _run_fusion(
+            optical_scope.raster_path,
+            sar_scope.raster_path,
+            optical_band=optical_band,
+            sar_band=sar_band,
+            speckle_size=speckle_size,
+        )
+    return attach_aoi_pair(
+        result, optical_scope, sar_scope, first_label="optical", second_label="sar"
+    )
+
+
+def _run_fusion(
+    optical_path: str | Path,
+    sar_path: str | Path,
+    *,
+    optical_band: int | None,
+    sar_band: int | None,
+    speckle_size: int | None,
+) -> dict[str, Any]:
+    """Fuse two already AOI-scoped rasters."""
     opath, spath = Path(optical_path), Path(sar_path)
     window = speckle_size if (speckle_size is not None and speckle_size >= 1) else SPECKLE_SIZE
 

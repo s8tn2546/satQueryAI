@@ -143,7 +143,7 @@ export async function runAgentPipeline(queryText, imageRefIds, parameters = {}, 
 
   const resolvedTaskType = TASK_TYPE_ENUM.has(taskType) ? taskType : 'VQA';
 
-  const validationResult = validateInputs(resolvedTaskType, tiles, trace);
+  const validationResult = validateInputs(resolvedTaskType, tiles, trace, mergedParams);
   if (!validationResult.valid) {
     const response = makeRejectedResponse(validationResult.reason, trace, resolvedTaskType);
 

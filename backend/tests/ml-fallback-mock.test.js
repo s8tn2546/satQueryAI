@@ -47,3 +47,40 @@ describe('ML mock-fallback evidence key alignment (Member 6 Geo integration)', (
     expect(r.evidence.images).toEqual(['o1', 's1']);
   });
 });
+
+describe('Offline mocks never claim an AOI was applied', () => {
+  const ANALYSIS_ENDPOINTS = ['/ndvi', '/ndwi', '/area', '/change', '/optical-sar', '/vqa', '/caption', '/trend'];
+  const polygon = {
+    type: 'Polygon',
+    coordinates: [[[72.0, 18.0], [72.5, 18.0], [72.5, 18.5], [72.0, 18.5], [72.0, 18.0]]]
+  };
+
+  it.each(ANALYSIS_ENDPOINTS)('%s reports aoiApplied=false even when an AOI was requested', async (endpoint) => {
+    const r = await mlServiceClient.callMlService(endpoint, {
+      tile_id: 't1',
+      tile_id_t1: 't1',
+      tile_id_t2: 't2',
+      optical_tile_id: 'o1',
+      sar_tile_id: 's1',
+      region: polygon,
+      metric: 'ndvi',
+      aoi_geometry: polygon
+    });
+    const report = r.result.aoi;
+    expect(report.aoiPresent).toBe(true);
+    expect(report.aoiApplied).toBe(false);
+    expect(report.aoiScope).toBeNull();
+    expect(report.aoiStatus).toBe('not_applied_mock_offline');
+    expect(report.reason).toMatch(/NOT applied/);
+    // Mirrored in metadata so callers reading either location see the same truth.
+    expect(r.metadata.aoi).toEqual(report);
+    expect(r.metadata.mock).toBe(true);
+  });
+
+  it.each(ANALYSIS_ENDPOINTS)('%s marks an unscoped request as not_requested', async (endpoint) => {
+    const r = await mlServiceClient.callMlService(endpoint, { tile_id: 't1', region: polygon, metric: 'ndvi' });
+    expect(r.result.aoi.aoiPresent).toBe(false);
+    expect(r.result.aoi.aoiApplied).toBe(false);
+    expect(r.result.aoi.aoiStatus).toBe('not_requested_mock_offline');
+  });
+});

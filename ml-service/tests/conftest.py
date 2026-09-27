@@ -318,6 +318,158 @@ def _write_non_geo_tif(path: Path, data: np.ndarray, dtype=None) -> Path:
     return path
 
 
+# --------------------------------------------------------------------------- #
+# AOI (area-of-interest) helpers                                                #
+#                                                                             #
+# The 10x10 / EPSG:32643 / origin (500000, 4600000) / 10m fixtures above all    #
+# share the footprint W=500000, S=4599900, E=500100, N=4600000. Their AOIs are   #
+# expressed in those projected metres and therefore declare that CRS: a bare   #
+# GeoJSON would be read as WGS84 (RFC 7946) and would legitimately fail to      #
+# intersect, which is exactly the behaviour a mislabelled AOI must produce.    #
+# --------------------------------------------------------------------------- #
+
+UTM33N = "EPSG:32643"
+
+
+@pytest.fixture
+def central_aoi() -> dict:
+    """A Polygon covering the central 6x6 pixel block of the 10x10 UTM fixtures.
+
+    In EPSG:32643 this is x 500020..500080, y 4599920..4599980, i.e. rows 2..8
+    and columns 2..8 of a 10 m raster.
+    """
+    return {
+        "type": "Polygon",
+        "crs": UTM33N,
+        "coordinates": [
+            [
+                [500020.0, 4599920.0],
+                [500080.0, 4599920.0],
+                [500080.0, 4599980.0],
+                [500020.0, 4599980.0],
+                [500020.0, 4599920.0],
+            ]
+        ],
+    }
+
+
+@pytest.fixture
+def quadrant_aoi() -> dict:
+    """A Polygon covering only the top-left 5x5 pixel block (rows 0..5, cols 0..5)."""
+    return {
+        "type": "Polygon",
+        "crs": UTM33N,
+        "coordinates": [
+            [
+                [500000.0, 4599950.0],
+                [500050.0, 4599950.0],
+                [500050.0, 4600000.0],
+                [500000.0, 4600000.0],
+                [500000.0, 4599950.0],
+            ]
+        ],
+    }
+
+
+@pytest.fixture
+def whole_scene_aoi() -> dict:
+    """A Polygon covering the entire 10x10 fixture footprint (no clipping expected)."""
+    return {
+        "type": "Polygon",
+        "crs": UTM33N,
+        "coordinates": [
+            [
+                [500000.0, 4599900.0],
+                [500100.0, 4599900.0],
+                [500100.0, 4600000.0],
+                [500000.0, 4600000.0],
+                [500000.0, 4599900.0],
+            ]
+        ],
+    }
+
+
+@pytest.fixture
+def small_central_aoi() -> dict:
+    """A Polygon covering a 3x3 pixel block inside the fixtures' valid-data area.
+
+    In EPSG:32643 this is x 500020..500050, y 4599940..4599970, i.e. rows 3..6
+    and columns 2..5. Use it where an AOI-restricted result must be
+    distinguishable from the whole-scene result.
+    """
+    return {
+        "type": "Polygon",
+        "crs": UTM33N,
+        "coordinates": [
+            [
+                [500020.0, 4599940.0],
+                [500050.0, 4599940.0],
+                [500050.0, 4599970.0],
+                [500020.0, 4599970.0],
+                [500020.0, 4599940.0],
+            ]
+        ],
+    }
+
+
+@pytest.fixture
+def top_left_aoi() -> dict:
+    """A Polygon covering only the top-left 2x2 pixel block (rows 0..2, cols 0..2)."""
+    return {
+        "type": "Polygon",
+        "crs": UTM33N,
+        "coordinates": [
+            [
+                [500000.0, 4599980.0],
+                [500020.0, 4599980.0],
+                [500020.0, 4600000.0],
+                [500000.0, 4600000.0],
+                [500000.0, 4599980.0],
+            ]
+        ],
+    }
+
+
+@pytest.fixture
+def outside_aoi() -> dict:
+    """A valid Polygon far away from the fixture footprint (no intersection)."""
+    return {
+        "type": "Polygon",
+        "crs": UTM33N,
+        "coordinates": [
+            [
+                [900000.0, 4000000.0],
+                [900100.0, 4000000.0],
+                [900100.0, 4000100.0],
+                [900000.0, 4000100.0],
+                [900000.0, 4000000.0],
+            ]
+        ],
+    }
+
+
+@pytest.fixture
+def geographic_central_aoi() -> dict:
+    """A bare RFC 7946 Polygon (WGS84) over the `geographic_raster` fixture.
+
+    That raster is at lon 72.0, lat 19.0, 0.0001 deg/pixel, 10x10 pixels, so
+    this covers rows 2..8, columns 2..8. No `crs` member: this is the exact
+    shape the frontend sends.
+    """
+    return {
+        "type": "Polygon",
+        "coordinates": [
+            [
+                [72.0002, 18.9992],
+                [72.0008, 18.9992],
+                [72.0008, 18.9998],
+                [72.0002, 18.9998],
+                [72.0002, 18.9992],
+            ]
+        ],
+    }
+
+
 @pytest.fixture
 def change_identical_pair(tmp_path: Path) -> tuple[Path, Path]:
     """Two identical georeferenced single-band rasters -> 0% change."""

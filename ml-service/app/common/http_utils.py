@@ -14,11 +14,25 @@ from pathlib import Path
 from fastapi import UploadFile
 
 from app.schemas.common import ToolOutput
+from app.tools.roi_crop import RoiCropError
 
 logger = logging.getLogger(__name__)
 
 ALLOWED_EXTENSIONS = {".tif", ".tiff", ".png", ".jpg", ".jpeg"}
 MAX_FILE_SIZE_MB = 500
+
+# One description for the AOI form field across every endpoint, so the OpenAPI
+# schema tells the same story everywhere.
+AOI_FORM_DESCRIPTION = (
+    "Optional JSON-stringified GeoJSON Polygon/MultiPolygon defining the region of "
+    "interest. When supplied the raster is genuinely cropped and polygon-masked "
+    "before the tool reads any pixel. A bare GeoJSON geometry is interpreted as "
+    "WGS84 (RFC 7946) and the resolved CRS is reported back."
+)
+AOI_CRS_FORM_DESCRIPTION = (
+    "Optional explicit CRS of the AOI coordinates (e.g. 'EPSG:32643'). Overrides any "
+    "'crs' member on the geometry and the RFC 7946 default."
+)
 
 
 def validate_upload_ext(filename: str | None) -> str | None:
@@ -47,15 +61,17 @@ class FileTooLargeError(UploadError):
 
 
 def parse_aoi_geometry(value: str | None) -> dict:
-    """Echo an AOI scope that arrived as a form field into tool metadata.
+    """Echo the raw AOI scope that arrived as a form field into tool metadata.
 
     The frontend sends the drawn region of interest as a JSON-stringified
-    GeoJSON geometry in the ``aoi_geometry`` form field. Endpoints record it
-    (unmodified) in ``metadata`` so the requested scope demonstrably reaches
-    the analysis tool and is visible in evidence/trace. It never alters the
-    deterministic measurement algorithms: absent or unparseable values simply
-    produce no metadata entry ({}), and malformed JSON is preserved verbatim
-    rather than guessed.
+    GeoJSON geometry in the ``aoi_geometry`` form field. This records exactly
+    what was requested, unmodified, so the requested scope is visible in
+    evidence/trace even when the AOI could not be applied (a failure response
+    should still show what was asked for).
+
+    This is reporting only. Applying the AOI to the raster is the job of
+    :func:`app.tools.roi_crop.aoi_scope`, which the tools call; see
+    :func:`aoi_error_output` for structured AOI failures.
     """
     import json
 
@@ -68,6 +84,49 @@ def parse_aoi_geometry(value: str | None) -> dict:
     if isinstance(parsed, (dict, list)):
         return {"aoi_geometry": parsed}
     return {"aoi_geometry": value}
+
+
+def aoi_metadata(result: dict, raw_aoi: str | None) -> dict:
+    """Build the ``metadata`` AOI block for a successful tool response.
+
+    Prefers the AOI report produced by the tool (which describes what was
+    actually applied: cropped dimensions, pixel counts, resolved CRS) and always
+    includes the raw requested geometry for traceability.
+    """
+    metadata: dict = parse_aoi_geometry(raw_aoi)
+    report = result.get("aoi") if isinstance(result, dict) else None
+    if isinstance(report, dict):
+        metadata["aoi"] = report
+    return metadata
+
+
+def aoi_error_output(
+    tool: str,
+    exc: "RoiCropError",
+    *,
+    raw_aoi: str | None = None,
+) -> ToolOutput:
+    """Build a structured failure ToolOutput for an AOI that could not be applied.
+
+    An unusable AOI is never silently ignored: the response states why it was
+    rejected, which part of the pipeline refused it, and the requested geometry,
+    so the caller can correct the request instead of reading a whole-scene
+    number as if it had been AOI-scoped.
+    """
+    metadata = parse_aoi_geometry(raw_aoi)
+    report = dict(getattr(exc, "metadata", {}) or {})
+    report.setdefault("aoiApplied", False)
+    report.setdefault("aoiPresent", True)
+    report.setdefault("reason", str(exc))
+    metadata["aoi"] = report
+    return ToolOutput(
+        tool=tool,
+        status="failed",
+        result={"error": str(exc)},
+        evidence={"aoi": report},
+        confidence=0.0,
+        metadata=metadata,
+    )
 
 
 async def read_upload_file(file: UploadFile) -> bytes:
@@ -102,6 +161,8 @@ def error_output(
     detail: dict | None = None,
     status: str = "failed",
     confidence: float = 0.0,
+    metadata: dict | None = None,
+    evidence: dict | None = None,
 ) -> ToolOutput:
     """Build a structured ToolOutput representing a failure."""
     result: dict = {"error": message}
@@ -111,6 +172,7 @@ def error_output(
         tool=tool,
         status=status,
         result=result,
-        evidence={},
+        evidence=evidence or {},
         confidence=confidence,
+        metadata=metadata or {},
     )

@@ -25,9 +25,12 @@ from pathlib import Path
 from fastapi import APIRouter, File, Form, UploadFile
 
 from app.common.http_utils import (
+    AOI_CRS_FORM_DESCRIPTION,
+    AOI_FORM_DESCRIPTION,
     InvalidFileError,
+    aoi_error_output,
+    aoi_metadata,
     error_output,
-    parse_aoi_geometry,
     read_upload_file,
     save_to_temp,
     validate_upload_ext,
@@ -37,7 +40,9 @@ from app.models.vlm_loader import (
     VLMUnavailableError,
     load_qwen_model,
 )
+from app.geospatial.raster_io import RasterError
 from app.schemas.common import ToolOutput
+from app.tools.roi_crop import RoiCropError
 from app.tools.vqa import VQAError, compute_vqa
 
 logger = logging.getLogger(__name__)
@@ -57,6 +62,9 @@ def _offline_vqa_output(
     filename: str,
     size_bytes: int,
     exc: VLMUnavailableError,
+    *,
+    aoi_geometry: str | None = None,
+    aoi_crs: str | None = None,
 ) -> ToolOutput:
     """Clearly-labeled offline placeholder when real VLM inference is unavailable.
 
@@ -91,6 +99,17 @@ def _offline_vqa_output(
             "offline": True,
             "reason": str(exc),
             "note": note,
+            "aoi": {
+                "aoiPresent": bool(aoi_geometry),
+                "aoiApplied": False,
+                "aoiStatus": "not_applied_offline_placeholder",
+                "aoiScope": None,
+                "reason": (
+                    "No image analysis was performed because the VLM is unavailable, "
+                    "so the AOI was not applied and no AOI-scoped answer exists."
+                ),
+            },
+            **aoi_metadata(None, aoi_geometry),
         },
     )
 
@@ -99,10 +118,8 @@ def _offline_vqa_output(
 async def vqa_endpoint(
     image: UploadFile = File(..., description="Input image (GeoTIFF, TIFF, PNG, or JPEG)"),
     question: str = Form(..., description="Question about the image (plain English)"),
-    aoi_geometry: str | None = Form(
-        default=None,
-        description="Optional JSON-stringified GeoJSON AOI scope (recorded in metadata only)",
-    ),
+    aoi_geometry: str | None = Form(default=None, description=AOI_FORM_DESCRIPTION),
+    aoi_crs: str | None = Form(default=None, description=AOI_CRS_FORM_DESCRIPTION),
 ):
     """Run Visual Question Answering on an uploaded image.
 
@@ -141,10 +158,21 @@ async def vqa_endpoint(
             tmp_path,
             question.strip(),
             adapter_path=VQA_ADAPTER_PATH,
+            aoi=aoi_geometry,
+            aoi_crs=aoi_crs,
         )
+    except RoiCropError as exc:
+        return aoi_error_output("vqa", exc, raw_aoi=aoi_geometry)
+    except RasterError as exc:
+        return error_output("vqa", str(exc), confidence=0.0)
     except VLMUnavailableError as exc:
         return _offline_vqa_output(
-            question.strip(), filename, len(content), exc
+            question.strip(),
+            filename,
+            len(content),
+            exc,
+            aoi_geometry=aoi_geometry,
+            aoi_crs=aoi_crs,
         )
     except VQAError as exc:
         return error_output("vqa", str(exc), confidence=0.0)
@@ -161,6 +189,7 @@ async def vqa_endpoint(
         result={
             "answer": result["answer"],
             "question": result["question"],
+            "aoi": result.get("aoi"),
         },
         evidence={
             "image": {"filename": filename},
@@ -172,7 +201,7 @@ async def vqa_endpoint(
             "size_bytes": len(content),
             "model": DEFAULT_VQA_MODEL,
             "adapter_used": _adapter_detected(),
-            **parse_aoi_geometry(aoi_geometry),
+            **aoi_metadata(result, aoi_geometry),
         },
     )
 

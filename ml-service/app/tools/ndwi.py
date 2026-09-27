@@ -21,6 +21,7 @@ from app.tools.band_utils import (
     resolve_band_indices,
 )
 from app.tools.index_utils import IndexStats, compute_nd_index, summarize_index
+from app.tools.roi_crop import aoi_scope, attach_aoi
 
 
 class NdwiError(Exception):
@@ -34,18 +35,42 @@ class NdwiInputError(NdwiError):
 def compute_ndwi(
     path: str | Path,
     band_overrides: dict[str, int] | None = None,
+    *,
+    aoi: Any = None,
+    aoi_crs: Any = None,
 ) -> dict[str, Any]:
-    """Compute NDWI for a raster file.
+    """Compute NDWI for a raster file, restricted to an AOI when one is given.
 
     Args:
         path: Path to the raster file.
         band_overrides: Optional explicit 1-based band indices, e.g.
             {"green": 3, "nir": 4}.
+        aoi: Optional GeoJSON Polygon/MultiPolygon (or JSON string) defining the
+            region of interest. When given, the raster is genuinely cropped and
+            polygon-masked before any band is read, so the statistics describe
+            only the AOI. When absent the whole scene is analyzed.
+        aoi_crs: Optional explicit CRS of the AOI coordinates. A bare GeoJSON
+            geometry follows RFC 7946 (WGS84) and the resolved CRS is reported
+            in ``result["aoi"]``.
 
     Returns:
-        A dict with index statistics, detected bands, and metadata.
+        A dict with index statistics, detected bands, AOI reporting and metadata.
+
+    Raises:
+        NdwiInputError: the raster or its band metadata cannot be used.
+        RoiCropError: the AOI is invalid, in a different/unusable CRS, does not
+            intersect the raster, or the raster cannot be georeferenced.
     """
-    path = Path(path)
+    with aoi_scope(path, aoi, aoi_crs=aoi_crs) as scope:
+        result = _compute_ndwi_index(scope.raster_path, band_overrides)
+    return attach_aoi(result, scope)
+
+
+def _compute_ndwi_index(
+    path: Path,
+    band_overrides: dict[str, int] | None,
+) -> dict[str, Any]:
+    """Compute NDWI statistics from a single raster (already AOI-scoped)."""
     try:
         metadata = read_metadata(path)
     except Exception as exc:

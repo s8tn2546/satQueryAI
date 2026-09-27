@@ -14,6 +14,7 @@ error which the API surfaces as a 'failed' ToolOutput with confidence 0.0.
 
 from __future__ import annotations
 
+from contextlib import ExitStack
 from pathlib import Path
 from typing import Any
 
@@ -31,6 +32,7 @@ from app.geospatial.raster_io import (
     read_metadata,
 )
 from app.tools.band_utils import build_valid_mask
+from app.tools.roi_crop import aoi_scope, attach_aoi_pair
 
 # Resampling for the (rare) reprojection path. NEAREST is chosen deliberately:
 # it never averages across nodata boundaries and never invents new values.
@@ -310,8 +312,15 @@ def compute_change(
     band: int | None = None,
     band_t1: int | None = None,
     band_t2: int | None = None,
+    aoi: Any = None,
+    aoi_crs: Any = None,
 ) -> dict[str, Any]:
     """Run bi-temporal change detection between two raster images.
+
+    When an AOI is supplied it is applied to *both* dates before any
+    compatibility check, alignment or differencing happens, so the comparison
+    covers exactly the same ground at both times and a change cannot be reported
+    from pixels outside the region of interest.
 
     Args:
         path1, path2: paths to the two input rasters (image1 = time 1).
@@ -319,11 +328,42 @@ def compute_change(
             deterministic 2-sigma default is used.
         band / band_t1 / band_t2: optional band selection (see
             _resolve_comparison_band).
+        aoi: optional GeoJSON Polygon/MultiPolygon (or JSON string) region of
+            interest, applied identically to both dates. When absent the full
+            scenes are compared.
+        aoi_crs: optional explicit CRS of the AOI coordinates. A bare GeoJSON
+            geometry follows RFC 7946 (WGS84); the resolved CRS is reported in
+            ``result["aoi"]``.
 
     Returns:
         A dict with change statistics and metadata. May raise ChangeError
-        subclasses for honest, unavoidable failures.
+        subclasses for honest, unavoidable failures, or RoiCropError subclasses
+        when the AOI cannot be applied to both inputs.
     """
+    with ExitStack() as stack:
+        scope1 = stack.enter_context(aoi_scope(path1, aoi, aoi_crs=aoi_crs))
+        scope2 = stack.enter_context(aoi_scope(path2, aoi, aoi_crs=aoi_crs))
+        result = _compute_change(
+            scope1.raster_path,
+            scope2.raster_path,
+            threshold=threshold,
+            band=band,
+            band_t1=band_t1,
+            band_t2=band_t2,
+        )
+    return attach_aoi_pair(result, scope1, scope2)
+
+
+def _compute_change(
+    path1: str | Path,
+    path2: str | Path,
+    *,
+    threshold: float | None = None,
+    band: int | None = None,
+    band_t1: int | None = None,
+    band_t2: int | None = None,
+) -> dict[str, Any]:
+    """Run change detection on two already AOI-scoped rasters."""
     p1, p2 = Path(path1), Path(path2)
 
     try:
