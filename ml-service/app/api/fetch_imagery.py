@@ -17,6 +17,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends
 
+from app.common.safe_errors import safe_error
 from app.schemas.common import ToolOutput
 from app.schemas.requests import FetchImageryRequest
 from app.services.gee_client import (
@@ -62,18 +63,19 @@ async def fetch_imagery_endpoint(
             preferred_date=request.preferred_date,
         )
     except FetchValidationError as exc:
-        return _failure(str(exc))
+        return _failure(safe_error(exc))
     except FetchNoImageError as exc:
-        return _failure(str(exc))
+        return _failure(safe_error(exc))
     except (GeeClientError,) as exc:
         return _failure(
-            "Imagery acquisition could not use real GEE data: " + str(exc)
+            "Imagery acquisition could not use real GEE data: "
+            + safe_error(exc, fallback="GEE is unavailable.")
         )
     except FetchImageryError as exc:
-        return _failure(str(exc))
+        return _failure(safe_error(exc))
     except Exception as exc:  # pragma: no cover - defensive
         logger.error("fetch-imagery failed unexpectedly: %s", exc)
-        return _failure(f"Internal fetch-imagery error: {exc}")
+        return _failure(f"Internal fetch-imagery error: {safe_error(exc)}")
 
     source = result.get("source", "unknown")
     return ToolOutput(

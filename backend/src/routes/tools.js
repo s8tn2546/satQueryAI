@@ -8,7 +8,8 @@ router.get('/', async (req, res) => {
     const tools = await ToolRegistry.find();
     return res.status(200).json(tools);
   } catch (error) {
-    return res.status(500).json({ status: 'failed', error: error.message });
+    console.error('[Tools] Error listing tools:', error);
+    return res.status(500).json({ status: 'failed', error: 'An internal error occurred while listing tools.' });
   }
 });
 

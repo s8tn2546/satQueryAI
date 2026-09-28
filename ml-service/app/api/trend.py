@@ -16,6 +16,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends
 
+from app.common.safe_errors import safe_error
 from app.schemas.common import ToolOutput
 from app.schemas.requests import TrendRequest
 from app.services.gee_client import (
@@ -63,18 +64,19 @@ async def trend_endpoint(
             aoi_crs=request.aoi_crs,
         )
     except TrendValidationError as exc:
-        return _failure(str(exc))
+        return _failure(safe_error(exc))
     except (GeeClientError,) as exc:
         return _failure(
-            "Historical trend could not use real GEE data: " + str(exc)
+            "Historical trend could not use real GEE data: "
+            + safe_error(exc, fallback="GEE is unavailable.")
         )
     except TrendComputationError as exc:
-        return _failure(str(exc))
+        return _failure(safe_error(exc))
     except TrendError as exc:
-        return _failure(str(exc))
+        return _failure(safe_error(exc))
     except Exception as exc:  # pragma: no cover - defensive
         logger.error("Trend computation failed unexpectedly: %s", exc)
-        return _failure(f"Internal trend error: {exc}")
+        return _failure(f"Internal trend error: {safe_error(exc)}")
 
     source = result.get("source", "unknown")
     aoi_scope = result.get("aoiScope", {})

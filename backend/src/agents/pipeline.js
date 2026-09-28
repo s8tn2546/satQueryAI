@@ -98,8 +98,27 @@ function emitStage(options, stage, detail) {
   }
 }
 
+/**
+ * Stringify request parameters for the execution trace without unbounded size.
+ * Parameters are user-supplied and can be arbitrarily large; a trace entry must
+ * never balloon storage with attacker-controlled text.
+ */
+const MAX_PARAM_TRACE_LENGTH = 1000;
+
+function summarizeParameters(parameters) {
+  let text;
+  try {
+    text = JSON.stringify(parameters ?? {});
+  } catch {
+    text = String(parameters ?? {});
+  }
+  if (text.length <= MAX_PARAM_TRACE_LENGTH) return text;
+  return `${text.slice(0, MAX_PARAM_TRACE_LENGTH)}… (${text.length} chars, truncated)`;
+}
+
 export async function runAgentPipeline(queryText, imageRefIds, parameters = {}, options = {}) {
   const sessionId = normalizeSessionId(options?.sessionId);
+  const ownerId = options?.userId || null;
   const trace = [];
   
   const sanitizedRefs = sanitizeImageRefs(imageRefIds);
@@ -111,8 +130,8 @@ export async function runAgentPipeline(queryText, imageRefIds, parameters = {}, 
     try {
       tiles = await Tile.find({ _id: { $in: sanitizedRefs } });
     } catch (err) {
-      console.error('[Pipeline] Failed to fetch tiles:', err.message);
-      trace.push(makeTraceEntry('tile_fetch_error', `Could not fetch images: ${err.message}`));
+      console.error('[Pipeline] Failed to fetch tiles:', err?.message || err);
+      trace.push(makeTraceEntry('tile_fetch_error', 'Could not fetch the requested images from the store.'));
     }
   }
   emitStage(options, 'acquiring_data', `Acquired ${tiles.length} of ${sanitizedRefs.length} requested image(s)`);
@@ -133,6 +152,7 @@ export async function runAgentPipeline(queryText, imageRefIds, parameters = {}, 
         queryText,
         inputRefs: sanitizedRefs,
         sessionId,
+        userId: ownerId,
         taskType: 'VQA',
         toolsInvoked: [],
         toolResults: [],
@@ -166,6 +186,7 @@ export async function runAgentPipeline(queryText, imageRefIds, parameters = {}, 
         queryText,
         inputRefs: sanitizedRefs,
         sessionId,
+        userId: ownerId,
         taskType: resolvedTaskType,
         toolsInvoked: [],
         toolResults: [],
@@ -188,7 +209,7 @@ export async function runAgentPipeline(queryText, imageRefIds, parameters = {}, 
   const tools = await planTools(resolvedTaskType, toolNames, trace);
   const plan = tools.plan || null;
 
-  trace.push(makeTraceEntry('parameter_extraction', `Parameters: ${JSON.stringify(mergedParams)}`));
+  trace.push(makeTraceEntry('parameter_extraction', `Parameters: ${summarizeParameters(mergedParams)}`));
 
   emitStage(options, 'planning', `Planning tools: ${tools.map(t => t.name).join(', ')}`);
   emitStage(options, 'running_analysis', `Running analysis with: ${tools.map(t => t.name).join(', ')}`);
@@ -206,6 +227,7 @@ export async function runAgentPipeline(queryText, imageRefIds, parameters = {}, 
         queryText,
         inputRefs: sanitizedRefs,
         sessionId,
+        userId: ownerId,
         taskType: resolvedTaskType,
         toolsInvoked: tools.map(t => t.name),
         toolResults: [],
@@ -240,6 +262,7 @@ export async function runAgentPipeline(queryText, imageRefIds, parameters = {}, 
         queryText,
         inputRefs: sanitizedRefs,
         sessionId,
+        userId: ownerId,
         taskType: resolvedTaskType,
         toolsInvoked: tools.map(t => t.name),
         toolResults: persistedToolResults,
@@ -313,6 +336,7 @@ export async function runAgentPipeline(queryText, imageRefIds, parameters = {}, 
       queryText,
       inputRefs: sanitizedRefs,
       sessionId,
+      userId: ownerId,
       taskType: resolvedTaskType,
       toolsInvoked: tools.map(t => t.name),
       toolResults: persistedToolResults,

@@ -2,6 +2,7 @@ import express from 'express';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import User from '../models/User.js';
+import { resolveJwtSecret } from '../config.js';
 
 const router = express.Router();
 
@@ -43,7 +44,7 @@ router.post('/register', async (req, res) => {
 
     const token = jwt.sign(
       { userId: user._id, email: user.email },
-      process.env.JWT_SECRET || 'default-dev-secret',
+      resolveJwtSecret(),
       { expiresIn: '7d' }
     );
 
@@ -94,7 +95,7 @@ router.post('/login', async (req, res) => {
 
     const token = jwt.sign(
       { userId: user._id, email: user.email },
-      process.env.JWT_SECRET || 'default-dev-secret',
+      resolveJwtSecret(),
       { expiresIn: '7d' }
     );
 

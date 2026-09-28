@@ -3,6 +3,7 @@ import mongoose from 'mongoose';
 import fs from 'fs';
 import path from 'path';
 import Tile from '../models/Tile.js';
+import { publicTile } from '../utils/publicTile.js';
 
 const router = express.Router();
 
@@ -14,51 +15,6 @@ const CONTENT_TYPES = {
 };
 
 const BROWSER_RENDERABLE = new Set(['png', 'jpeg']);
-
-/**
- * Public view of a tile for the Evidence UI. Never exposes the on-disk
- * filePath (server-internal); conveys only what the UI needs to render the
- * source imagery and label it correctly.
- */
-function publicTile(tile) {
-  const storedFile = typeof tile.filePath === 'string'
-    && tile.filePath.length > 0
-    && tile.filePath !== 'mock-no-file'
-    && fs.existsSync(tile.filePath)
-    && fs.statSync(tile.filePath).isFile();
-  const previews = (tile.previews && typeof tile.previews === 'object') ? tile.previews : {};
-  const previewPng = previews.png;
-  const hasPreview = typeof previewPng === 'string'
-    && previewPng.length > 0
-    && fs.existsSync(previewPng)
-    && fs.statSync(previewPng).isFile();
-  return {
-    _id: tile._id,
-    source: tile.source,
-    modality: tile.modality,
-    format: tile.format,
-    captureDate: tile.captureDate,
-    crs: tile.crs,
-    resolution: tile.resolution,
-    bands: tile.bands || [],
-    validated: tile.validated,
-    boundingBox: tile.boundingBox || null,
-    validationDetails: tile.validationDetails || {},
-    provider: tile.provider || null,
-    sceneId: tile.sceneId || null,
-    collection: tile.collection || null,
-    dedupeKey: tile.dedupeKey || null,
-    previews: {
-      png: hasPreview,
-      channels: previews.channels || null,
-      stretch: previews.stretch || null
-    },
-    metadata: tile.metadata || {},
-    storedFile: Boolean(storedFile),
-    hasPreview,
-    renderable: (Boolean(storedFile) && BROWSER_RENDERABLE.has(tile.format)) || hasPreview
-  };
-}
 
 /**
  * GET /api/tiles/:id

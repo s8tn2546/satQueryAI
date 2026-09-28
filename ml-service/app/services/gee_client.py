@@ -21,6 +21,8 @@ import os
 from abc import ABC, abstractmethod
 from typing import Any
 
+from app.common.safe_errors import safe_error
+
 logger = logging.getLogger(__name__)
 
 
@@ -174,8 +176,7 @@ class RealGeeProvider(GeeProvider):
                 raise GeeAuthError(
                     "GEE credentials are not configured. Set GEE_PROJECT_ID, "
                     "GEE_SERVICE_ACCOUNT and GEE_SERVICE_ACCOUNT_KEY_PATH (or run "
-                    "'earthengine authenticate') before requesting real GEE data. "
-                    "No authentication attempted error: " + str(exc)
+                    "'earthengine authenticate') before requesting real GEE data."
                 ) from exc
         else:
             key_path = self._credentials.get("GEE_SERVICE_ACCOUNT_KEY_PATH", "")
@@ -202,7 +203,8 @@ class RealGeeProvider(GeeProvider):
                 ee.Initialize(credentials, project=project)
             except Exception as exc:
                 raise GeeAuthError(
-                    f"GEE initialisation (service-account) failed: {exc}"
+                    "GEE initialisation (service-account) failed: "
+                    + safe_error(exc, fallback="GEE is unavailable.")
                 ) from exc
         self._initialised = True
 
@@ -421,19 +423,37 @@ class RealGeeProvider(GeeProvider):
                 "provider_warnings": [],
             }
         except GeeClientError:
-            raise
+                raise
         except Exception as exc:  # defensive: never fabricate on a query/export error
             logger.error("GEE fetch_pair failed: %s", exc)
-            raise GeeQueryError(f"GEE fetch/imager query or export failed: {exc}") from exc
+            raise GeeQueryError(
+                "GEE fetch/imager query or export failed: "
+                + safe_error(exc, fallback="GEE is unavailable.")
+            ) from exc
 
     def _download_pair(self, ee, geometry, s2_image, s1_image) -> tuple[str, str]:
-        """Export both ee images to local GeoTIFFs; return their paths."""
+        """Export both ee images to local GeoTIFFs; return their paths.
+
+        Downloads are authenticated (Bearer token attached to the HTTP request),
+        so no anonymous asset access is attempted. On macOS/Linux this uses
+        ``urllib.request``; the fetched files are intentionally short-lived
+        (operators should clean up the acquisitions directory periodically).
+        """
         import tempfile
 
-        try:
+        def _download(url: str, dest: str, token: str | None) -> None:
             import urllib.request
-        except Exception as exc:  # pragma: no cover
-            raise GeeUnavailableError(f"urllib unavailable: {exc}") from exc
+
+            if token:
+                # urlretrieve cannot send headers; use an explicit Request so the
+                # GEE OAuth Bearer token actually reaches the download endpoint.
+                req = urllib.request.Request(
+                    url, headers={"Authorization": f"Bearer {token}"}
+                )
+                with urllib.request.urlopen(req) as resp, open(dest, "wb") as fh:
+                    fh.write(resp.read())
+            else:
+                urllib.request.urlretrieve(url, dest)
 
         creds = self._credentials
         # Only authenticated REST downloads are supported (no anonymous tiles).
@@ -455,14 +475,14 @@ class RealGeeProvider(GeeProvider):
             tmpdir = tempfile.mkdtemp(prefix="satquery_fetch_")
             s2_path = os.path.join(tmpdir, "sentinel2.tif")
             s1_path = os.path.join(tmpdir, "sentinel1.tif")
-            req_headers = {"Authorization": f"Bearer {token}"} if token else {}
-            urllib.request.urlretrieve(
-                s2_url, s2_path, data=None
-            )
-            urllib.request.urlretrieve(s1_url, s1_path, data=None)
+            _download(s2_url, s2_path, token)
+            _download(s1_url, s1_path, token)
             return s2_path, s1_path
         except Exception as exc:
-            raise GeeQueryError(f"GEE download/export failed: {exc}") from exc
+            raise GeeQueryError(
+                "GEE download/export failed: "
+                + safe_error(exc, fallback="The imagery could not be downloaded.")
+            ) from exc
 
     def _access_token(self) -> str | None:
         """Return an OAuth access token for the configured credentials, if any."""

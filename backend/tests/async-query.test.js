@@ -57,12 +57,14 @@ async function waitForStatus(jobId, desired, authorization) {
 }
 
 beforeAll(async () => {
+  process.env.JWT_SECRET = 'test-jwt-secret-for-async';
   mongoServer = await MongoMemoryServer.create();
   await mongoose.connect(mongoServer.getUri());
   await seedTools();
 });
 
 afterAll(async () => {
+  delete process.env.JWT_SECRET;
   await mongoose.disconnect();
   await mongoServer.stop();
 });
@@ -376,7 +378,7 @@ describe('Async Query Execution (Phase 19)', () => {
       const tile = await createTile();
       const alice = await User.create({ name: 'Alice', email: 'alice@example.com', passwordHash: 'x' });
       const bob = await User.create({ name: 'Bob', email: 'bob@example.com', passwordHash: 'x' });
-      const secret = process.env.JWT_SECRET || 'default-dev-secret';
+      const secret = process.env.JWT_SECRET;
       const aliceToken = jwt.sign({ userId: alice._id.toString() }, secret);
       const bobToken = jwt.sign({ userId: bob._id.toString() }, secret);
 

@@ -28,6 +28,7 @@ from app.common.http_utils import (
     save_to_temp,
     validate_upload_ext,
 )
+from app.common.safe_errors import safe_error
 from app.geospatial.raster_io import RasterError
 from app.schemas.common import ToolOutput
 from app.tools.fusion import (
@@ -160,7 +161,7 @@ async def optical_sar_endpoint(
         content_opt = await read_upload_file(optical_image)
         content_sar = await read_upload_file(sar_image)
     except InvalidFileError as exc:
-        return error_output("optical-sar", str(exc), confidence=0.0)
+        return error_output("optical-sar", safe_error(exc), confidence=0.0)
 
     tmp_opt: Path | None = None
     tmp_sar: Path | None = None
@@ -186,24 +187,24 @@ async def optical_sar_endpoint(
     except RoiCropError as exc:
         return aoi_error_output("optical-sar", exc, raw_aoi=aoi_geometry)
     except RasterError as exc:
-        return error_output("optical-sar", str(exc), confidence=0.0)
+        return error_output("optical-sar", safe_error(exc), confidence=0.0)
     except FusionValidationError as exc:
         return error_output(
             "optical-sar",
-            str(exc),
+            safe_error(exc),
             confidence=0.0,
         )
     except FusionError as exc:
         return error_output(
             "optical-sar",
-            f"Fusion could not be completed: {exc}",
+            f"Fusion could not be completed: {safe_error(exc)}",
             confidence=0.0,
         )
     except Exception as exc:
         logger.error("Optical/SAR fusion failed unexpectedly: %s", exc)
         return error_output(
             "optical-sar",
-            f"Internal optical/SAR fusion error: {exc}",
+            f"Internal optical/SAR fusion error: {safe_error(exc)}",
             confidence=0.0,
         )
     finally:

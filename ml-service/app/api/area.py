@@ -23,6 +23,7 @@ from app.common.http_utils import (
     save_to_temp,
     validate_upload_ext,
 )
+from app.common.safe_errors import safe_error
 from app.geospatial.raster_io import RasterError
 from app.schemas.common import ToolOutput
 from app.tools.area import AreaInputError, compute_area
@@ -57,7 +58,7 @@ async def area_endpoint(
     try:
         content = await read_upload_file(file)
     except InvalidFileError as exc:
-        return error_output("area", str(exc))
+        return error_output("area", safe_error(exc))
 
     tmp_path: Path | None = None
     try:
@@ -71,12 +72,12 @@ async def area_endpoint(
     except RoiCropError as exc:
         return aoi_error_output("area", exc, raw_aoi=aoi_geometry)
     except RasterError as exc:
-        return error_output("area", str(exc))
+        return error_output("area", safe_error(exc))
     except AreaInputError as exc:
-        return error_output("area", str(exc))
+        return error_output("area", safe_error(exc))
     except Exception as exc:
         logger.error("Area computation failed unexpectedly: %s", exc)
-        return error_output("area", f"Internal area computation error: {exc}")
+        return error_output("area", f"Internal area computation error: {safe_error(exc)}")
     finally:
         if tmp_path is not None:
             tmp_path.unlink(missing_ok=True)

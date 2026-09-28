@@ -24,6 +24,7 @@ from app.common.http_utils import (
     save_to_temp,
     validate_upload_ext,
 )
+from app.common.safe_errors import safe_error
 from app.geospatial.raster_io import RasterError
 from app.schemas.common import ToolOutput
 from app.tools.change import (
@@ -93,7 +94,7 @@ async def change_endpoint(
         content1 = await read_upload_file(image1)
         content2 = await read_upload_file(image2)
     except InvalidFileError as exc:
-        return error_output("change", str(exc), confidence=0.0)
+        return error_output("change", safe_error(exc), confidence=0.0)
 
     tmp1: Path | None = None
     tmp2: Path | None = None
@@ -113,24 +114,24 @@ async def change_endpoint(
     except RoiCropError as exc:
         return aoi_error_output("change", exc, raw_aoi=aoi_geometry)
     except RasterError as exc:
-        return error_output("change", str(exc), confidence=0.0)
+        return error_output("change", safe_error(exc), confidence=0.0)
     except ChangeValidationError as exc:
         return error_output(
             "change",
-            str(exc),
+            safe_error(exc),
             confidence=0.0,
         )
     except ChangeError as exc:
         return error_output(
             "change",
-            f"Change detection could not be completed: {exc}",
+            f"Change detection could not be completed: {safe_error(exc)}",
             confidence=0.0,
         )
     except Exception as exc:
         logger.error("Change detection failed unexpectedly: %s", exc)
         return error_output(
             "change",
-            f"Internal change-detection error: {exc}",
+            f"Internal change-detection error: {safe_error(exc)}",
             confidence=0.0,
         )
     finally:

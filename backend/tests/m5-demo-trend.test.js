@@ -371,7 +371,8 @@ describe('M5 §15.5a — E2E fetch-by-region -> full /api/query pipeline', () =>
     // ---- 2. full query through the normal agent pipeline ----
     const queryRes = await request(app).post('/api/query').send({
       queryText: 'Calculate the NDVI of the fetched region',
-      imageRefs: [tileId]
+      imageRefs: [tileId],
+      sessionId: 'm5-e2e'
     });
 
     expect(queryRes.status).toBe(200);
@@ -384,7 +385,7 @@ describe('M5 §15.5a — E2E fetch-by-region -> full /api/query pipeline', () =>
     expect(queryRes.body.evidence.images).toContain(tileId);
 
     // ---- 3. query persistence -> history and report ----
-    const historyRes = await request(app).get('/api/query/history');
+    const historyRes = await request(app).get('/api/query/history').query({ sessionId: 'm5-e2e' });
     expect(historyRes.status).toBe(200);
     expect(historyRes.body.some(q => String(q._id) === queryRes.body._id)).toBe(true);
 

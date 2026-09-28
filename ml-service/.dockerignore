@@ -1,0 +1,33 @@
+# Python cache / build artifacts
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.venv/
+venv/
+*.egg-info/
+
+# Local secrets / config — never baked into an image
+.env
+.env.*
+!*.example
+
+# Test fixtures & generated imagery (large, non-runtime)
+tests/
+test_*.tif
+*.tif
+*.tiff
+*.png
+*.jpg
+*.jpeg
+
+# Docs and scratch
+*.md
+.DS_Store
+.git/
+
+# Adaptation / training outputs may be large; operators mount them at runtime
+adaptation/
+scripts/
+requirements-training.txt
+requirements-dev.txt

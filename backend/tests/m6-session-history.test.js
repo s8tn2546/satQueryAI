@@ -104,9 +104,10 @@ describe('Agent M6 — Session-Scoped Query History', () => {
     expect(scoped.body).toHaveLength(1);
     expect(scoped.body[0].sessionId).toBe('sess-gamma');
 
+    // Anonymous callers must scope by sessionId; an unscoped lookup no longer
+    // dumps unrelated tenants' history (Phase 20 ownership hardening).
     const unscoped = await request(app).get('/api/query/history');
-    expect(unscoped.status).toBe(200);
-    expect(unscoped.body).toHaveLength(2);
+    expect(unscoped.status).toBe(400);
   });
 
   test('rejects a non-string sessionId with the 400 rejected shape', async () => {
@@ -119,7 +120,9 @@ describe('Agent M6 — Session-Scoped Query History', () => {
     expect(res.body.status).toBe('rejected');
     expect(res.body.answerText).toContain('sessionId');
 
-    const history = await request(app).get('/api/query/history');
+    // Same scoping contract as above: anonymous history lookups need a sessionId.
+    const history = await request(app).get('/api/query/history').query({ sessionId: 'anything' });
+    expect(history.status).toBe(200);
     expect(history.body).toHaveLength(0);
   });
 

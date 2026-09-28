@@ -26,6 +26,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, File, Form, UploadFile
 
+from app.common.safe_errors import safe_error
 from app.common.http_utils import (
     AOI_CRS_FORM_DESCRIPTION,
     AOI_FORM_DESCRIPTION,
@@ -41,6 +42,7 @@ from app.common.http_utils import (
 from app.models.vlm_loader import (
     DEFAULT_VQA_MODEL,
     VLMUnavailableError,
+    adapter_in_use,
     load_qwen_model,
 )
 from app.geospatial.raster_io import RasterError
@@ -53,11 +55,6 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 VQA_ADAPTER_PATH = os.environ.get("VQA_ADAPTER_PATH")
-
-
-def _adapter_detected() -> bool:
-    """True only if a LoRA adapter is configured AND present on disk."""
-    return bool(VQA_ADAPTER_PATH) and Path(VQA_ADAPTER_PATH).exists()
 
 
 def _offline_vqa_output(
@@ -100,7 +97,7 @@ def _offline_vqa_output(
             "adapter_used": False,
             "mock": True,
             "offline": True,
-            "reason": str(exc),
+            "reason": safe_error(exc, fallback="The VLM is unavailable."),
             "note": note,
             "aoi": {
                 "aoiPresent": bool(aoi_geometry),
@@ -152,7 +149,7 @@ async def vqa_endpoint(
     try:
         content = await read_upload_file(image)
     except InvalidFileError as exc:
-        return error_output("vqa", str(exc), confidence=0.0)
+        return error_output("vqa", safe_error(exc), confidence=0.0)
 
     tmp_path: Path | None = None
     try:
@@ -173,7 +170,7 @@ async def vqa_endpoint(
     except RoiCropError as exc:
         return aoi_error_output("vqa", exc, raw_aoi=aoi_geometry)
     except RasterError as exc:
-        return error_output("vqa", str(exc), confidence=0.0)
+        return error_output("vqa", safe_error(exc), confidence=0.0)
     except VLMUnavailableError as exc:
         return _offline_vqa_output(
             question.strip(),
@@ -184,10 +181,10 @@ async def vqa_endpoint(
             aoi_crs=aoi_crs,
         )
     except VQAError as exc:
-        return error_output("vqa", str(exc), confidence=0.0)
+        return error_output("vqa", safe_error(exc), confidence=0.0)
     except Exception as exc:
         logger.error("Unexpected VQA error: %s", exc, exc_info=True)
-        return error_output("vqa", f"Internal error: {exc}", confidence=0.0)
+        return error_output("vqa", f"Internal error: {safe_error(exc)}", confidence=0.0)
     finally:
         if tmp_path is not None:
             tmp_path.unlink(missing_ok=True)
@@ -209,7 +206,7 @@ async def vqa_endpoint(
             "filename": filename,
             "size_bytes": len(content),
             "model": DEFAULT_VQA_MODEL,
-            "adapter_used": _adapter_detected(),
+            "adapter_used": adapter_in_use(DEFAULT_VQA_MODEL, VQA_ADAPTER_PATH),
             **spatial_metadata(result),
             **aoi_metadata(result, aoi_geometry),
         },
@@ -248,14 +245,14 @@ async def vlm_warmup():
         return {
             "status": "ok",
             "model": DEFAULT_VQA_MODEL,
-            "adapter_path": VQA_ADAPTER_PATH,
+            "adapter_configured": bool(VQA_ADAPTER_PATH),
             "adapter_active": isinstance(model, PeftModel),
             "load_seconds": vqa_load_s,
             "caption_model": DEFAULT_CAPTION_MODEL,
             "caption_load_seconds": caption_load_s,
         }
     except VLMUnavailableError as exc:
-        return {"status": "unavailable", "reason": str(exc)}
+        return {"status": "unavailable", "reason": safe_error(exc, fallback="The VLM is unavailable.")}
     except Exception as exc:  # noqa: BLE001 - surface, do not crash warmup
         logger.error("VLM warmup failed: %s", exc, exc_info=True)
-        return {"status": "unavailable", "reason": str(exc)}
+        return {"status": "unavailable", "reason": safe_error(exc, fallback="The VLM is unavailable.")}

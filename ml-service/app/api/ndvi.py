@@ -23,6 +23,7 @@ from app.common.http_utils import (
     save_to_temp,
     validate_upload_ext,
 )
+from app.common.safe_errors import safe_error
 from app.geospatial.raster_io import RasterError
 from app.schemas.common import ToolOutput
 from app.tools.ndvi import NdvInputError, compute_ndvi
@@ -61,7 +62,7 @@ async def ndvi_endpoint(
     try:
         content = await read_upload_file(file)
     except InvalidFileError as exc:
-        return error_output("ndvi", str(exc))
+        return error_output("ndvi", safe_error(exc))
 
     band_overrides = None
     if red_band is not None or nir_band is not None:
@@ -79,12 +80,12 @@ async def ndvi_endpoint(
     except RoiCropError as exc:
         return aoi_error_output("ndvi", exc, raw_aoi=aoi_geometry)
     except RasterError as exc:
-        return error_output("ndvi", str(exc))
+        return error_output("ndvi", safe_error(exc))
     except NdvInputError as exc:
-        return error_output("ndvi", str(exc))
+        return error_output("ndvi", safe_error(exc))
     except Exception as exc:
         logger.error("NDVI computation failed unexpectedly: %s", exc)
-        return error_output("ndvi", f"Internal NDVI computation error: {exc}")
+        return error_output("ndvi", f"Internal NDVI computation error: {safe_error(exc)}")
     finally:
         if tmp_path is not None:
             tmp_path.unlink(missing_ok=True)

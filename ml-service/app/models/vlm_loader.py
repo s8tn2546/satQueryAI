@@ -181,6 +181,25 @@ def load_qwen_model(model_name: str = DEFAULT_MODEL, adapter_path: str | None = 
         return model, processor
 
 
+def adapter_in_use(model_name: str, adapter_path: str | None) -> bool:
+    """True only when the *loaded* model actually applied the LoRA adapter.
+
+    Unlike checking that an adapter path exists on disk, this reflects the
+    instance that inference really used: a missing or failed adapter load
+    reports ``False`` even when a path is configured.
+    """
+    cache_key = f"qwen:{model_name}:{adapter_path or 'base'}"
+    cached = _MODEL_CACHE.get(cache_key)
+    if cached is None:
+        return False
+    model, _ = cached
+    try:
+        from peft import PeftModel
+    except ImportError:
+        return False
+    return isinstance(model, PeftModel)
+
+
 CAPTION_PROMPT = (
     "Describe this satellite image for an Earth-observation analyst.\n"
     "Organise your answer under these headings, and keep each to one or two sentences:\n"

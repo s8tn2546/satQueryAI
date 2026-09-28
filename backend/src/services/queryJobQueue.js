@@ -78,6 +78,7 @@ async function runJob(jobId) {
         sessionId: job.sessionId || undefined
       },
       {
+        userId: job.userId || null,
         stageSink: stage => {
           QueryJob.updateOne({ jobId }, { $set: { stage } }).catch(err =>
             console.error('[QueryJobQueue] Stage update failed:', err?.message || err)

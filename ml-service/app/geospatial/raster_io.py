@@ -20,6 +20,8 @@ from rasterio.errors import NotGeoreferencedWarning
 from rasterio.io import MemoryFile
 from rasterio.transform import Affine
 
+from app.common.safe_errors import safe_error
+
 logger = logging.getLogger(__name__)
 
 SUPPORTED_RASTER_EXTENSIONS = {".tif", ".tiff", ".geotiff", ".png", ".jpeg", ".jpg"}
@@ -323,7 +325,7 @@ def classify_raster(path: str | Path) -> dict[str, Any]:
         return {
             "integrity": INTEGRITY_INVALID,
             "isGeoreferenced": None,
-            "reason": str(exc),
+            "reason": safe_error(exc, fallback="The file could not be read."),
         }
 
     if width <= 0 or height <= 0:

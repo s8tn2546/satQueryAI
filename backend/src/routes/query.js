@@ -150,7 +150,7 @@ router.post('/', async (req, res) => {
       return res.status(202).json({ jobId, jobStatus: 'queued', stage: 'queued' });
     }
 
-    const result = await executeQueryRequest(req.body);
+    const result = await executeQueryRequest(req.body, { userId: req.user?._id || null });
     if (!result.ok) {
       return res.status(result.httpStatus).json(result.response);
     }
@@ -383,14 +383,47 @@ router.post('/trend', async (req, res) => {
 });
 
 /**
+ * Load a Query document subject to ownership. Anonymous documents (userId null)
+ * keep the repository convention that possession of the unguessable id is the
+ * credential; authenticated documents are only readable by their owner, and a
+ * non-owner is answered with a plain 404 so cross-tenant existence is not
+ * disclosed.
+ */
+async function loadOwnedQuery(id, req) {
+  if (!mongoose.isValidObjectId(id)) return { error: 400 };
+  const queryDoc = await Query.findById(id);
+  if (!queryDoc) return { error: 404 };
+  if (queryDoc.userId && (!req.user || String(queryDoc.userId) !== String(req.user._id))) {
+    return { error: 404 };
+  }
+  return { queryDoc };
+}
+
+/**
  * GET /api/query/history
+ * Authenticated callers list their own queries (optionally scoped to a
+ * sessionId). Anonymous callers MUST supply a sessionId and only ever see that
+ * session's anonymous queries — never an unscoped dump of other tenants.'
+ * history.
  */
 router.get('/history', async (req, res) => {
   try {
     const sessionId = typeof req.query.sessionId === 'string' ? req.query.sessionId.trim().slice(0, 128) : '';
     const limitRaw = Number.parseInt(req.query.limit, 10);
     const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(limitRaw, 1), 500) : 50;
-    const filter = sessionId ? { sessionId } : {};
+
+    const authenticated = req.user && !req.isAnonymous;
+    if (!authenticated && !sessionId) {
+      return res.status(400).json({
+        status: 'rejected',
+        error: 'A sessionId is required when listing history anonymously. Authenticated users may omit it.'
+      });
+    }
+
+    const filter = authenticated
+      ? { userId: req.user._id, ...(sessionId ? { sessionId } : {}) }
+      : { sessionId, userId: null };
+
     const queries = await Query.find(filter).sort({ createdAt: -1 }).limit(limit);
     return res.status(200).json(queries);
   } catch (error) {
@@ -449,10 +482,10 @@ router.get('/status/:jobId', async (req, res) => {
  */
 router.get('/:id/report', async (req, res) => {
   try {
-    if (!mongoose.isValidObjectId(req.params.id)) {
+    const { error, queryDoc } = await loadOwnedQuery(req.params.id, req);
+    if (error === 400) {
       return res.status(400).json({ status: 'failed', error: 'Invalid query id format.' });
     }
-    const queryDoc = await Query.findById(req.params.id);
     if (!queryDoc) {
       return res.status(404).json({ status: 'failed', error: 'Query not found' });
     }
@@ -483,10 +516,10 @@ router.get('/:id/report', async (req, res) => {
  */
 router.get('/:id', async (req, res) => {
   try {
-    if (!mongoose.isValidObjectId(req.params.id)) {
+    const { error, queryDoc } = await loadOwnedQuery(req.params.id, req);
+    if (error === 400) {
       return res.status(400).json({ status: 'failed', error: 'Invalid query id format.' });
     }
-    const queryDoc = await Query.findById(req.params.id);
     if (!queryDoc) {
       return res.status(404).json({ status: 'failed', error: 'Query not found' });
     }

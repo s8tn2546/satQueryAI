@@ -13,6 +13,13 @@ export const connectDB = async () => {
     await seedTools();
     return conn;
   } catch (error) {
+    if (process.env.NODE_ENV === 'production') {
+      // In production an in-memory substitute would silently turn durable
+      // queries/tiles into throwaway data. Failing fast is the only honest
+      // behavior.
+      console.error(`[MongoDB] Primary connection failed in production (${error.message}); exiting. No in-memory fallback in production.`);
+      process.exit(1);
+    }
     console.warn(`[MongoDB] Primary connection failed (${error.message}). Starting in-memory Mongo server fallback...`);
     await mongoose.disconnect();
     try {

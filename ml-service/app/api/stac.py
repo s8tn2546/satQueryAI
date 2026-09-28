@@ -23,6 +23,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends
 
+from app.common.safe_errors import safe_error
 from app.schemas.common import ToolOutput
 from app.schemas.requests import StacIngestRequest, StacSearchRequest
 from app.services.satellite_provider import (
@@ -80,10 +81,10 @@ async def stac_search_endpoint(
         )
     except (StacToolError, SatelliteProviderError) as exc:
         logger.warning("stac-search failed: %s", exc)
-        return _failure("stac-search", str(exc))
+        return _failure("stac-search", safe_error(exc))
     except Exception as exc:  # pragma: no cover - defensive
         logger.error("stac-search failed unexpectedly: %s", exc)
-        return _failure("stac-search", f"Internal stac-search error: {exc}")
+        return _failure("stac-search", f"Internal stac-search error: {safe_error(exc)}")
 
     return ToolOutput(
         tool="stac-search",
@@ -130,10 +131,10 @@ async def stac_ingest_endpoint(
         )
     except (StacToolError, SatelliteProviderError) as exc:
         logger.warning("stac-ingest failed: %s", exc)
-        return _failure("stac-ingest", str(exc))
+        return _failure("stac-ingest", safe_error(exc))
     except Exception as exc:  # pragma: no cover - defensive
         logger.error("stac-ingest failed unexpectedly: %s", exc)
-        return _failure("stac-ingest", f"Internal stac-ingest error: {exc}")
+        return _failure("stac-ingest", f"Internal stac-ingest error: {safe_error(exc)}")
 
     return ToolOutput(
         tool="stac-ingest",

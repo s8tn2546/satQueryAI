@@ -132,7 +132,8 @@ describe('Milestone 4 — E2E tool transport (full API → agent → ML → DB p
       .post('/api/query')
       .send({
         queryText: 'How did the built-up area change between these two images?',
-        imageRefs: [t1._id.toString(), t2._id.toString()]
+        imageRefs: [t1._id.toString(), t2._id.toString()],
+        sessionId: 'm4-integration'
       });
 
     expect(res.status).toBe(200);
@@ -163,7 +164,7 @@ describe('Milestone 4 — E2E tool transport (full API → agent → ML → DB p
     expect(report.body.toolsInvoked).toEqual(expect.arrayContaining(['change']));
     expect(report.body.answerText).toMatch(/8\.4/i);
 
-    const history = await request(app).get('/api/query/history');
+    const history = await request(app).get('/api/query/history').query({ sessionId: 'm4-integration' });
     expect(history.status).toBe(200);
     expect(history.body).toHaveLength(1);
     expect(history.body[0].queryText).toContain('built-up area');
@@ -203,14 +204,14 @@ describe('Milestone 4 — E2E tool transport (full API → agent → ML → DB p
     when('/change', { body: CHANGE_RESULT_PAYLOAD });
     await request(app)
       .post('/api/query')
-      .send({ queryText: 'How did things change between these two?', imageRefs: [t1._id.toString(), t2._id.toString()] });
+      .send({ queryText: 'How did things change between these two?', imageRefs: [t1._id.toString(), t2._id.toString()], sessionId: 'm4-integration' });
 
     when('/area', { body: { tool: 'area', status: 'success', result: { area_km2: 3.3 }, confidence: 0.75 } });
     await request(app)
       .post('/api/query')
-      .send({ queryText: 'How big is the surface area?', imageRefs: [t1._id.toString()] });
+      .send({ queryText: 'How big is the surface area?', imageRefs: [t1._id.toString()], sessionId: 'm4-integration' });
 
-    const history = await request(app).get('/api/query/history');
+    const history = await request(app).get('/api/query/history').query({ sessionId: 'm4-integration' });
     expect(history.status).toBe(200);
     expect(history.body).toHaveLength(2);
     expect(history.body[0].taskType).toBe('AREA');

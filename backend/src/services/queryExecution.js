@@ -88,11 +88,13 @@ export function parseQueryRequest(body = {}) {
 
 /**
  * Runs one query request through the shared pipeline. `stageSink` is optional;
- * the async worker supplies it to persist real pipeline stages. Returns
+ * the async worker supplies it to persist real pipeline stages. `userId`
+ * (optional, null for anonymous) is threaded into the persisted Query document
+ * so history and report lookups can enforce ownership. Returns
  * `{ ok: false, httpStatus, response }` for input rejections or
  * `{ ok: true, response }` for executed results.
  */
-export async function executeQueryRequest(body = {}, { stageSink } = {}) {
+export async function executeQueryRequest(body = {}, { stageSink, userId = null } = {}) {
   const parsed = parseQueryRequest(body);
   if (!parsed.ok) {
     return parsed;
@@ -101,6 +103,7 @@ export async function executeQueryRequest(body = {}, { stageSink } = {}) {
   const { queryText, imageRefs, parameters, sessionId } = parsed.values;
   const response = await runAgentPipeline(queryText, imageRefs, parameters, {
     sessionId,
+    userId,
     ...(typeof stageSink === 'function' ? { stageSink } : {})
   });
 

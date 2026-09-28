@@ -13,6 +13,7 @@ from pathlib import Path
 
 from fastapi import UploadFile
 
+from app.common.safe_errors import safe_error
 from app.schemas.common import ToolOutput
 from app.tools.roi_crop import RoiCropError
 
@@ -56,7 +57,7 @@ class InvalidFileError(UploadError):
     """Raised when an uploaded file is not a valid raster."""
 
 
-class FileTooLargeError(UploadError):
+class FileTooLargeError(InvalidFileError):
     """Raised when an uploaded file exceeds the size limit."""
 
 
@@ -231,12 +232,12 @@ def aoi_error_output(
     report = dict(getattr(exc, "metadata", {}) or {})
     report.setdefault("aoiApplied", False)
     report.setdefault("aoiPresent", True)
-    report.setdefault("reason", str(exc))
+    report.setdefault("reason", safe_error(exc, fallback="The AOI could not be applied."))
     metadata["aoi"] = report
     return ToolOutput(
         tool=tool,
         status="failed",
-        result={"error": str(exc)},
+        result={"error": safe_error(exc, fallback="The AOI could not be applied.")},
         evidence={"aoi": report},
         confidence=0.0,
         metadata=metadata,
@@ -245,12 +246,22 @@ def aoi_error_output(
 
 async def read_upload_file(file: UploadFile) -> bytes:
     """Read and validate an uploaded file's size."""
+    max_bytes = MAX_FILE_SIZE_MB * 1024 * 1024
+
+    # Reject oversized uploads from the declared Content-Length before any body
+    # is buffered, so a huge multipart never gets read into memory first.
+    if file.size is not None and file.size > max_bytes:
+        raise FileTooLargeError(
+            f"File too large: {file.size / (1024 * 1024):.1f} MB "
+            f"(max: {MAX_FILE_SIZE_MB} MB)"
+        )
+
     try:
         content = await file.read()
     except Exception as exc:
-        raise InvalidFileError(f"Failed to read uploaded file: {exc}") from exc
+        raise InvalidFileError("Failed to read uploaded file.") from exc
 
-    if len(content) > MAX_FILE_SIZE_MB * 1024 * 1024:
+    if len(content) > max_bytes:
         raise FileTooLargeError(
             f"File too large: {len(content) / (1024 * 1024):.1f} MB "
             f"(max: {MAX_FILE_SIZE_MB} MB)"

@@ -8,6 +8,8 @@
 # Secrets (LLM_API_KEY, JWT_SECRET, GEE_*) may be supplied via a root .env file
 # (compose interpolation) or the environment. Without LLM_API_KEY the stack
 # starts and stays healthy, but full /api/query inference requires a key.
+# JWT_SECRET is REQUIRED: the backend runs with NODE_ENV=production, which aborts
+# startup when JWT_SECRET is unset. No secret is baked into this file.
 
 name: satquery
 
@@ -46,6 +48,13 @@ services:
       GEE_PROJECT_ID: ${GEE_PROJECT_ID:-}
       GEE_SERVICE_ACCOUNT: ${GEE_SERVICE_ACCOUNT:-}
       GEE_SERVICE_ACCOUNT_KEY_PATH: ${GEE_SERVICE_ACCOUNT_KEY_PATH:-}
+      # HTTP hardening: CORS allowlist, optional host allowlist and opt-in rate
+      # limiting (all off/no-op unless configured by the operator).
+      CORS_ORIGINS: ${CORS_ORIGINS:-}
+      ALLOWED_HOSTS: ${ALLOWED_HOSTS:-}
+      ML_RATE_LIMIT_ENABLED: ${ML_RATE_LIMIT_ENABLED:-false}
+      ML_RATE_LIMIT_MAX: ${ML_RATE_LIMIT_MAX:-60}
+      ML_RATE_LIMIT_WINDOW: ${ML_RATE_LIMIT_WINDOW:-60}
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)"]
       interval: 10s
@@ -63,10 +72,14 @@ services:
       MONGODB_URI: mongodb://mongodb:27017/satquery
       ML_SERVICE_BASE_URL: http://ml:8000
       ML_SERVICE_TIMEOUT_MS: ${ML_SERVICE_TIMEOUT_MS:-600000}
-      JWT_SECRET: ${JWT_SECRET:-satquery-dev-secret}
+      JWT_SECRET: ${JWT_SECRET:-}
       LLM_API_KEY: ${LLM_API_KEY:-}
       LLM_PROVIDER: ${LLM_PROVIDER:-openai}
       NODE_ENV: production
+      # CORS allowlist (comma-separated) and proxy hops for correct client IPs
+      # behind a reverse proxy (1 for a single nginx/caddy).
+      CORS_ORIGINS: ${CORS_ORIGINS:-}
+      TRUST_PROXY: ${TRUST_PROXY:-}
     depends_on:
       mongodb:
         condition: service_healthy

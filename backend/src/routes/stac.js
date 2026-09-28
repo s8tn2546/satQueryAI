@@ -1,8 +1,8 @@
 import express from 'express';
 import mongoose from 'mongoose';
-import fs from 'fs';
 import Tile from '../models/Tile.js';
 import mlServiceClient from '../services/mlServiceClient.js';
+import { publicTile } from '../utils/publicTile.js';
 
 const router = express.Router();
 
@@ -39,40 +39,8 @@ function boundsToPolygon(bounds) {
 /**
  * Public view of a STAC-ingested tile for the Evidence UI. Never exposes
  * server-internal paths except via existence booleans (filePath/analysisRaster
- * are server-internal).
+ * are server-internal). Shared implementation in utils/publicTile.js.
  */
-function publicTile(tile) {
-  const fileExists = (p) => typeof p === 'string' && p.length > 0
-    && p !== 'mock-no-file' && fs.existsSync(p) && fs.statSync(p).isFile();
-  const previews = (tile.previews && typeof tile.previews === 'object') ? tile.previews : {};
-  const previewPng = previews.png;
-  return {
-    _id: tile._id,
-    source: tile.source,
-    modality: tile.modality,
-    format: tile.format,
-    captureDate: tile.captureDate,
-    crs: tile.crs,
-    resolution: tile.resolution,
-    bands: tile.bands || [],
-    validated: tile.validated,
-    boundingBox: tile.boundingBox || null,
-    validationDetails: tile.validationDetails || {},
-    provider: tile.provider || null,
-    sceneId: tile.sceneId || null,
-    collection: tile.collection || null,
-    dedupeKey: tile.dedupeKey || null,
-    previews: {
-      png: Boolean(fileExists(previewPng)),
-      channels: previews.channels || null,
-      stretch: previews.stretch || null
-    },
-    metadata: tile.metadata || {},
-    storedFile: Boolean(fileExists(tile.filePath)) || Boolean(fileExists(tile.analysisRaster)),
-    hasPreview: Boolean(fileExists(previewPng)),
-    renderable: Boolean(fileExists(previewPng))
-  };
-}
 
 /**
  * POST /api/stac/search
@@ -134,7 +102,7 @@ router.post('/search', async (req, res) => {
     console.error('[StacSearch] Error searching scenes:', error);
     return res.status(500).json({
       status: 'failed',
-      error: error.message,
+      error: 'An internal error occurred while searching scenes.',
       scenes: [],
       count: 0
     });
@@ -306,7 +274,7 @@ router.post('/ingest', async (req, res) => {
     console.error('[StacIngest] Error ingesting scene:', error);
     return res.status(500).json({
       status: 'failed',
-      error: error.message,
+      error: 'An internal error occurred while ingesting the scene.',
       tileId: null,
       tileIds: [],
       tiles: []

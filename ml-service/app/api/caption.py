@@ -27,6 +27,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, File, Form, UploadFile
 
+from app.common.safe_errors import safe_error
 from app.common.http_utils import (
     AOI_CRS_FORM_DESCRIPTION,
     AOI_FORM_DESCRIPTION,
@@ -39,7 +40,11 @@ from app.common.http_utils import (
     spatial_metadata,
     validate_upload_ext,
 )
-from app.models.vlm_loader import DEFAULT_CAPTION_MODEL, VLMUnavailableError
+from app.models.vlm_loader import (
+    DEFAULT_CAPTION_MODEL,
+    VLMUnavailableError,
+    adapter_in_use,
+)
 from app.geospatial.raster_io import RasterError
 from app.schemas.common import ToolOutput
 from app.tools.caption import CaptionError, compute_caption
@@ -50,11 +55,6 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 CAPTION_ADAPTER_PATH = os.environ.get("CAPTION_ADAPTER_PATH")
-
-
-def _adapter_detected() -> bool:
-    """True only if a LoRA adapter is configured AND present on disk."""
-    return bool(CAPTION_ADAPTER_PATH) and Path(CAPTION_ADAPTER_PATH).exists()
 
 
 def _offline_caption_output(
@@ -93,7 +93,7 @@ def _offline_caption_output(
             "adapter_used": False,
             "mock": True,
             "offline": True,
-            "reason": str(exc),
+            "reason": safe_error(exc, fallback="The VLM is unavailable."),
             "note": note,
             "aoi": {
                 "aoiPresent": bool(aoi_geometry),
@@ -137,7 +137,7 @@ async def caption_endpoint(
     try:
         content = await read_upload_file(image)
     except InvalidFileError as exc:
-        return error_output("caption", str(exc), confidence=0.0)
+        return error_output("caption", safe_error(exc), confidence=0.0)
 
     tmp_path: Path | None = None
     try:
@@ -156,16 +156,16 @@ async def caption_endpoint(
     except RoiCropError as exc:
         return aoi_error_output("caption", exc, raw_aoi=aoi_geometry)
     except RasterError as exc:
-        return error_output("caption", str(exc), confidence=0.0)
+        return error_output("caption", safe_error(exc), confidence=0.0)
     except VLMUnavailableError as exc:
         return _offline_caption_output(
             filename, len(content), exc, aoi_geometry=aoi_geometry
         )
     except CaptionError as exc:
-        return error_output("caption", str(exc), confidence=0.0)
+        return error_output("caption", safe_error(exc), confidence=0.0)
     except Exception as exc:
         logger.error("Unexpected caption error: %s", exc, exc_info=True)
-        return error_output("caption", f"Internal error: {exc}", confidence=0.0)
+        return error_output("caption", f"Internal error: {safe_error(exc)}", confidence=0.0)
     finally:
         if tmp_path is not None:
             tmp_path.unlink(missing_ok=True)
@@ -185,7 +185,7 @@ async def caption_endpoint(
             "filename": filename,
             "size_bytes": len(content),
             "model": DEFAULT_CAPTION_MODEL,
-            "adapter_used": _adapter_detected(),
+            "adapter_used": adapter_in_use(DEFAULT_CAPTION_MODEL, CAPTION_ADAPTER_PATH),
             **spatial_metadata(result),
             **aoi_metadata(result, aoi_geometry),
         },

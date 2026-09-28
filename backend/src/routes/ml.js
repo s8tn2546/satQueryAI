@@ -26,7 +26,7 @@ router.post('/warmup', async (req, res) => {
     return res.status(200).json(result);
   } catch (error) {
     console.error('[ML] Warmup error:', error);
-    return res.status(500).json({ status: 'unavailable', reason: error.message });
+    return res.status(500).json({ status: 'unavailable', reason: 'The ML service warmup failed.' });
   }
 });
 

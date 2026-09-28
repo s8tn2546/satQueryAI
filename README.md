@@ -454,16 +454,16 @@ Honest caveats:
 
 ---
 
-## Live VQA verification
+## VQA live-configuration status
 
-The serving path has been verified with:
+The serving path is **configured** for live inference, not claimed as verified:
 
-- **Model:** Qwen2-VL-2B-Instruct
-- **LoRA adapter:** active (`final_adapter`)
-- **Inference:** live `POST /vqa` inference
-- **Signal:** `adapter_used=true` in the response metadata
+- **Model:** Qwen2-VL-2B-Instruct (base weights downloaded at runtime)
+- **LoRA adapter:** `final_adapter` is the serving adapter when present; inference stays honest when it is not — see caveats below
+- **Inference:** `POST /vqa` and `POST /caption` run live when weights are available, and return clearly-labelled offline placeholders when they are not
+- **Signal:** `adapter_used` reports whether the *loaded* model actually applied the LoRA adapter (true only if the adapter was configured, present, and loaded); it is `false` for a missing, misconfigured, or failed adapter load
 
-No additional accuracy numbers are claimed.
+No accuracy numbers are claimed. Whether a given deployment actually runs live inference depends on the runtime environment (model weights present, adapter path valid, enough compute); the pipeline does not fabricate a model result when these are absent.
 
 ---
 
@@ -482,8 +482,10 @@ No additional accuracy numbers are claimed.
 ## Security
 
 - The current application is a **hackathon/prototype** deployment; it is **not fully production-secured**.
-  - CORS is permissive (`cors()` / `allow_origins=["*"]`).
-  - Auth (JWT/bcrypt) infrastructure exists, but backend routes currently accept anonymous access.
+  - CORS is allowlist-only on both services (`CORS_ORIGINS`; dev defaults for local frontends). No wildcard+credentials combination is used.
+  - Auth (JWT/bcrypt) infrastructure exists. Routes still accept anonymous access scoped to a `sessionId`; query history and read-back are owner-scoped (anonymous docs are only visible with possession of the query id).
+  - Backend applies security headers (helmet), body-size limits and rate limits on `/api/*`; the ML service applies security headers and optional opt-in rate limiting.
+  - In production the backend **requires** `JWT_SECRET` (startup aborts without it) and refuses the in-memory DB fallback.
 - **Credentials and secrets belong in environment variables and must never be committed.** `.env` files are git-ignored; never commit `.env`, API keys, tokens, or private service-account keys.
 - The ML service reads credentials from the environment/`.env` (e.g. GEE service-account key path) and never from the repository. No `.env` is committed.
 

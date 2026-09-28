@@ -4,6 +4,7 @@ import path from 'path';
 import fs from 'fs';
 import Tile from '../models/Tile.js';
 import mlServiceClient from '../services/mlServiceClient.js';
+import { publicTile } from '../utils/publicTile.js';
 
 const router = express.Router();
 
@@ -12,24 +13,59 @@ if (!fs.existsSync(uploadsDir)) {
   fs.mkdirSync(uploadsDir, { recursive: true });
 }
 
+/**
+ * Stored filename is built ONLY from server-generated data (a timestamp + a
+ * derived, allowlisted extension) — never from client-supplied characters, so
+ * arbitrary uploads cannot influence the on-disk path or traverse directories.
+ */
+const SAFE_EXT_RE = /^[a-z0-9]{1,6}$/;
+
+function safeStoredExt(originalExt) {
+  const ext = String(originalExt || '').toLowerCase().replace('.', '');
+  return SAFE_EXT_RE.test(ext) ? ext : 'bin';
+}
+
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
     cb(null, uploadsDir);
   },
   filename: (req, file, cb) => {
     const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-    const ext = path.extname(file.originalname);
-    cb(null, `${file.fieldname}-${uniqueSuffix}${ext}`);
+    cb(null, `${file.fieldname}-${uniqueSuffix}.${safeStoredExt(path.extname(file.originalname))}`);
   }
 });
 
 const MAX_FILE_SIZE = 500 * 1024 * 1024; // align with ML /validate MAX_FILE_SIZE_MB = 500
 
+const ALLOWED_UPLOAD_MIMES = new Set([
+  'image/png',
+  'image/jpeg',
+  'image/tiff',
+  'application/geo+tiff',
+  'application/octet-stream'
+]);
+
 const upload = multer({
   storage,
   limits: {
     fileSize: MAX_FILE_SIZE,
-    files: 5
+    files: 5,
+    fields: 10,
+    parts: 20
+  },
+  fileFilter: (req, file, cb) => {
+    const ext = path.extname(file.originalname || '').toLowerCase();
+    if (!ALLOWED_UPLOAD_EXTS.has(ext)) {
+      const err = new Error(`Unsupported file type "${ext || '(none)'}". Accepted: .tif, .tiff, .gtiff, .png, .jpg, .jpeg.`);
+      err.statusCode = 400;
+      return cb(err);
+    }
+    if (file.mimetype && !ALLOWED_UPLOAD_MIMES.has(String(file.mimetype).toLowerCase())) {
+      const err = new Error(`Unsupported content type "${file.mimetype}" for "${file.originalname}".`);
+      err.statusCode = 400;
+      return cb(err);
+    }
+    cb(null, true);
   }
 });
 
@@ -109,7 +145,7 @@ function inspectRasterSignature(filePath) {
         'any supported raster signature, so it is corrupt or mislabelled.'
     };
   } catch (err) {
-    return { ok: false, reason: `File could not be read: ${err.message}` };
+    return { ok: false, reason: 'The file could not be read.' };
   } finally {
     if (handle !== undefined) {
       try { fs.closeSync(handle); } catch { /* already closed */ }
@@ -182,6 +218,27 @@ function cleanupStoredFiles(files) {
       fs.unlinkSync(f.path);
     } catch {
       // best effort — ignore missing files
+    }
+  }
+}
+
+/**
+ * Roll back a partially-processed upload: remove every stored file AND every
+ * Tile already persisted for this request. A multi-file upload must be
+ * all-or-nothing — a tile pointing at a deleted file is worse than no tile.
+ */
+async function rollbackUpload(createdTiles, files) {
+  cleanupStoredFiles(files);
+  for (const t of createdTiles || []) {
+    try {
+      await Tile.deleteOne({ _id: t._id });
+    } catch {
+      // best effort
+    }
+    try {
+      if (t.filePath && t.filePath !== 'mock-no-file') fs.unlinkSync(t.filePath);
+    } catch {
+      // best effort
     }
   }
 }
@@ -346,11 +403,11 @@ router.post('/upload', (req, res) => {
       return rejectedUpload(res, `Upload rejected: ${uploadErr.message}`);
     }
 
+    const tileIds = [];
+    const tiles = [];
+
     try {
       const files = req.files || [];
-      if (files.length === 0 && req.file) {
-        files.push(req.file);
-      }
 
       if (files.length === 0) {
         return rejectedUpload(res, 'No image files provided for upload.');
@@ -377,9 +434,6 @@ router.post('/upload', (req, res) => {
         cleanupStoredFiles(files);
         return rejectedUpload(res, `Unsupported file type "${unsupportedExts.join(', ')}". Accepted: .tif, .tiff, .gtiff, .png, .jpg, .jpeg.`);
       }
-
-      const tileIds = [];
-      const tiles = [];
 
       for (let i = 0; i < files.length; i++) {
         const file = files[i];
@@ -409,7 +463,7 @@ router.post('/upload', (req, res) => {
         // tile, because every downstream tool assumes an openable raster and
         // would otherwise produce a failure (or a mock) that looks like analysis.
         if (!validated) {
-          cleanupStoredFiles(files);
+          await rollbackUpload(tiles, files);
           const detail = (validationDetails.errors || []).join(' ') ||
             'The file could not be validated as a readable raster.';
           return res.status(400).json({
@@ -449,18 +503,18 @@ router.post('/upload', (req, res) => {
         status: 'success',
         tileId: tileIds[0],
         tileIds: tileIds,
-        tiles: tiles,
+        tiles: tiles.map(publicTile),
         validationResult: {
           valid: tiles.every(t => t.validated),
           count: tiles.length
         }
       });
     } catch (error) {
-      cleanupStoredFiles(req.files || []);
+      await rollbackUpload(tiles, req.files || []);
       console.error('[Upload] Error uploading images:', error);
       return res.status(500).json({
         status: 'failed',
-        error: error.message
+        error: 'An internal error occurred while processing the upload.'
       });
     }
   });
@@ -557,7 +611,7 @@ router.post('/fetch-by-region', async (req, res) => {
       status: 'success',
       tileId: tileIds[0] ?? null,
       tileIds: tileIds,
-      tiles: tiles,
+      tiles: tiles.map(publicTile),
       source: mlResult.result?.source || mlResult.metadata?.data_source || 'unknown',
       dateGapDays: mlResult.result?.date_gap_days ?? null,
       validationResult: {
@@ -569,7 +623,7 @@ router.post('/fetch-by-region', async (req, res) => {
     console.error('[FetchByRegion] Error acquiring imagery:', error);
     return res.status(500).json({
       status: 'failed',
-      error: error.message
+      error: 'An internal error occurred while acquiring imagery.'
     });
   }
 });

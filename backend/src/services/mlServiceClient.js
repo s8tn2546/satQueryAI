@@ -609,7 +609,8 @@ export async function warmupMl() {
       const data = await response.json();
       return { status: 'ok', ...data };
     } catch (err) {
-      return { status: 'unavailable', reason: err.message };
+      console.warn('[MLServiceClient] Warmup failed:', err?.message || err);
+      return { status: 'unavailable', reason: 'The ML service did not complete warmup.' };
     } finally {
       activeMlCalls = Math.max(0, activeMlCalls - 1);
     }

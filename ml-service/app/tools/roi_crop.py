@@ -45,6 +45,7 @@ from shapely.geometry import box, mapping, shape
 from shapely.ops import transform as shapely_transform
 from shapely.validation import explain_validity
 
+from app.common.safe_errors import safe_error
 from app.geospatial.crs import crs_to_string, parse_crs
 from app.geospatial.raster_io import RasterError, read_metadata
 from app.tools.band_utils import build_valid_mask
@@ -1123,7 +1124,7 @@ def validate_aoi_only(aoi: Any, aoi_crs: Any = None) -> dict[str, Any]:
             "aoiApplied": False,
             "aoiStatus": STATUS_REJECTED_CRS,
             "isGeoreferenced": None,
-            "reason": str(exc),
+            "reason": safe_error(exc, fallback="The AOI CRS could not be used."),
         }
     except RoiCropError as exc:
         return {
@@ -1131,7 +1132,7 @@ def validate_aoi_only(aoi: Any, aoi_crs: Any = None) -> dict[str, Any]:
             "aoiApplied": False,
             "aoiStatus": STATUS_REJECTED_GEOMETRY,
             "isGeoreferenced": None,
-            "reason": str(exc),
+            "reason": safe_error(exc, fallback="The AOI geometry could not be used."),
         }
     return {
         "aoiPresent": True,
