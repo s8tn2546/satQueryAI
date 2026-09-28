@@ -26,6 +26,12 @@ function publicTile(tile) {
     && tile.filePath !== 'mock-no-file'
     && fs.existsSync(tile.filePath)
     && fs.statSync(tile.filePath).isFile();
+  const previews = (tile.previews && typeof tile.previews === 'object') ? tile.previews : {};
+  const previewPng = previews.png;
+  const hasPreview = typeof previewPng === 'string'
+    && previewPng.length > 0
+    && fs.existsSync(previewPng)
+    && fs.statSync(previewPng).isFile();
   return {
     _id: tile._id,
     source: tile.source,
@@ -38,9 +44,19 @@ function publicTile(tile) {
     validated: tile.validated,
     boundingBox: tile.boundingBox || null,
     validationDetails: tile.validationDetails || {},
+    provider: tile.provider || null,
+    sceneId: tile.sceneId || null,
+    collection: tile.collection || null,
+    dedupeKey: tile.dedupeKey || null,
+    previews: {
+      png: hasPreview,
+      channels: previews.channels || null,
+      stretch: previews.stretch || null
+    },
     metadata: tile.metadata || {},
     storedFile: Boolean(storedFile),
-    renderable: Boolean(storedFile) && BROWSER_RENDERABLE.has(tile.format)
+    hasPreview,
+    renderable: (Boolean(storedFile) && BROWSER_RENDERABLE.has(tile.format)) || hasPreview
   };
 }
 
@@ -68,7 +84,8 @@ router.get('/:id', async (req, res) => {
  * GET /api/tiles/:id/image
  * Serves the persisted source image bytes for the Evidence view. Only
  * browser-renderable formats (PNG/JPEG) are served as pixels; TIFF rasters are
- * returned with an explanatory error because browsers cannot render them.
+ * served through their derived preview when one exists, and returned with an
+ * explanatory error when it does not.
  */
 router.get('/:id/image', async (req, res) => {
   try {
@@ -83,17 +100,48 @@ router.get('/:id/image', async (req, res) => {
     if (!filePath || filePath === 'mock-no-file' || !fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) {
       return res.status(404).json({ status: 'failed', error: 'Source image file is not stored for this tile.' });
     }
-    if (!BROWSER_RENDERABLE.has(tile.format)) {
-      return res.status(415).json({
-        status: 'failed',
-        error: `Browsers cannot render ${tile.format.toUpperCase()} source imagery directly; a preview is not available.`,
-        format: tile.format
-      });
+    if (BROWSER_RENDERABLE.has(tile.format)) {
+      return res.sendFile(path.resolve(filePath));
     }
-    return res.sendFile(path.resolve(filePath));
+    // TIFF/other: browsers cannot render the analysis raster directly; serve
+    // the derived preview when the tile has one.
+    const previewPng = tile.previews?.png;
+    if (previewPng && fs.existsSync(previewPng) && fs.statSync(previewPng).isFile()) {
+      return res.sendFile(path.resolve(previewPng));
+    }
+    return res.status(415).json({
+      status: 'failed',
+      error: `Browsers cannot render ${tile.format.toUpperCase()} source imagery directly and this tile has no derived preview.`,
+      format: tile.format
+    });
   } catch (error) {
     console.error('[Tiles] Error serving tile image:', error);
     return res.status(500).json({ status: 'failed', error: 'An internal error occurred while serving the tile image.' });
+  }
+});
+
+/**
+ * GET /api/tiles/:id/preview
+ * Serves the derived RGB preview (e.g. for TIFF analysis rasters) directly.
+ * 404 when this tile carries no preview.
+ */
+router.get('/:id/preview', async (req, res) => {
+  try {
+    if (!mongoose.isValidObjectId(req.params.id)) {
+      return res.status(400).json({ status: 'failed', error: 'Invalid tile id format.' });
+    }
+    const tile = await Tile.findById(req.params.id);
+    if (!tile) {
+      return res.status(404).json({ status: 'failed', error: 'Tile not found' });
+    }
+    const previewPng = tile.previews?.png;
+    if (!previewPng || !fs.existsSync(previewPng) || !fs.statSync(previewPng).isFile()) {
+      return res.status(404).json({ status: 'failed', error: 'No preview is stored for this tile.' });
+    }
+    return res.sendFile(path.resolve(previewPng));
+  } catch (error) {
+    console.error('[Tiles] Error serving tile preview:', error);
+    return res.status(500).json({ status: 'failed', error: 'An internal error occurred while serving the tile preview.' });
   }
 });
 

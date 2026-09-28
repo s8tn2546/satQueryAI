@@ -34,7 +34,7 @@ const upload = multer({
 });
 
 const ALLOWED_UPLOAD_EXTS = new Set(['.tif', '.tiff', '.gtiff', '.png', '.jpg', '.jpeg']);
-const ALLOWED_SOURCES = new Set(['sentinel-2', 'bhuvan', 'cartosat-2s', 'risat', 'benchmark-upload', 'gee-fetch']);
+const ALLOWED_SOURCES = new Set(['sentinel-2', 'landsat-8', 'landsat-9', 'bhuvan', 'cartosat-2s', 'risat', 'benchmark-upload', 'gee-fetch']);
 const ALLOWED_MODALITIES = new Set(['optical', 'sar']);
 
 function inferFormat(ext) {

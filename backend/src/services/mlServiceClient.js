@@ -417,6 +417,65 @@ function buildMockResult(endpoint, payload) {
         notComputed: ['images', 'source', 'date_gap_days', 'date_range']
       });
 
+    case '/stac/search':
+      // A scene search needs the live catalog. Reporting fabricated scene ids
+      // or counts here would invent satellite observations, so the result is
+      // explicitly empty with the reason surfaced.
+      return unavailableResult({
+        tool: 'stac-search',
+        reason:
+          'The ML service was unreachable, so no STAC catalog query ran. '
+          + 'No scenes, collections or counts can be reported.',
+        result: {
+          source: null,
+          provider: null,
+          collection: payload?.collection || (payload?.sensor ? `from-${payload.sensor}` : null),
+          collectionName: null,
+          resolution: null,
+          query: {
+            sensor: payload?.sensor || null,
+            collection: payload?.collection || null,
+            aoi: payload?.aoi || null,
+            aoiCrs: payload?.aoiCrs || 'EPSG:4326',
+            dateRange: payload?.dateRange || { start: null, end: null },
+            cloudMax: payload?.cloudMax ?? null,
+            limit: payload?.limit ?? null
+          },
+          scenes: [],
+          count: 0,
+          warnings: ['No scenes were searched: the ML service was unreachable.']
+        },
+        evidence: { region: payload?.aoi || {}, data_source: null },
+        notComputed: ['scenes', 'count', 'collectionName', 'collection', 'resolution']
+      });
+
+    case '/stac/ingest':
+      // Nothing was acquired, so there is no analysis raster, preview, scene
+      // metadata or dedupe key to report. Any of those would be fabricated.
+      return unavailableResult({
+        tool: 'stac-ingest',
+        reason:
+          'The ML service was unreachable, so no scene was acquired. '
+          + 'No raster, preview, scene metadata or dedupe key can be reported.',
+        result: {
+          source: null,
+          provider: null,
+          collection: payload?.collection || null,
+          collectionName: null,
+          sceneId: payload?.sceneId || null,
+          scene: null,
+          aoi: payload?.aoi ? { geometry: payload.aoi, crs: payload?.aoiCrs || null } : null,
+          analysisRaster: null,
+          analysis: null,
+          preview: null,
+          validation: null,
+          dedupeKey: null,
+          warnings: ['No scene was acquired: the ML service was unreachable.']
+        },
+        evidence: { region: payload?.aoi || {}, data_source: null },
+        notComputed: ['analysisRaster', 'analysis', 'preview', 'validation', 'dedupeKey', 'scene']
+      });
+
     default:
       return unavailableResult({
         tool: cleanEndpoint.replace('/', ''),

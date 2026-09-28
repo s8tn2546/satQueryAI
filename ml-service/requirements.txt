@@ -17,3 +17,8 @@ qwen-vl-utils>=0.0.1
 # Google Earth Engine (historical trend analysis, /trend). Imported lazily so the
 # rest of the service runs even if this is not installed.
 earthengine-api>=1.1.0
+# SpatioTemporal Asset Catalog (STAC) client (scene search + AOI acquisition,
+# /stac/search and /stac/ingest). Imported lazily so the rest of the service
+# runs even if not installed.
+pystac>=1.10,<2.0
+pystac_client>=0.8,<1.0

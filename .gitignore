@@ -41,6 +41,9 @@ ENV/
 .venv/
 .pytest_cache/
 
+# STAC acquisition outputs (analysis rasters + previews)
+ml-service/acquisitions/
+
 # OS metadata
 .DS_Store
 Thumbs.db

@@ -7,7 +7,7 @@ import imagesRouter from './routes/images.js';
 import queryRouter from './routes/query.js';
 import toolsRouter from './routes/tools.js';
 import authRouter from './routes/auth.js';
-import fetchImageryRouter from './routes/fetch-imagery.js';
+import stacRouter from './routes/stac.js';
 import tilesRouter from './routes/tiles.js';
 import mlRouter from './routes/ml.js';
 
@@ -29,7 +29,7 @@ app.use('/api/auth', authRouter);
 app.use('/api/images', imagesRouter);
 app.use('/api/query', queryRouter);
 app.use('/api/tools', toolsRouter);
-app.use('/api/images/fetch-by-region', fetchImageryRouter);
+app.use('/api/stac', stacRouter);
 app.use('/api/tiles', tilesRouter);
 app.use('/api/ml', mlRouter);
 

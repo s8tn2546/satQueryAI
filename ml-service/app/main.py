@@ -28,6 +28,7 @@ from app.api.fetch_imagery import router as fetch_imagery_router
 from app.api.ndvi import router as ndvi_router
 from app.api.ndwi import router as ndwi_router
 from app.api.optical_sar import router as optical_sar_router
+from app.api.stac import router as stac_router
 from app.api.trend import router as trend_router
 from app.api.validate import router as validate_router
 from app.api.vqa import router as vqa_router
@@ -66,6 +67,7 @@ app.include_router(change_router, tags=["change-detection"])
 app.include_router(optical_sar_router, tags=["fusion"])
 app.include_router(trend_router, tags=["trend-analysis"])
 app.include_router(fetch_imagery_router, tags=["imagery-acquisition"])
+app.include_router(stac_router, tags=["stac-acquisition"])
 
 
 @app.get("/health")
