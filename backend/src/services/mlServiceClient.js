@@ -207,16 +207,20 @@ function buildMockResult(endpoint, payload) {
       });
 
     case '/optical-sar':
-      // The real tool computes per-modality statistics, a fused feature and
-      // cross-modal correlation. It computes no land-cover percentages, so a
-      // mock must not report any.
+      // The real tool computes per-modality statistics, per-polarization SAR
+      // analytics, a fused feature and cross-modal correlation. It computes no
+      // land-cover percentages, so a mock must not report any.
       return unavailableResult({
         tool: 'optical_sar',
-        reason: `${OFFLINE_REASON} Optical/SAR fusion and cross-modal correlation were not computed.`,
+        reason: `${OFFLINE_REASON} Optical/SAR fusion, per-polarization SAR analytics and cross-modal correlation were not computed.`,
         result: {
           fusedLandCover: null,
           optical: null,
           sar: null,
+          polarization: null,
+          representation: null,
+          coverage: null,
+          metrics: null,
           fusion: null,
           overlap: null,
           alignment: null,
@@ -226,7 +230,8 @@ function buildMockResult(endpoint, payload) {
         },
         evidence: requestEvidence(payload, { optical_filename: null, sar_filename: null }),
         notComputed: [
-          'optical', 'sar', 'fusion', 'overlap', 'alignment', 'crs', 'resolution', 'fusedLandCover'
+          'optical', 'sar', 'polarization', 'representation', 'coverage', 'metrics',
+          'fusion', 'overlap', 'alignment', 'crs', 'resolution', 'fusedLandCover'
         ]
       });
 

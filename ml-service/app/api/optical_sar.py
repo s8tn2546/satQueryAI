@@ -79,6 +79,22 @@ async def optical_sar_endpoint(
             "Defaults to a deterministic 3x3 median filter."
         ),
     ),
+    sar_representation: str | None = Form(
+        default=None,
+        description=(
+            "Optional caller-declared SAR value representation: "
+            "'amplitude', 'power', 'db' or 'unknown'. Recorded as a "
+            "caller-declared claim; it is never used to convert pixel values."
+        ),
+    ),
+    sar_polarizations: str | None = Form(
+        default=None,
+        description=(
+            "Optional comma-separated polarization names the SAR raster must "
+            "provide (e.g. 'VV,VH'). A missing required polarization fails "
+            "explicitly."
+        ),
+    ),
     aoi_geometry: str | None = Form(default=None, description=AOI_FORM_DESCRIPTION),
     aoi_crs: str | None = Form(default=None, description=AOI_CRS_FORM_DESCRIPTION),
 ):
@@ -105,6 +121,34 @@ async def optical_sar_endpoint(
             confidence=0.0,
         )
 
+    allowed_sar_representations = {"amplitude", "power", "db", "unknown"}
+    if (
+        sar_representation is not None
+        and sar_representation.strip().lower() not in allowed_sar_representations
+    ):
+        return error_output(
+            "optical-sar",
+            "Invalid sar_representation: must be one of "
+            f"{sorted(allowed_sar_representations)}.",
+            confidence=0.0,
+        )
+
+    allowed_polarizations = {"vv", "vh", "hh", "hv"}
+    requested_polarizations = None
+    if sar_polarizations is not None and sar_polarizations.strip():
+        requested_polarizations = [
+            name.strip() for name in sar_polarizations.split(",")
+        ]
+        bad = [name for name in requested_polarizations
+               if name.lower() not in allowed_polarizations]
+        if bad:
+            return error_output(
+                "optical-sar",
+                "Invalid sar_polarizations: only VV, VH, HH, HV are recognized "
+                f"(got: {', '.join(bad)}).",
+                confidence=0.0,
+            )
+
     ext_opt = _validate_ext("optical_image", optical_image.filename)
     if ext_opt is not None:
         return ext_opt
@@ -129,6 +173,13 @@ async def optical_sar_endpoint(
             optical_band=optical_band,
             sar_band=sar_band,
             speckle_size=speckle_size,
+            sar_representation=(
+                sar_representation.strip().lower() if sar_representation else None
+            ),
+            sar_polarizations=(
+                ",".join(requested_polarizations)
+                if requested_polarizations else None
+            ),
             aoi=aoi_geometry,
             aoi_crs=aoi_crs,
         )
@@ -161,6 +212,13 @@ async def optical_sar_endpoint(
         if tmp_sar is not None:
             tmp_sar.unlink(missing_ok=True)
 
+    sar_block = result.get("sar", {})
+    polarization_block = result.get("polarization", {}) if isinstance(result.get("polarization"), dict) else {}
+    available_polarizations = [
+        role.upper() for role, entry in polarization_block.items()
+        if isinstance(entry, dict) and entry.get("available")
+    ]
+
     return ToolOutput(
         tool="optical-sar",
         status="success",
@@ -171,6 +229,8 @@ async def optical_sar_endpoint(
             "alignment_method": result.get("alignment", {}).get("method"),
             "overlap_pixels": result.get("overlap", {}).get("valid_pixels"),
             "partial_overlap": result.get("overlap", {}).get("partial"),
+            "sar_polarizations": available_polarizations,
+            "sar_representation": sar_block.get("representation"),
         },
         confidence=fusion_confidence(result),
         metadata={
@@ -179,7 +239,12 @@ async def optical_sar_endpoint(
             "size_bytes_optical": len(content_opt),
             "size_bytes_sar": len(content_sar),
             "optical_feature": result.get("optical", {}).get("feature_basis"),
-            "sar_band": result.get("sar", {}).get("band"),
+            "sar_band": sar_block.get("band"),
+            "sar_polarization": sar_block.get("polarization"),
+            "sar_polarizations_available": available_polarizations,
+            "sar_representation": sar_block.get("representation"),
+            "sar_representation_basis": sar_block.get("representation_basis"),
+            "sar_units": sar_block.get("units"),
             **spatial_metadata(result),
             **aoi_metadata(result, aoi_geometry),
         },

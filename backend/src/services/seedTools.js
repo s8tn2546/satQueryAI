@@ -44,7 +44,7 @@ export const INITIAL_TOOLS = [
     acceptedModalities: ['optical', 'sar'],
     parameters: { fusionMethod: 'optional' },
     endpoint: '/optical-sar',
-    outputSchema: { optical: 'object', sar: 'object', fusion: 'object', overlap: 'object', alignment: 'object', crs: 'object', resolution: 'float' }
+    outputSchema: { optical: 'object', sar: 'object', polarization: 'object', representation: 'object', coverage: 'object', metrics: 'object', fusion: 'object', overlap: 'object', alignment: 'object', crs: 'object', resolution: 'float' }
   },
   {
     name: 'ndvi',

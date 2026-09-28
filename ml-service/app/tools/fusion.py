@@ -44,6 +44,14 @@ from app.tools.band_utils import (
     resolve_band_indices,
 )
 from app.tools.index_utils import compute_nd_index
+from app.tools import sar_analytics
+from app.tools.sar_analytics import (
+    band_stats as sar_band_stats,
+    classify_sar_representation,
+    relationship_metrics,
+    require_polarizations,
+    resolve_sar_polarizations,
+)
 
 # Deterministic alignment resampling (optical CRS is the reference grid).
 ALIGN_RESAMPLING = Resampling.nearest
@@ -110,6 +118,30 @@ def _bounds_to_crs(bounds: dict[str, float], src: Any, dst: Any) -> dict[str, fl
         "east": max(c[0] for c in corners),
         "north": max(c[1] for c in corners),
     }
+
+
+def _load_sar_band(
+    src_path: Path,
+    src_band: int,
+    *,
+    aligned: bool,
+    ometa: dict[str, Any],
+    ocrs: Any,
+    sar_nodata: Any,
+) -> np.ndarray:
+    """Read a SAR band on the optical reference grid.
+
+    ``aligned=False`` means the two rasters share a grid, so the band is read
+    directly; ``aligned=True`` means the SAR band is reprojected onto the
+    optical grid (pixels outside SAR coverage become NaN and are excluded from
+    statistics). Never guesses the grid or CRS.
+    """
+    if aligned:
+        return _reproject_to_grid(
+            src_path, src_band, ometa["transform"], ocrs,
+            (ometa["height"], ometa["width"]), sar_nodata,
+        )
+    return read_band(src_path, src_band).astype(np.float64)
 
 
 def _reproject_to_grid(
@@ -321,6 +353,8 @@ def run_optical_sar_fusion(
     speckle_size: int | None = None,
     aoi: Any = None,
     aoi_crs: Any = None,
+    sar_representation: str | None = None,
+    sar_polarizations: str | None = None,
 ) -> dict[str, Any]:
     """Run optical+SAR cross-modal analysis, restricted to an AOI when given.
 
@@ -340,12 +374,19 @@ def run_optical_sar_fusion(
         aoi_crs: optional explicit CRS of the AOI coordinates. A bare GeoJSON
             geometry follows RFC 7946 (WGS84); the resolved CRS is reported in
             ``result["aoi"]``.
+        sar_representation: optional caller-declared SAR value representation —
+            one of ``"amplitude" | "power" | "db" | "unknown"``. Recorded as
+            caller-declared evidence; it is never used to convert values.
+        sar_polarizations: optional comma-separated list of polarization names
+            the SAR raster must provide (e.g. ``"VV,VH"``). A missing required
+            polarization fails explicitly.
 
     Returns:
-        A dict with per-modality statistics, fusion statistics, alignment /
-        overlap / nodata / normalization / speckle metadata and AOI reporting.
-        Raises FusionError subclasses for honest (non-fabricated) failures, or
-        RoiCropError subclasses when the AOI cannot be applied to both inputs.
+        A dict with per-modality statistics, SAR polarization analytics, fusion
+        statistics, alignment / overlap / nodata / normalization / speckle
+        metadata and AOI reporting. Raises FusionError subclasses for honest
+        (non-fabricated) failures, or RoiCropError subclasses when the AOI
+        cannot be applied to both inputs.
     """
     with ExitStack() as stack:
         optical_scope = stack.enter_context(aoi_scope(optical_path, aoi, aoi_crs=aoi_crs))
@@ -356,10 +397,17 @@ def run_optical_sar_fusion(
             optical_band=optical_band,
             sar_band=sar_band,
             speckle_size=speckle_size,
+            sar_representation=sar_representation,
+            sar_polarizations=sar_polarizations,
         )
-    return attach_aoi_pair(
+    result = attach_aoi_pair(
         result, optical_scope, sar_scope, first_label="optical", second_label="sar"
     )
+    if isinstance(result.get("coverage"), dict):
+        result["coverage"]["aoi_scoped"] = bool(
+            result.get("aoi", {}).get("aoiApplied")
+        )
+    return result
 
 
 def _run_fusion(
@@ -369,6 +417,8 @@ def _run_fusion(
     optical_band: int | None,
     sar_band: int | None,
     speckle_size: int | None,
+    sar_representation: str | None = None,
+    sar_polarizations: str | None = None,
 ) -> dict[str, Any]:
     """Fuse two already AOI-scoped rasters."""
     opath, spath = Path(optical_path), Path(sar_path)
@@ -386,6 +436,12 @@ def _run_fusion(
     for pth, meta, label in ((opath, ometa, "optical"), (spath, smeta, "SAR")):
         if meta.get("width", 0) <= 0 or meta.get("height", 0) <= 0:
             raise FusionValidationError(f"{label} image has invalid dimensions.")
+        if str(meta.get("dtype", "")).startswith("complex"):
+            raise FusionValidationError(
+                f"{label} input is complex-valued ({meta.get('dtype')}). "
+                "Complex SLC SAR is not supported; amplitude/intensity "
+                "(GRD) SAR backscatter is required."
+            )
         try:
             if is_raster_empty(pth):
                 raise FusionValidationError(
@@ -456,6 +512,23 @@ def _run_fusion(
         alignment = "reprojected"
         warnings.append("SAR is resampled onto the optical grid (deterministic).")
 
+    # Resolution comparison (reported; the reprojection path resamples SAR onto
+    # the optical grid regardless, but a large mismatch is surfaced honestly).
+    ores = ometa.get("resolution")
+    sres = smeta.get("resolution")
+    if ores and sres and not same_grid:
+        ox, oy = float(ores.get("x", 0)), float(ores.get("y", 0))
+        sx, sy = float(sres.get("x", 0)), float(sres.get("y", 0))
+        if ox > 0 and oy > 0 and sx > 0 and sy > 0:
+            x_ratio = max(ox, sx) / min(ox, sx)
+            y_ratio = max(oy, sy) / min(oy, sy)
+            if x_ratio > 1.5 or y_ratio > 1.5:
+                warnings.append(
+                    f"SAR pixel resolution ({sx:.4g} x {sy:.4g}) differs "
+                    f"materially from the optical resolution ({ox:.4g} x "
+                    f"{oy:.4g}); SAR is resampled onto the optical grid."
+                )
+
     # ---- 7. Optical feature ----
     opt_kind, a_idx, b_idx = _resolve_optical_feature(ometa, optical_band)
     opt_nodata = ometa.get("nodata")
@@ -476,18 +549,43 @@ def _run_fusion(
     sar_idx = _resolve_sar_band(smeta, sar_band)
     sar_nodata = smeta.get("nodata")
 
-    if aligned:
-        sar_raw = _reproject_to_grid(
-            spath, sar_idx, ometa["transform"], ocrs,
-            (ometa["height"], ometa["width"]), sar_nodata,
-        )
-    else:
-        sar_raw = read_band(spath, sar_idx).astype(np.float64)
-
+    sar_raw = _load_sar_band(spath, sar_idx, aligned=aligned, ometa=ometa, ocrs=ocrs, sar_nodata=sar_nodata)
     sar_valid = build_valid_mask(sar_raw, sar_nodata)
+    if not np.any(sar_valid):
+        raise FusionValidationError(
+            f"SAR band {sar_idx} contains only nodata/NaN/Inf values; "
+            "no SAR statistics can be computed."
+        )
     # Speckle filter then re-mask (filter produces NaN for invalid windows).
     sar_feature = median_filter(sar_raw, window, nodata=sar_nodata)
     sar_feature = np.where(sar_valid, sar_feature, np.nan)
+
+    # ---- 8b. SAR-specific analytics (polarization + representation) ----
+    pol_desc = smeta.get("descriptions", []) or []
+    pol = resolve_sar_polarizations(pol_desc, smeta.get("band_count", 0))
+    representation = classify_sar_representation(
+        smeta, path=spath, declared=sar_representation
+    )
+    if sar_polarizations:
+        required_names = [
+            name.strip() for name in sar_polarizations.split(",") if name.strip()
+        ]
+        if required_names:
+            try:
+                require_polarizations(pol, required_names)
+            except sar_analytics.SarValidationError as exc:
+                raise FusionValidationError(str(exc)) from exc
+
+    def _pol_band(role_idx: int) -> np.ndarray | None:
+        if role_idx is None or role_idx < 1 or role_idx > int(smeta.get("band_count", 0)):
+            return None
+        raw = _load_sar_band(
+            spath, role_idx, aligned=aligned, ometa=ometa, ocrs=ocrs,
+            sar_nodata=sar_nodata,
+        )
+        pv = build_valid_mask(raw, sar_nodata)
+        filt = median_filter(raw, window, nodata=sar_nodata)
+        return np.where(pv, filt, np.nan)
 
     # ---- 9. Joint valid overlap mask ----
     valid_overlap = opt_valid & sar_valid & np.isfinite(opt_feature) & np.isfinite(sar_feature)
@@ -502,6 +600,35 @@ def _run_fusion(
         )
     if joint_count < max(4, int(total_pixels * 0.01)):
         warnings.append("The valid overlap is very small; statistics may be unstable.")
+
+    # Per-polarization statistics, scoped to the shared valid overlap so all
+    # SAR numbers describe exactly the pixels the fusion describes.
+    vv_band = _pol_band(pol.get("vv"))
+    vh_band = _pol_band(pol.get("vh"))
+    polarization: dict[str, Any] = {}
+    for role in ("vv", "vh", "hh", "hv"):
+        idx = pol.get(role)
+        arr = {"vv": vv_band, "vh": vh_band}.get(role)
+        if arr is None and role in ("hh", "hv"):
+            arr = _pol_band(idx)
+        if arr is None:
+            polarization[role] = {"available": False, "index": None}
+            continue
+        stats = sar_band_stats(arr, valid_overlap)
+        polarization[role] = {
+            "available": True,
+            "index": idx,
+            "statistics": {
+                k: (round(v, 6) if isinstance(v, float) else v) for k, v in stats.items()
+            },
+            "pixels": stats.get("count", 0),
+            "units": representation["units"],
+        }
+
+    # ---- 9b. VV/VH relationship (only what the representation supports) ----
+    relationship = relationship_metrics(
+        vv_band, vh_band, valid_overlap, representation
+    )
 
     # ---- 10. Per-modality statistics (native units) ----
     opt_stats = _band_stats(opt_feature, valid_overlap)
@@ -535,6 +662,20 @@ def _run_fusion(
             if pixel_area > 0:
                 valid_area_km2 = float(joint_count * pixel_area / 1_000_000.0)
 
+    # Polarization identity of the analyzed fusion band.
+    sar_polarization_label = None
+    for role in ("vv", "vh", "hh", "hv"):
+        if pol.get(role) == sar_idx:
+            sar_polarization_label = role.upper()
+            break
+    if sar_polarization_label is None and sar_idx in pol.get("composite", []):
+        sar_polarization_label = "composite"
+    if sar_polarization_label is None and pol.get("unidentified"):
+        sar_polarization_label = "unidentified"
+
+    available_pols = [role.upper() for role, entry in polarization.items() if entry.get("available")]
+    polarization_availability_block = {role: bool(entry.get("available")) for role, entry in polarization.items()}
+
     result = {
         "optical": {
             "feature_basis": opt_feature_basis,
@@ -543,10 +684,38 @@ def _run_fusion(
         },
         "sar": {
             "band": sar_idx,
+            "polarization": sar_polarization_label,
+            "representation": representation["value"],
+            "representation_basis": representation["basis"],
+            "units": representation["units"],
             "statistics": {k: (round(v, 6) if isinstance(v, float) else v) for k, v in sar_stats.items()},
             "speckle_filter": "median" if window > 1 else "none",
             "speckle_window": window,
             "normalized_mean": round(sar_norm_mean, 6),
+        },
+        "polarization": polarization,
+        "representation": {
+            "value": representation["value"],
+            "determined": representation["determined"],
+            "basis": representation["basis"],
+            "units": representation["units"],
+            "warnings": representation["warnings"],
+        },
+        "coverage": {
+            "total_pixels": total_pixels,
+            "sar_valid_pixels": int(np.count_nonzero(sar_valid & np.isfinite(sar_feature))),
+            "sar_validation_ratio": round(
+                int(np.count_nonzero(sar_valid)) / total_pixels, 6
+            ) if total_pixels else 0.0,
+            "polarization_availability": polarization_availability_block,
+            "polarization_composite_bands": list(pol.get("composite", [])),
+            "polarization_unidentified_bands": list(pol.get("unidentified", [])),
+            "sar_dtype": smeta.get("dtype"),
+            "sar_nodata": sar_nodata,
+            "aoi_scoped": None,
+        },
+        "metrics": {
+            "relationship": relationship,
         },
         "fusion": {
             "method": "equal_weight_feature_fusion",
@@ -555,6 +724,11 @@ def _run_fusion(
             "combined_mean": round(combined_mean, 6),
             "combined_std": round(combined_std, 6),
             "pearson_correlation": round(corr, 6) if corr is not None else None,
+            "sar_evidence": {
+                "polarizations": available_pols,
+                "representation": representation["value"],
+                "basis": "per-polarization statistics in native units plus normalized feature fusion",
+            },
         },
         "overlap": {
             "total_pixels": total_pixels,
@@ -568,6 +742,10 @@ def _run_fusion(
         "alignment": {
             "method": alignment,
             "resampling": str(ALIGN_RESAMPLING),
+            "resolution": {
+                "optical": ores,
+                "sar": sres,
+            },
         },
         "crs": {
             "optical": ocrs_label,

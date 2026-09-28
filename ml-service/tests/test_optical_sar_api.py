@@ -103,6 +103,31 @@ def test_invalid_band_params(fusion_paired_rasters):
     assert _post(optical, sar, speckle_size="2").json()["status"] == "failed"
 
 
+def test_invalid_sar_representation_and_polarizations(fusion_paired_rasters):
+    optical, sar = fusion_paired_rasters
+    assert _post(optical, sar, sar_representation="wavelength").json()["status"] == "failed"
+    assert _post(optical, sar, sar_polarizations="XX").json()["status"] == "failed"
+
+
+def test_declared_representation_passes_through(fusion_sar_bare_pair):
+    optical, sar = fusion_sar_bare_pair
+    body = _post(optical, sar, sar_representation="power").json()
+    assert body["status"] == "success"
+    assert body["result"]["sar"]["representation"] == "linear_power"
+    assert body["result"]["sar"]["representation_basis"] == "caller-declared"
+    assert body["evidence"]["sar_representation"] == "linear_power"
+    assert body["metadata"]["sar_representation"] == "linear_power"
+    assert body["metadata"]["sar_units"].startswith("linear power")
+
+
+def test_required_polarizations_enforced_through_api(fusion_sar_bare_pair):
+    optical, sar = fusion_sar_bare_pair
+    body = _post(optical, sar, sar_polarizations="VV,HH").json()
+    assert body["status"] == "failed"
+    assert "HH" in body["result"]["error"]
+    assert body["confidence"] == 0.0
+
+
 def test_confidence_deterministic(fusion_paired_rasters, fusion_nonoverlap_pair):
     optical, sar = fusion_paired_rasters
     assert _post(optical, sar).json()["confidence"] == 1.0

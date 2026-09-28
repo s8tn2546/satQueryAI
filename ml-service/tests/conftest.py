@@ -319,14 +319,165 @@ def _write_non_geo_tif(path: Path, data: np.ndarray, dtype=None) -> Path:
 
 
 # --------------------------------------------------------------------------- #
-# AOI (area-of-interest) helpers                                                #
+# SAR-specific fixtures                                                         #
 #                                                                             #
-# The 10x10 / EPSG:32643 / origin (500000, 4600000) / 10m fixtures above all    #
-# share the footprint W=500000, S=4599900, E=500100, N=4600000. Their AOIs are   #
-# expressed in those projected metres and therefore declare that CRS: a bare   #
-# GeoJSON would be read as WGS84 (RFC 7946) and would legitimately fail to      #
-# intersect, which is exactly the behaviour a mislabelled AOI must produce.    #
+# These are synthetic (clearly not real satellite data): they exist to prove   #
+# how the SAR analytics behave on labeled/tagged/ambiguous/invalid inputs      #
+# without downloading any dataset.                                            #
 # --------------------------------------------------------------------------- #
+
+_SAR_GRID = dict(
+    driver="GTiff", width=10, height=10, count=2, dtype="float32",
+    crs=CRS.from_epsg(32643), transform=from_origin(500000, 4600000, 10, 10),
+)
+
+
+def _write_sar_pair(
+    tmp_path: Path,
+    name_prefix: str,
+    *,
+    descriptions: tuple[str, str] = ("VV", "VH"),
+    tags: dict | None = None,
+    values: tuple[float | np.ndarray, float | np.ndarray] = (0.1, 0.2),
+) -> tuple[Path, Path]:
+    """Optical (RED/GREEN/NIR) + a 2-band SAR raster built from vv/vh values.
+
+    Each value may be a scalar (constant band) or a 10x10 array (structured
+    backscatter). Returns (optical_path, sar_path). `tags` are written as
+    GeoTIFF dataset tags so the fusion layer can read them back.
+    """
+    def _band(value) -> np.ndarray:
+        if np.isscalar(value):
+            return np.full((10, 10), value, dtype=np.float32)
+        return np.asarray(value, dtype=np.float32)
+
+    optical = _write_fusion_multiband(tmp_path, f"{name_prefix}_opt.tif",
+                                      red=100, green=200, nir=400)
+    sar = tmp_path / f"{name_prefix}_sar.tif"
+    data = np.stack([_band(values[0]), _band(values[1])])
+    with rasterio.open(sar, "w", **_SAR_GRID) as dst:
+        dst.write(data)
+        dst.set_band_description(1, descriptions[0])
+        dst.set_band_description(2, descriptions[1])
+        if tags:
+            dst.update_tags(**tags)
+    return optical, sar
+
+
+def _write_sar_multiband(
+    tmp_path: Path, name: str, bands: np.ndarray, descriptions: tuple[str, ...],
+    tags: dict | None = None, dtype: str = "float32",
+) -> Path:
+    """A generic k-band SAR raster with descriptions and optional tags."""
+    path = tmp_path / name
+    count = bands.shape[0]
+    with rasterio.open(
+        path, "w", driver="GTiff", width=10, height=10, count=count,
+        dtype=dtype, crs=CRS.from_epsg(32643),
+        transform=from_origin(500000, 4600000, 10, 10),
+    ) as dst:
+        dst.write(np.stack(bands).astype(dtype))
+        for i, desc in enumerate(descriptions, start=1):
+            dst.set_band_description(i, desc)
+        if tags:
+            dst.update_tags(**tags)
+    return path
+
+
+@pytest.fixture
+def fusion_sar_db_tagged_pair(tmp_path: Path) -> tuple[Path, Path]:
+    """Optical + SAR with explicit dB dataset tags -> representation 'db'.
+
+    The bands are structured (a ramp and a correlated ramp) so a real
+    cross-polarization association is computable on dB values.
+    """
+    vv = np.arange(100, dtype=np.float32).reshape(10, 10)
+    vh = 0.5 * (vv + 1.0)
+    return _write_sar_pair(
+        tmp_path, "db",
+        tags={"UNITS": "dB", "REPRESENTATION": "backscatter dB"},
+        values=(vv, vh),
+    )
+
+
+@pytest.fixture
+def fusion_sar_amplitude_tagged_pair(tmp_path: Path) -> tuple[Path, Path]:
+    """SAR explicitly tagged as linear amplitude values."""
+    return _write_sar_pair(
+        tmp_path, "amp",
+        tags={"REPRESENTATION": "linear amplitude"},
+        values=(1.0, 2.0),
+    )
+
+
+@pytest.fixture
+def fusion_sar_ambiguous_pair(tmp_path: Path) -> tuple[Path, Path]:
+    """SAR described as sigma0_VV/sigma0_VH without a dB suffix.
+
+    Band-level polarization is resolvable, but the value representation is
+    ambiguous (gamma0/sigma0 alone cannot say amplitude vs power vs dB).
+    """
+    return _write_sar_pair(tmp_path, "amb", descriptions=("sigma0_VV", "sigma0_VH"))
+
+
+@pytest.fixture
+def fusion_sar_bare_pair(tmp_path: Path) -> tuple[Path, Path]:
+    """SAR with VV/VH descriptions and no representation evidence at all."""
+    return _write_sar_pair(tmp_path, "bare", descriptions=("VV", "VH"))
+
+
+@pytest.fixture
+def fusion_sar_nan_pair(tmp_path: Path) -> tuple[Path, Path]:
+    """SAR raster where every pixel is NaN -> must fail honestly."""
+    optical = _write_fusion_multiband(tmp_path, "nan_opt.tif", red=100, green=200, nir=400)
+    sar = _write_sar_multiband(
+        tmp_path, "nan_sar.tif",
+        bands=np.array([
+            np.full((10, 10), np.nan, dtype=np.float32),
+            np.full((10, 10), np.nan, dtype=np.float32),
+        ]),
+        descriptions=("VV", "VH"),
+        dtype="float32",
+    )
+    return optical, sar
+
+
+@pytest.fixture
+def fusion_sar_complex_pair(tmp_path: Path) -> tuple[Path, Path]:
+    """Single-look-complex (SLC) SAR in complex64 -> must fail as unsupported."""
+    optical = _write_fusion_multiband(tmp_path, "slc_opt.tif", red=100, green=200, nir=400)
+    sar = _write_sar_multiband(
+        tmp_path, "slc_sar.tif",
+        bands=np.array([
+            (np.ones((10, 10)) + 1j * np.ones((10, 10))),
+        ]),
+        descriptions=("SLC",),
+        dtype="complex64",
+    )
+    return optical, sar
+
+
+@pytest.fixture
+def fusion_sar_composite_pair(tmp_path: Path) -> tuple[Path, Path]:
+    """SAR whose single band is described as a VV+VH composite."""
+    optical = _write_fusion_multiband(tmp_path, "cmp_opt.tif", red=100, green=200, nir=400)
+    sar = _write_sar_multiband(
+        tmp_path, "cmp_sar.tif",
+        bands=np.array([np.full((10, 10), 0.5, dtype=np.float32)]),
+        descriptions=("VV+VH",),
+    )
+    return optical, sar
+
+
+@pytest.fixture
+def sar_vv_only_raster(tmp_path: Path) -> Path:
+    """A single-band VV SAR raster with an explicit dB tag."""
+    return _write_sar_multiband(
+        tmp_path, "vv_only.tif",
+        bands=np.array([np.full((10, 10), -12.0, dtype=np.float32)]),
+        descriptions=("sigma0_VV_dB",),
+        tags={"UNITS": "dB", "REPRESENTATION": "backscatter dB"},
+    )
 
 UTM33N = "EPSG:32643"
 
