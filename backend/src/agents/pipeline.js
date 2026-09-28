@@ -88,6 +88,16 @@ function aggregateToolEvidence(imageRefs, successResults, allResults, parameters
   };
 }
 
+function emitStage(options, stage, detail) {
+  try {
+    if (typeof options?.stageSink === 'function') {
+      options.stageSink(stage, detail);
+    }
+  } catch (err) {
+    console.error('[Pipeline] stageSink error:', err?.message || err);
+  }
+}
+
 export async function runAgentPipeline(queryText, imageRefIds, parameters = {}, options = {}) {
   const sessionId = normalizeSessionId(options?.sessionId);
   const trace = [];
@@ -105,6 +115,7 @@ export async function runAgentPipeline(queryText, imageRefIds, parameters = {}, 
       trace.push(makeTraceEntry('tile_fetch_error', `Could not fetch images: ${err.message}`));
     }
   }
+  emitStage(options, 'acquiring_data', `Acquired ${tiles.length} of ${sanitizedRefs.length} requested image(s)`);
 
   const classification = await classifyIntent(queryText, tiles, trace);
   const { taskType, toolNames, parameters: extractedParams } = classification;
@@ -143,6 +154,8 @@ export async function runAgentPipeline(queryText, imageRefIds, parameters = {}, 
 
   const resolvedTaskType = TASK_TYPE_ENUM.has(taskType) ? taskType : 'VQA';
 
+  emitStage(options, 'validating', `Validating ${resolvedTaskType} request`);
+
   const validationResult = validateInputs(resolvedTaskType, tiles, trace, mergedParams);
   if (!validationResult.valid) {
     const response = makeRejectedResponse(validationResult.reason, trace, resolvedTaskType);
@@ -176,6 +189,9 @@ export async function runAgentPipeline(queryText, imageRefIds, parameters = {}, 
   const plan = tools.plan || null;
 
   trace.push(makeTraceEntry('parameter_extraction', `Parameters: ${JSON.stringify(mergedParams)}`));
+
+  emitStage(options, 'planning', `Planning tools: ${tools.map(t => t.name).join(', ')}`);
+  emitStage(options, 'running_analysis', `Running analysis with: ${tools.map(t => t.name).join(', ')}`);
 
   const toolResults = await executeTools(tools, tiles, mergedParams, trace, plan);
 
@@ -281,6 +297,8 @@ export async function runAgentPipeline(queryText, imageRefIds, parameters = {}, 
       : null,
     aoiRequested: Boolean(mergedParams.aoi || mergedParams.roi)
   };
+
+  emitStage(options, 'generating_answer', `Composing answer for ${resolvedTaskType}`);
 
   const answerText = await composeAnswer(queryText, resolvedTaskType, toolResults, trace, composerContext);
 

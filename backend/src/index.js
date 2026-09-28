@@ -2,6 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import { connectDB } from './services/db.js';
+import { reconcileStaleJobs } from './services/queryJobQueue.js';
 import { authMiddleware } from './middleware/auth.js';
 import imagesRouter from './routes/images.js';
 import queryRouter from './routes/query.js';
@@ -38,6 +39,16 @@ let server;
 export const startServer = async () => {
   if (!server) {
     await connectDB();
+    // Async jobs persist in Mongo; any job left queued/running by a previous
+    // process is marked failed so it is never silently re-executed.
+    try {
+      const reconciled = await reconcileStaleJobs();
+      if (reconciled.modifiedCount > 0) {
+        console.log(`[SatQuery Backend] Recovered ${reconciled.modifiedCount} stale async job(s) at startup`);
+      }
+    } catch (err) {
+      console.error('[SatQuery Backend] Failed to reconcile stale async jobs:', err?.message || err);
+    }
     server = app.listen(PORT, () => {
       console.log(`[SatQuery Backend] Server running on port ${PORT}`);
     });

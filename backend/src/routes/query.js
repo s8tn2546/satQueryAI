@@ -1,9 +1,11 @@
 import express from 'express';
 import mongoose from 'mongoose';
 import Query from '../models/Query.js';
+import QueryJob from '../models/QueryJob.js';
 import ResultsCache from '../models/ResultsCache.js';
 import mlServiceClient from '../services/mlServiceClient.js';
-import { runAgentPipeline } from '../agents/pipeline.js';
+import { executeQueryRequest, parseQueryRequest } from '../services/queryExecution.js';
+import { enqueueQueryJob } from '../services/queryJobQueue.js';
 import { composeAnswer } from '../agents/answerComposer.js';
 import { makeTraceEntry } from '../utils/responseBuilder.js';
 import { isDemoRegion, isMockTrendResult, findDemoTrendFallback } from '../services/demoTrendService.js';
@@ -129,62 +131,30 @@ async function findCoveringCacheEntry({ region, aoi, metric, startDate, endDate,
  * POST /api/query
  * Main entry point: { queryText, imageRefs: [tileId, ...] }
  * Returns structured response per Section 6 contract.
+ * With ?async=true the request is executed in the background and this endpoint
+ * returns 202 with `{ jobId, jobStatus: 'queued' }`; poll
+ * GET /api/query/status/:jobId for the result. Input validation is identical
+ * for both paths (same 400 rejection contract).
  */
 router.post('/', async (req, res) => {
   try {
-    const { queryText, imageRefs = [], parameters = {}, sessionId } = req.body;
+    if (req.query.async === 'true' || req.query.async === '1') {
+      const parsed = parseQueryRequest(req.body);
+      if (!parsed.ok) {
+        return res.status(parsed.httpStatus).json(parsed.response);
+      }
 
-    if (!queryText || typeof queryText !== 'string' || queryText.trim() === '') {
-      return res.status(400).json({
-        answerText: 'Query text is required.',
-        taskType: 'VQA',
-        result: {},
-        evidence: { images: [], region: {}, notes: 'Validation failure: empty queryText' },
-        confidence: 0,
-        executionTrace: [{ step: 'input_validation', detail: 'Query text was missing or empty', timestamp: new Date().toISOString() }],
-        status: 'rejected'
-      });
+      const { queryText, imageRefs, parameters, sessionId } = parsed.values;
+      const userId = req.user && req.user._id ? req.user._id : null;
+      const { jobId } = await enqueueQueryJob({ queryText, imageRefs, parameters, sessionId, userId });
+      return res.status(202).json({ jobId, jobStatus: 'queued', stage: 'queued' });
     }
 
-    if (sessionId !== undefined && typeof sessionId !== 'string') {
-      return res.status(400).json({
-        answerText: 'sessionId must be a string.',
-        taskType: 'VQA',
-        result: {},
-        evidence: { images: [], region: {}, notes: 'Validation failure: sessionId is not a string' },
-        confidence: 0,
-        executionTrace: [{ step: 'input_validation', detail: 'sessionId was not a string', timestamp: new Date().toISOString() }],
-        status: 'rejected'
-      });
+    const result = await executeQueryRequest(req.body);
+    if (!result.ok) {
+      return res.status(result.httpStatus).json(result.response);
     }
-
-    if (!Array.isArray(imageRefs)) {
-      return res.status(400).json({
-        answerText: 'imageRefs must be an array of tile IDs.',
-        taskType: 'VQA',
-        result: {},
-        evidence: { images: [], region: {}, notes: 'Validation failure: imageRefs is not an array' },
-        confidence: 0,
-        executionTrace: [{ step: 'input_validation', detail: 'imageRefs was not an array', timestamp: new Date().toISOString() }],
-        status: 'rejected'
-      });
-    }
-
-    const invalidRefs = imageRefs.filter(ref => !mongoose.isValidObjectId(ref));
-    if (invalidRefs.length > 0) {
-      return res.status(400).json({
-        answerText: `Invalid image reference(s): ${invalidRefs.join(', ')}`,
-        taskType: 'VQA',
-        result: {},
-        evidence: { images: [], region: {}, notes: 'Validation failure: malformed image reference' },
-        confidence: 0,
-        executionTrace: [{ step: 'input_validation', detail: 'One or more imageRefs were malformed', timestamp: new Date().toISOString() }],
-        status: 'rejected'
-      });
-    }
-
-    const response = await runAgentPipeline(queryText.trim(), imageRefs, parameters, { sessionId });
-    return res.status(200).json(response);
+    return res.status(200).json(result.response);
   } catch (error) {
     console.error('[Query] Pipeline error:', error);
     return res.status(500).json({
@@ -426,6 +396,51 @@ router.get('/history', async (req, res) => {
   } catch (error) {
     console.error('[History] Error listing queries:', error);
     return res.status(500).json({ status: 'failed', error: 'An internal error occurred while listing queries.' });
+  }
+});
+
+/**
+ * GET /api/query/status/:jobId
+ * Poll target for async jobs. Registered before the `/:id` routes so the
+ * two-segment path can never be shadowed by `/:id`.
+ */
+router.get('/status/:jobId', async (req, res) => {
+  try {
+    const job = await QueryJob.findOne({ jobId: String(req.params.jobId) });
+    if (!job) {
+      return res.status(404).json({ status: 'failed', error: 'Job not found' });
+    }
+
+    // Ownership guard: for authenticated jobs only the owning user may poll.
+    // Anonymous jobs (no userId) keep the repository's existing convention —
+    // possession of the unguessable jobId is the credential.
+    if (job.userId && (!req.user || String(req.user._id) !== String(job.userId))) {
+      return res.status(404).json({ status: 'failed', error: 'Job not found' });
+    }
+
+    const jobMeta = {
+      jobId: job.jobId,
+      jobStatus: job.status,
+      stage: job.stage,
+      createdAt: job.createdAt,
+      startedAt: job.startedAt,
+      completedAt: job.completedAt
+    };
+
+    if (job.status === 'completed') {
+      // The full synchronous result contract is preserved; job bookkeeping is
+      // added alongside (never overwriting the pipeline's own fields).
+      return res.status(200).json({ ...(job.response || {}), ...jobMeta, queryId: job.queryId || null });
+    }
+
+    if (job.status === 'failed') {
+      return res.status(200).json({ ...jobMeta, error: job.error || 'The job failed.' });
+    }
+
+    return res.status(200).json(jobMeta);
+  } catch (error) {
+    console.error('[Query] Error fetching job status:', error);
+    return res.status(500).json({ status: 'failed', error: 'An internal error occurred while fetching the job status.' });
   }
 });
 
