@@ -62,9 +62,51 @@ We separate perception from computation: the VLM handles visual-language underst
 - **Intent classification** decides *what* the user is asking (VQA, caption, change, optical+SAR, NDVI/NDWI, area, trend…). With an LLM API key configured it uses an LLM tool call; without one it falls back to a deterministic local heuristic.
 - **Task planning** turns the intent into an ordered plan with explicit dependencies (e.g. `fetch-imagery → ndvi`, or `change → area`) using the registered tool registry.
 - **Input validation** checks that the uploaded tiles match what the task needs. Rasters are validated by the ML service (`/validate`) for georeferencing, CRS, dimensions, and bands where applicable.
+- **AOI spatial scoping** — when a region of interest is drawn, the bounds are parsed and reprojected to the raster CRS; the tools crop to those exact pixels so indices, change, area, and captions all target the selected region.
 - **Tool execution** calls each registered tool — deterministic geospatial endpoints on the ML service, or VLM endpoints for visual understanding — and streams files as multipart uploads.
 - **Evidence + confidence** aggregates the images/regions/notes each tool produced, and combines per-tool confidence signals into a single heuristic score.
 - **Answer composition** writes the final human-readable answer using the evidence, and the full execution trace is returned with the result.
+
+---
+
+## LLM usage
+
+SatQuery AI uses a **local vision-language model (Qwen2-VL)** for image understanding and, when configured, a **separate external text LLM** to (1) classify the query into a task type + tool set and (2) compose the final natural-language answer from the tools' evidence. The LLM never computes geospatial quantities — it only interprets intent and narrates deterministic tool results.
+
+### Where the LLM is used
+
+| Stage | Agent | How the LLM is used |
+|---|---|---|
+| Intent classification | `backend/src/agents/intentClassifier.js` | A single tool/function-calling request (`classify_query`) that returns the task type and the ordered list of tools to run. `max_tokens: 1024`. Falls back to a deterministic keyword heuristic if the call fails. |
+| Answer composition | `backend/src/agents/answerComposer.js` | Given the query, task type, and the tool results, generates the final grounded answer, sized by evidence richness (`maxTokens = max(1024, config.maxTokens)`, default floor 1024, `LLM_MAX_TOKENS` default 2048). Falls back to a deterministic template if the call fails. |
+
+Both agents share a single LLM configuration resolver so they can never disagree about whether a real LLM call is possible:
+
+- `backend/src/utils/llmConfig.js` (`resolveLlmConfig()`) picks the **provider** and **model** and flags **mock** mode.
+- **Provider selection** — `GROQ_API_KEY` (if set) forces the **Groq** provider via its OpenAI-compatible endpoint; otherwise `LLM_PROVIDER` selects `anthropic` (default) or `openai`.
+- **Model selection** — Groq: `GROQ_MODEL` (default `gptoss-120b`); Anthropic/OpenAI: `LLM_MODEL` (default `claude-3-5-haiku-20241022`).
+- **Mock detection** — the resolver treats empty keys and known placeholders (`demo`, `dummy`, `fake`, `mock`, `test`, `placeholder`, `your_llm_api_key`, `change-me`, …) as non-credentials. In mock mode no LLM call is attempted and the deterministic local heuristic/template is used, so the shipped `LLM_API_KEY=demo` never triggers a silent real-API failure.
+
+### Three trace-visible LLM modes
+
+Every classification/answer trace entry is labelled with one of three modes (`LLM_MODE`):
+
+- **`LLM`** — a real call to the configured provider succeeded.
+- **`MOCK`** — the resolved key was a placeholder/absent, so deterministic local logic was used and **no API call was attempted** (the trace records the mock reason).
+- **`FALLBACK`** — a real call was attempted but failed (e.g. network/auth error), so the stage degraded to a labelled deterministic response.
+
+### Related environment variables
+
+| Service | Variable | Purpose |
+|---|---|---|
+| Backend | `LLM_API_KEY` | Key for the text LLM used by intent classification + answer composition (Anthropic/OpenAI) |
+| Backend | `LLM_PROVIDER` | `anthropic` (default) or `openai`; ignored if `GROQ_API_KEY` is set |
+| Backend | `GROQ_API_KEY` | If set, forces the Groq provider (OpenAI-compatible) and takes precedence over `LLM_API_KEY` |
+| Backend | `GROQ_MODEL` | Groq model id (default `gptoss-120b`) |
+| Backend | `LLM_MODEL` | Anthropic/OpenAI model id (default `claude-3-5-haiku-20241022`) |
+| Backend | `LLM_MAX_TOKENS` | Answer-composition max output tokens (default 2048; floor 1024) |
+
+> This external text LLM is **optional and separate** from the local Qwen2-VL vision-language model described below. With no valid LLM key, SatQuery AI still runs end-to-end using deterministic local heuristics and labelled fallbacks.
 
 ---
 
@@ -73,6 +115,8 @@ We separate perception from computation: the VLM handles visual-language underst
 - **Natural-language querying of satellite imagery** — ask questions about a single image or compare image pairs.
 - **Vision-language understanding** — Qwen2-VL (2B) processes image + text together for VQA and captioning, with PEFT/LoRA adaptation.
 - **Deterministic geospatial tools** — NDVI/NDWI, bi-temporal change detection, optical+SAR fusion, area measurement, raster validation, and regional imagery acquisition.
+- **Spatially-aware AOI analysis** — drawn regions of interest (ROI/AOI) are parsed, reprojected into the raster's native CRS, and used to crop the exact pixels before analysis, so every result is scoped to the selected area.
+- **Georeference integrity** — rasters are honestly classified (georeferenced / visual-only / invalid / unverified) and labeled (`Tile.isGeoreferenced`) instead of silently misusing rasterio's identity-matrix substitute.
 - **Explainable results** — each response exposes the tool(s) used, status, evidence, per-tool confidence, metadata, and the full execution trace.
 - **Session-scoped history** — query results are persisted in MongoDB and filtered by session.
 - **3D globe UI** — Cesium-based globe with ROI drawing, basemap switching, and OSM Nominatim search/reverse-geocoding.
@@ -85,8 +129,8 @@ We separate perception from computation: the VLM handles visual-language underst
 
 | Layer | Technology |
 |---|---|
-| Frontend | React 19, Vite 8, Cesium, GSAP, Framer Motion, @paper-design/shaders-react, Tailwind CSS 4, react-router, native `fetch`, OSM Nominatim, vite-plugin-pwa |
-| Backend | Node.js 20, Express 4, MongoDB/Mongoose, JWT + bcrypt (auth infrastructure), Multer, Anthropic + OpenAI SDKs, Jest/Supertest |
+| Frontend | React 19, Vite 8, Cesium, GSAP, Framer Motion, @paper-design/shaders-react, Tailwind CSS 4, react-router-dom, native `fetch`, OSM Nominatim, vite-plugin-pwa |
+| Backend | Node.js 20, Express 4, MongoDB/Mongoose, JWT + bcrypt (auth infrastructure), Multer, Anthropic + OpenAI SDKs (Anthropic/OpenAI/Groq), Jest/Supertest |
 | ML service | Python 3.11, FastAPI, Uvicorn, PyTorch, Transformers, PEFT, Accelerate, qwen-vl-utils, Rasterio, NumPy, PyProj, Shapely, Pillow, earthengine-api (lazy import) |
 | Model | Qwen2-VL-2B-Instruct (base) + LoRA adapter |
 | Deployment | Docker / docker-compose (mongodb + ml + backend) |
@@ -183,6 +227,22 @@ Not every tool is deterministic: `vqa` and `caption` are VLM inference, and `tre
 - The UI presents "major change" only as a **presentation heuristic** — it is not a universal/scientific fixed threshold.
 - Only pixel-level change is measured; the system does **not** invent semantic labels (e.g. "flood", "deforestation") from the difference statistics.
 
+### AOI / spatial cropping
+
+Region-of-interest selection is backed by a dedicated spatial engine (`ml-service/app/tools/roi_crop.py`):
+
+- AOI inputs are parsed and validated across accepted formats (GeoJSON, `[w,s,e,n]` bounds, WKT) and reprojected from their source CRS into the raster's native CRS before use.
+- `crop_raster` clips the raster to the AOI geometry (via `rasterio.mask`), preserving nodata so downstream pixel statistics never mix clipped regions with real observations.
+- The geospatial tools (`ndvi`, `ndwi`, `area`, `change`, `vqa`, `caption`) all accept AOI/detail parameters; the backend agent pipeline (`inputValidator`, `toolExecutor`, `mlServiceClient`) propagates `roiAttachment` bounds into every tool call.
+
+### Georeference integrity
+
+Georeferencing is verified end-to-end rather than assumed:
+
+- `NotGeoreferencedWarning` and rasterio's identity-matrix substitute are handled deliberately in `raster_io.py` — a raster counts as georeferenced only when it has a real CRS **and** a real geotransform.
+- `validation.classify_raster` returns an explicit classification so the backend can label tiles honestly (`Tile.isGeoreferenced`): `georeferenced_analysis_ready`, `visual_only_valid`, `invalid`, or `unverified`.
+- Non-georeferenced uploads (e.g. plain renders) remain usable for visual VQA/captioning but are never presented as spatially analyzable; geographic operations on them fail with an explicit, labelled reason.
+
 ---
 
 ## Evidence & explainability
@@ -247,6 +307,7 @@ flowchart TD
         Validator --> ToolExecutor
     end
     ToolExecutor -->|VQA / Caption| MLVLM["FastAPI ML Service → Qwen2-VL + LoRA"]
+    ToolExecutor --> AOICrop["AOI Crop / Georef Integrity"]
     ToolExecutor --> NDVI
     ToolExecutor --> NDWI
     ToolExecutor --> Change["Change Detection"]
@@ -326,7 +387,8 @@ docker compose up -d --build --wait
 | Backend | `PORT`, `MONGODB_URI`, `NODE_ENV` | Server, database, environment |
 | Backend | `JWT_SECRET` | JWT signing secret (auth infrastructure) |
 | Backend | `ML_SERVICE_BASE_URL`, `ML_SERVICE_TIMEOUT_MS` | ML service connectivity (default timeout 600000 ms for CPU inference) |
-| Backend | `LLM_API_KEY`, `LLM_PROVIDER` | LLM for intent classification/answer composition (`anthropic`/`openai`); unset ⇒ deterministic heuristic |
+| Backend | `LLM_API_KEY`, `LLM_PROVIDER`, `LLM_MODEL`, `LLM_MAX_TOKENS` | Text LLM for intent classification/answer composition (`anthropic`/`openai`); placeholder/unset ⇒ deterministic heuristic. See [LLM usage](#llm-usage) |
+| Backend | `GROQ_API_KEY`, `GROQ_MODEL` | Optional Groq (OpenAI-compatible) provider; takes precedence over `LLM_API_KEY` when set |
 | Backend | `DEMO_TREND_REGION`, `DEMO_TREND_METRIC`, `DEMO_TREND_INTERVAL`, `DEMO_TREND_START_DATE`, `DEMO_TREND_END_DATE`, `DEMO_TREND_TTL_DAYS` | Optional demo-region trend precompute fallback |
 | Frontend | `VITE_API_BASE_URL` | Backend base URL in development (default `http://localhost:5010`) |
 
@@ -437,9 +499,10 @@ satQueryAI/
 │   │   │                        # toolExecutor, confidenceEstimator, answerComposer, pipeline
 │   │   ├── middleware/          # auth middleware (optional)
 │   │   ├── models/              # Mongoose models (Query, Tile, ToolRegistry, ResultsCache, User)
-│   │   ├── routes/              # query, images, tiles, tools, auth, trend, ml, fetch-imagery
+│   │   ├── routes/              # query, images, tiles, tools, auth, ml, fetch-imagery
 │   │   ├── services/            # db, mlServiceClient, demoTrendService, seedTools
-│   │   └── utils/               # responseBuilder
+│   │   └── utils/               # responseBuilder, llmConfig, trendResultNormalizer,
+│   │                            # multiTemporalAnalyzer, semanticChangeInterpreter, spectralAnalyzer
 │   ├── tests/                   # Jest + Supertest suites
 │   └── scripts/                 # precompute-demo-trend
 ├── frontend/                    # React 19 + Vite app
@@ -454,9 +517,11 @@ satQueryAI/
 │   │   ├── api/                 # validate, vqa, caption, ndvi, ndwi, area,
 │   │   │                        # change, optical_sar, trend, fetch_imagery
 │   │   ├── models/              # vlm_loader (Qwen2-VL + LoRA)
-│   │   ├── tools/               # vqa, caption, change, fusion, ndvi, ndwi, area, trend, fetch_imagery
+│   │   ├── tools/               # vqa, caption, change, fusion, ndvi, ndwi, area, trend,
+│   │   │                        # fetch_imagery, roi_crop
 │   │   ├── geospatial/          # raster_io, crs, validation
 │   │   ├── preprocessing/       # band_detection, normalize, speckle_filter, loader
+│   │   ├── common/              # http_utils
 │   │   └── services/            # gee_client (GEE provider, mock/dev mode)
 │   ├── adaptation/              # LoRA fine-tuning (RSVQA + BigEarthNet) and final_adapter
 │   │   └── final_adapter/       # SERVING adapter (adapter_config.json + safetensors)
@@ -469,17 +534,7 @@ satQueryAI/
 
 ## Testing
 
-Repository-defined test commands (run inside each service directory):
-
-| Service | Command | What it runs |
-|---|---|---|
-| Backend | `cd backend && npm test` | Jest + Supertest suites (`node --experimental-vm-modules node_modules/.bin/jest --runInBand`) — 24 suites covering the agent pipeline, fallbacks, caching, session history, and integration |
-| ML service | `cd ml-service && source .venv/bin/activate && pytest` | pytest suite for APIs, raster I/O, validation, NDVI/NDWI, change, fusion, trend, fetch-imagery, and adaptation |
-| Frontend | `cd frontend && npm run lint` | ESLint |
-| Frontend | `cd frontend && npm run build` | Vite production build (also generates the PWA assets) |
-| Full stack | `./scripts/docker-smoke.sh` (from repo root) | Compose build + health checks on mongodb/ml/backend + optional live query round-trip |
-
-> Status note (verified in this repository): the ML-service `pytest` suite passes (285 tests). The backend `npm test` suite currently has 5 failing suites (32 tests) — the failures are pre-existing and unrelated to documentation (e.g. some trace-shape tests expect a `details` field while `makeTraceEntry` emits `detail`). Report them as-is rather than assuming "all green".
+Per-service test suites and commands are maintained in the module guides (`backend/BACKEND.md`, `ml-service/ML_SERVICE.md`, `frontend/FRONTEND.md`). Test reports are distributed separately with each release; they are not enumerated in this top-level overview.
 
 ---
 

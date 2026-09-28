@@ -157,7 +157,7 @@ Since authentication is LOW priority in `BACKEND.md`, the frontend must work ful
 
 - **Masks/change highlights**: render as a semi-transparent colored overlay on top of the base image
 - **Bounding boxes (grounding)**: render as a rectangle overlay with the referenced label, positioned per the coordinate convention the ML service returns (confirm pixel vs. normalized coordinates with `ML_SERVICE.md` Section 9 before implementing)
-- **Trend charts**: `recharts` line chart, x-axis as date, y-axis as the metric value, matching the `series` array shape from the backend
+- **Trend charts**: hand-rolled SVG line chart in `TrendChart.jsx` (no charting-library dependency), x-axis as date, y-axis as the metric value, matching the `series` array shape from the backend
 - Keep all evidence visuals inside the "Visual evidence" section (Section 4.4) — don't scatter result visuals across multiple unrelated parts of the panel
 
 ---

@@ -8,7 +8,7 @@ The frontend is a single-page React application built with **Vite** and styled u
 - **Build System**: Vite
 - **3D Globe Engine**: CesiumJS (`cesium`)
 - **Icons**: Lucide React (`lucide-react`)
-- **Charts**: Recharts (`recharts`)
+- **Charts**: custom SVG rendering in `TrendChart.jsx` (no charting library dependency)
 - **Styling**: Tailwind CSS + Custom Dark Theme (`#060913` base canvas)
 
 ---

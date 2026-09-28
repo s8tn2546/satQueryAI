@@ -22,7 +22,6 @@ backend/src/
 │   ├── images.js                # Image upload & tile registration handler
 │   ├── tiles.js                 # Tile metadata retrieval handler
 │   ├── ml.js                    # ML service proxy & health check
-│   ├── trend.js                 # Precomputed trend analysis handler
 │   ├── tools.js                 # Tool registry metadata handler
 │   ├── fetch-imagery.js         # GEE fetch-by-region handler
 │   └── auth.js                  # User registration & JWT authentication
@@ -90,11 +89,10 @@ backend/src/
 
 ### API Routes (`src/routes/`)
 
-- **`src/routes/query.js`**: Handles `POST /api/query` and `GET /api/query/history`. Parses user input, extracts session ID, triggers pipeline, and returns formatted response.
+- **`src/routes/query.js`**: Handles `POST /api/query`, `GET /api/query/history`, and `POST /api/query/trend` (two-phase cache resolution, then ML `/trend`). Parses user input, extracts session ID, triggers pipeline, and returns formatted response.
 - **`src/routes/images.js`**: Handles `POST /api/images/upload`. Accepts multipart GeoTIFF/TIFF files via Multer, forwards files to ML service `/validate` endpoint, and saves valid tiles into MongoDB `Tile` collection.
 - **`src/routes/tiles.js`**: Handles `GET /api/tiles` and `GET /api/tiles/:id`.
 - **`src/routes/ml.js`**: Exposes `/api/ml/health` and `/api/ml/warmup` proxy routes.
-- **`src/routes/trend.js`**: Serves time-series trend analysis endpoints.
 - **`src/routes/tools.js`**: Lists available tools in the system registry.
 
 ### Services & Data Models (`src/services/` & `src/models/`)
