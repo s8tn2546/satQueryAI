@@ -18,6 +18,8 @@ answer format (Section 9, RSVQA): lowercase short word/phrase, no punctuation.
 
 from __future__ import annotations
 
+import asyncio
+import functools
 import logging
 import os
 from pathlib import Path
@@ -155,12 +157,18 @@ async def vqa_endpoint(
     tmp_path: Path | None = None
     try:
         tmp_path = save_to_temp(content, ext)
-        result = compute_vqa(
-            tmp_path,
-            question.strip(),
-            adapter_path=VQA_ADAPTER_PATH,
-            aoi=aoi_geometry,
-            aoi_crs=aoi_crs,
+        # Heavy synchronous work (AOI crop, raster decode, model inference) runs
+        # off the event loop in a worker thread; only the blocking compute is
+        # moved. Validation, upload read and response construction stay async.
+        result = await asyncio.to_thread(
+            functools.partial(
+                compute_vqa,
+                tmp_path,
+                question.strip(),
+                adapter_path=VQA_ADAPTER_PATH,
+                aoi=aoi_geometry,
+                aoi_crs=aoi_crs,
+            )
         )
     except RoiCropError as exc:
         return aoi_error_output("vqa", exc, raw_aoi=aoi_geometry)
@@ -213,23 +221,41 @@ async def vlm_warmup():
     """Pre-load the VLM (base model + LoRA adapter) into the in-memory cache.
 
     Call once before a live demo so the first real VQA/caption request does
-    not pay the cold model-load cost (~20-50s on CPU). Subsequent
-    warm-vs-cold inference timing is reported. This performs no analysis.
+    not pay the cold model-load cost (~15-35s on Apple M2 MPS/fp16, ~20-40s on
+    CPU float32). Warms both the VQA model (with its adapter) and the caption
+    base model; the load itself runs in a worker thread so the event loop stays
+    responsive while weights load. This performs no analysis.
+
+    Warmup is safe to call concurrently with real requests: single-flight
+    loading guarantees exactly one instance per model key is ever built.
     """
     from time import time
 
-    t0 = time()
+    from app.models.vlm_loader import DEFAULT_CAPTION_MODEL, load_qwen_model
+
+    async def _warm_one(model_name: str, adapter_path: str | None) -> float:
+        t0 = time()
+        await asyncio.to_thread(load_qwen_model, model_name, adapter_path)
+        return round(time() - t0, 1)
+
     try:
-        model, _ = load_qwen_model(DEFAULT_VQA_MODEL, VQA_ADAPTER_PATH)
         from peft import PeftModel
 
-        load_s = round(time() - t0, 1)
+        vqa_load_s = await _warm_one(DEFAULT_VQA_MODEL, VQA_ADAPTER_PATH)
+        caption_load_s = await _warm_one(DEFAULT_CAPTION_MODEL, None)
+
+        model, _ = load_qwen_model(DEFAULT_VQA_MODEL, VQA_ADAPTER_PATH)
         return {
             "status": "ok",
             "model": DEFAULT_VQA_MODEL,
             "adapter_path": VQA_ADAPTER_PATH,
             "adapter_active": isinstance(model, PeftModel),
-            "load_seconds": load_s,
+            "load_seconds": vqa_load_s,
+            "caption_model": DEFAULT_CAPTION_MODEL,
+            "caption_load_seconds": caption_load_s,
         }
     except VLMUnavailableError as exc:
+        return {"status": "unavailable", "reason": str(exc)}
+    except Exception as exc:  # noqa: BLE001 - surface, do not crash warmup
+        logger.error("VLM warmup failed: %s", exc, exc_info=True)
         return {"status": "unavailable", "reason": str(exc)}

@@ -19,6 +19,8 @@ scored via BLEU/CIDEr. Descriptive but not padded.
 
 from __future__ import annotations
 
+import asyncio
+import functools
 import logging
 import os
 from pathlib import Path
@@ -140,11 +142,16 @@ async def caption_endpoint(
     tmp_path: Path | None = None
     try:
         tmp_path = save_to_temp(content, ext)
-        result = compute_caption(
-            tmp_path,
-            adapter_path=CAPTION_ADAPTER_PATH,
-            aoi=aoi_geometry,
-            aoi_crs=aoi_crs,
+        # Heavy synchronous work (AOI crop, raster decode, model inference) runs
+        # off the event loop in a worker thread; see /vqa.
+        result = await asyncio.to_thread(
+            functools.partial(
+                compute_caption,
+                tmp_path,
+                adapter_path=CAPTION_ADAPTER_PATH,
+                aoi=aoi_geometry,
+                aoi_crs=aoi_crs,
+            )
         )
     except RoiCropError as exc:
         return aoi_error_output("caption", exc, raw_aoi=aoi_geometry)
